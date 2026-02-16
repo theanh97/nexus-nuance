@@ -50,6 +50,7 @@ class Orion(AsyncAgent):
         self.max_iterations = 10000  # Very high for "infinite" loop
         self.target_score = 9.0
         self.history: List[Dict] = []
+        self.history_limit = max(100, int(os.getenv("ORION_HISTORY_LIMIT", "2000")))
         self.cycle_timeout_sec = int(os.getenv("ORION_CYCLE_TIMEOUT_SEC", "180"))
         self.last_cycle_started_at: Optional[datetime] = None
         self.last_cycle_finished_at: Optional[datetime] = None
@@ -262,6 +263,8 @@ class Orion(AsyncAgent):
 
                 # Log result
                 self.history.append(result)
+                if len(self.history) > self.history_limit:
+                    self.history = self.history[-self.history_limit:]
                 self._save_history()
                 self.last_progress_at = datetime.now()
                 recovery_needed = self._update_stability_signals(result)
@@ -497,7 +500,8 @@ class Orion(AsyncAgent):
             # 6. Run learning loop for deeper analysis
             if hasattr(self.learning_loop, 'run_iteration'):
                 learning_results = self.learning_loop.run_iteration()
-                self._log(f"📚 Learning loop: {learning_results.get('actions_taken', 0)} actions")
+                action_count = len(learning_results.get("actions", []) or [])
+                self._log(f"📚 Learning loop: {action_count} actions")
 
             # 7. Log decision with detailed analysis
             decision = {

@@ -38,10 +38,29 @@ def read_recent_routing_events(limit: int = 40, agent: Optional[str] = None) -> 
     if not path.exists():
         return []
 
+    max_lines = max(1, int(limit)) * 5
     lines: List[str] = []
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            file_size = f.tell()
+            if file_size <= 0:
+                return []
+
+            chunk_size = 4096
+            pos = file_size
+            buffer = b""
+            while pos > 0:
+                read_size = min(chunk_size, pos)
+                pos -= read_size
+                f.seek(pos)
+                buffer = f.read(read_size) + buffer
+                if buffer.count(b"\n") >= max_lines + 1:
+                    break
+
+            lines = buffer.decode("utf-8", errors="ignore").splitlines()
+            if len(lines) > max_lines:
+                lines = lines[-max_lines:]
     except Exception:
         return []
 

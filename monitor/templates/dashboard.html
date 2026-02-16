@@ -8,6 +8,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script src="{{ url_for('static', filename='js/theme-preference.js') }}"></script>
     <style>
         /* ═════════════════════════════════════════════════════════
            THE DREAM TEAM - CONTROL CENTER
@@ -2902,6 +2903,7 @@
                             <span class="flow-chip" id="computer-control-chip">Computer Control: OFF</span>
                             <span class="flow-chip" id="monitor-autopilot-chip">Autopilot: ON</span>
                             <span class="flow-chip" id="cost-guard-chip">Cost Guard: BALANCED</span>
+                            <span class="flow-chip" id="rate-limit-chip">Rate Limit: NORMAL</span>
                             <button class="instance-btn" id="monitor-autopilot-btn" onclick="toggleMonitorAutopilot()">Tắt Autopilot</button>
                         </div>
                     </div>
@@ -3375,6 +3377,7 @@
             providerCatalog: null,
             providerProfile: null,
             providerDirty: false,
+            systemSlo: null,
             scoreHistory: [0],
             userProfile: null,
             startTime: Date.now()
@@ -3413,6 +3416,7 @@
             loadAgentActivity();
             loadMonitorAutopilot();
             loadComputerControlStatus();
+            refreshOpenClawStatus();
             loadCostGuard();
             loadProviderCatalog();
             loadProviderProfile(true);
@@ -3420,6 +3424,7 @@
             loadRoutingEvents();
             loadOpsFeed();
             loadOpsDigest();
+            loadSystemSlo();
             scheduleInsightRender();
             startUptimeCounter();
             syncCommandLiveToggle();
@@ -3429,12 +3434,14 @@
             setInterval(loadAgentActivity, 20000);
             setInterval(loadMonitorAutopilot, 15000);
             setInterval(loadComputerControlStatus, 15000);
+            setInterval(refreshOpenClawStatus, 15000);
             setInterval(loadCostGuard, 20000);
             setInterval(() => loadProviderProfile(false), 25000);
             setInterval(loadModelRoutingStatus, 12000);
             setInterval(loadRoutingEvents, 12000);
             setInterval(loadOpsFeed, 12000);
             setInterval(loadOpsDigest, 12000);
+            setInterval(loadSystemSlo, 10000);
             setInterval(scheduleInsightRender, 12000);
 
             const fleetInput = document.getElementById('fleet-command');
@@ -3710,7 +3717,7 @@
             const legacyFocus = localStorage.getItem('dashboard_focus_mode');
             const legacyPerf = localStorage.getItem('dashboard_performance_mode');
 
-            const theme = localStorage.getItem('dashboard_theme') || 'light';
+            const theme = localStorage.getItem('autodev-theme') || localStorage.getItem('dashboard_theme') || 'light';
             const density = localStorage.getItem('dashboard_density')
                 || (legacyFocus === 'false' ? 'full' : 'minimal');
             const motion = localStorage.getItem('dashboard_motion')
@@ -3728,6 +3735,8 @@
             const resolved = theme === 'dark' ? 'dark' : 'light';
             document.body.classList.toggle('theme-dark', resolved === 'dark');
             localStorage.setItem('dashboard_theme', resolved);
+            localStorage.setItem('autodev-theme', resolved);
+            document.body.setAttribute('data-theme', resolved);
         }
 
         function applyDensity(density) {
@@ -4399,11 +4408,9 @@
         }
 
         function renderComputerControlStatus() {
-            const chip = document.getElementById('computer-control-chip');
-            if (!chip) return;
             const control = state.computerControl || {};
-            const on = !!control.available && !!control.enabled;
-            chip.textContent = `Computer Control: ${on ? 'ON' : 'OFF'}`;
+            openclawStatus.controlOn = !!control.available && !!control.enabled;
+            renderOpenClawStatus(openclawStatus.dashboard, openclawStatus.metrics);
             updateControlDockBadges();
         }
 
@@ -6447,39 +6454,83 @@
             loadRoutingEvents();
             loadOpsFeed();
             loadOpsDigest();
+            loadSystemSlo();
+        }
+
+        function renderRateLimitChip() {
+            const chip = document.getElementById('rate-limit-chip');
+            if (!chip) return;
+            const rl = state?.systemSlo?.api_rate_limit || {};
+            const blocked = Number(rl.blocked_last_window || 0);
+            const windowSec = Number(rl.window_sec || 300);
+            const windowMin = Math.max(1, Math.round(windowSec / 60));
+            const high = blocked >= 8;
+            chip.textContent = `Rate Limit: ${high ? 'WARN' : 'NORMAL'} (${blocked}/${windowMin}m)`;
+            if (high) {
+                chip.classList.remove('chip-success');
+                chip.classList.add('chip-warning');
+            } else {
+                chip.classList.remove('chip-warning');
+                chip.classList.add('chip-success');
+            }
+        }
+
+        async function loadSystemSlo() {
+            try {
+                const response = await fetch('/api/system/slo');
+                const data = await response.json();
+                if (data?.slo) {
+                    state.systemSlo = data.slo;
+                    renderRateLimitChip();
+                }
+            } catch (error) {
+                console.error('Failed to load system SLO:', error);
+            }
         }
 
         const openclawStatus = {
             url: 'http://127.0.0.1:18789/',
             status: 'unknown',
             error: null,
+            controlOn: false,
+            dashboard: null,
+            metrics: null,
         };
 
-        const renderOpenClawStatus = (payload) => {
+        const renderOpenClawStatus = (dashboardPayload, metricsPayload) => {
             const statusElement = document.getElementById('computer-control-chip');
             if (!statusElement) return;
-
-            if (payload.health_ok) {
-                statusElement.textContent = 'OpenClaw: READY';
+            const healthOk = !!(dashboardPayload?.health_ok ?? metricsPayload?.token?.health_ok);
+            const attachRate = Number(metricsPayload?.attach_success_rate || 0);
+            const flowRate = Number(metricsPayload?.flow_success_rate || 0);
+            const cliFailures = Number(metricsPayload?.counters?.cli_failures || 0);
+            const queueDepth = Number(metricsPayload?.queue?.total_queue_depth || 0);
+            const queueP95 = Number(metricsPayload?.queue?.queue_wait_p95_ms || 0);
+            const label = healthOk ? "READY" : "DEGRADED";
+            statusElement.textContent = `OpenClaw: ${label} · Ctrl:${openclawStatus.controlOn ? 'ON' : 'OFF'} · Attach:${Math.round(attachRate * 100)}% · Flow:${Math.round(flowRate * 100)}% · CLI:${cliFailures} · Q:${queueDepth} · Qp95:${queueP95}ms`;
+            if (healthOk) {
                 statusElement.classList.remove('chip-warning');
                 statusElement.classList.add('chip-success');
             } else {
-                statusElement.textContent = 'OpenClaw: TOKEN MISSING';
                 statusElement.classList.remove('chip-success');
                 statusElement.classList.add('chip-warning');
             }
         };
 
         const refreshOpenClawStatus = () => {
-            fetch('/api/openclaw/dashboard')
-                .then((response) => response.json())
-                .then((data) => {
-                    openclawStatus.url = data?.url || openclawStatus.url;
-                    openclawStatus.status = data?.success ? 'ready' : 'missing';
-                    openclawStatus.error = data?.error;
-                    renderOpenClawStatus(data);
-                    if (!data?.success) {
-                        showToast('warning', data?.error || 'OpenClaw gateway chưa sẵn sàng.');
+            Promise.all([
+                fetch('/api/openclaw/dashboard').then((response) => response.json()),
+                fetch('/api/openclaw/metrics').then((response) => response.json()),
+            ])
+                .then(([dashboardData, metricsData]) => {
+                    openclawStatus.url = dashboardData?.url || openclawStatus.url;
+                    openclawStatus.status = dashboardData?.success ? 'ready' : 'missing';
+                    openclawStatus.error = dashboardData?.error;
+                    openclawStatus.dashboard = dashboardData || null;
+                    openclawStatus.metrics = metricsData?.metrics || null;
+                    renderOpenClawStatus(openclawStatus.dashboard, openclawStatus.metrics);
+                    if (!dashboardData?.success) {
+                        showToast('warning', dashboardData?.error || 'OpenClaw gateway chưa sẵn sàng.');
                     }
                 })
                 .catch((error) => {

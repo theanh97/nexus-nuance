@@ -9,6 +9,7 @@ import json
 import base64
 import shlex
 import shutil
+import sys
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
@@ -52,6 +53,7 @@ class AsyncAgent(ABC):
         self.auto_subscription_cost_routing = os.getenv("ENABLE_AUTO_SUBSCRIPTION_COST_ROUTING", "true").lower() == "true"
         self.subscription_failure_threshold = max(1, int(os.getenv("SUBSCRIPTION_FAILURE_THRESHOLD", "2")))
         self.subscription_failure_cooldown_sec = max(30, int(os.getenv("SUBSCRIPTION_FAILURE_COOLDOWN_SEC", "180")))
+        self.subscription_skip_when_no_tty = os.getenv("SUBSCRIPTION_SKIP_WHEN_NO_TTY", "true").lower() == "true"
         self.keep_current_model_first = os.getenv("ROUTER_KEEP_CURRENT_MODEL_FIRST", "false").lower() == "true"
         self.prompt_system = get_prompt_system()
         self.prompt_system.ensure_core_directives()
@@ -282,6 +284,7 @@ class AsyncAgent(ABC):
 
             last_error = result
             error_text = str(result.get("error", "")).lower()
+            error_class = self._classify_error(error_text)
             retryable = self._is_retryable_error(error_text)
             attempts.append({
                 "model": cfg.name,
@@ -289,8 +292,10 @@ class AsyncAgent(ABC):
                 "latency_ms": attempt_latency_ms,
                 "error": str(result.get("error", ""))[:300],
                 "retryable": retryable,
+                "error_class": error_class,
             })
-            if not retryable:
+            # Do not abort the whole routing chain on subscription/config errors.
+            if not retryable and cfg.supports_api:
                 break
 
         if can_try_subscription:
@@ -409,19 +414,24 @@ class AsyncAgent(ABC):
 
     def _is_retryable_error(self, error_text: str) -> bool:
         """Identify transient errors suitable for fallback retry."""
-        retry_keywords = [
-            "timeout",
-            "rate limit",
-            "quota",
-            "429",
-            "temporarily unavailable",
-            "overloaded",
-            "connection reset",
-            "network",
-            "service unavailable",
-            "upstream",
-        ]
-        return any(keyword in error_text for keyword in retry_keywords)
+        return self._classify_error(error_text) == "transient"
+
+    def _classify_error(self, error_text: str) -> str:
+        """Classify provider/subscription errors for routing analytics and policy."""
+        text = str(error_text or "").lower()
+        if not text:
+            return "unknown"
+        if any(k in text for k in ["timeout", "rate limit", "quota", "429", "temporarily unavailable", "overloaded", "connection reset", "network", "service unavailable", "upstream"]):
+            return "transient"
+        if any(k in text for k in ["unauthorized", "invalid api key", "authentication", "forbidden", "permission denied", "insufficient_quota"]):
+            return "auth"
+        if "not a tty" in text or "non-interactive" in text:
+            return "subscription_non_tty"
+        if any(k in text for k in ["no such file", "not found", "unavailable", "missing", "not installed"]):
+            return "missing_dependency"
+        if any(k in text for k in ["invalid config", "yaml", "json", "parse", "unsupported", "bad option"]):
+            return "config"
+        return "runtime"
 
     def _emit_routing_telemetry(
         self,
@@ -472,6 +482,7 @@ class AsyncAgent(ABC):
             },
             "estimated_cost_usd": cost_usd,
             "error": str((result or {}).get("error", ""))[:300] if isinstance(result, dict) and "error" in result else "",
+            "error_class": self._classify_error(str((result or {}).get("error", ""))) if isinstance(result, dict) and "error" in result else "",
         })
 
     def _compose_plain_prompt(self, messages: List[Dict]) -> str:
@@ -574,6 +585,10 @@ class AsyncAgent(ABC):
         if not command:
             self._mark_subscription_failure(cfg, "subscription_cli_unavailable")
             return {"error": f"subscription_cli_unavailable:{cfg.api_source}"}
+        if self.subscription_skip_when_no_tty and not sys.stdin.isatty():
+            failure = f"subscription_cli_skipped_non_tty:{cfg.name}"
+            self._mark_subscription_failure(cfg, failure)
+            return {"error": failure}
 
         timeout_sec = int(os.getenv("SUBSCRIPTION_TIMEOUT_SEC", "120"))
         try:
