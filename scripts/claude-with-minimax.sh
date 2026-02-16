@@ -208,36 +208,34 @@ run_openai_compatible() {
   local sonnet_model
   local opus_model
   local haiku_model
+  local model_list_yaml=""
+  
+  echo "PROVIDER is: |${PROVIDER:-}|"
+  echo "CODAXER_MODELS is: |${CODAXER_MODELS:-}|"
 
   if [ "${PROVIDER:-}" = "codaxer" ]; then
+    echo "Entering codaxer block"
     compat_api_key="${CODAXER_API_KEY:-${CLAUDE_CODE_API_KEY:-}}"
     compat_base_url="${CODAXER_BASE_URL:-${CLAUDE_CODE_BASE_URL:-}}"
-    sonnet_model="${CODAXER_MODEL_SONNET:-${CODAXER_MODEL:-${CLAUDE_CODE_MODEL_SONNET:-${CLAUDE_CODE_MODEL:-gpt-5.1-codex}}}}"
-    opus_model="${CODAXER_MODEL_OPUS:-${CLAUDE_CODE_MODEL_OPUS:-gpt-5.1-codex-max}}"
-    haiku_model="${CODAXER_MODEL_HAIKU:-${CLAUDE_CODE_MODEL_HAIKU:-gpt-5.1-codex-mini}}"
-  else
-    compat_api_key="${CLAUDE_CODE_API_KEY:-${CODAXER_API_KEY:-}}"
-    compat_base_url="${CLAUDE_CODE_BASE_URL:-${CODAXER_BASE_URL:-}}"
-    sonnet_model="${CLAUDE_CODE_MODEL_SONNET:-${CLAUDE_CODE_MODEL:-${CODAXER_MODEL_SONNET:-${CODAXER_MODEL:-gpt-5.1-codex}}}}"
-    opus_model="${CLAUDE_CODE_MODEL_OPUS:-${CODAXER_MODEL_OPUS:-gpt-5.1-codex-max}}"
-    haiku_model="${CLAUDE_CODE_MODEL_HAIKU:-${CODAXER_MODEL_HAIKU:-gpt-5.1-codex-mini}}"
-  fi
-
-  if [ -z "$compat_api_key" ] || [ -z "$compat_base_url" ]; then
-    echo "Error: Missing OpenAI-compatible profile."
-    echo "Set CLAUDE_CODE_API_KEY + CLAUDE_CODE_BASE_URL, or CODAXER_API_KEY + CODAXER_BASE_URL."
-    exit 1
-  fi
-
-  export CODEX_COMPAT_API_KEY="$compat_api_key"
-
-  ensure_litellm
-
-  cat > "$config_path" <<EOF
-general_settings:
-  master_key: "$gateway_token"
-
-model_list:
+    if [ -n "${CODAXER_MODELS:-}" ]; then
+      echo "CODAXER_MODELS is not empty"
+      # Remove quotes from the model list for correct parsing
+      local models_list="${CODAXER_MODELS//\"/}"
+      for model_name in $models_list; do
+        model_list_yaml+=$(cat <<EOF
+  - model_name: "$model_name"
+    litellm_params:
+      model: "openai/$model_name"
+      api_base: "${compat_base_url}"
+      api_key: "os.environ/CODEX_COMPAT_API_KEY"
+EOF
+)
+      done
+    else
+      sonnet_model="${CODAXER_MODEL_SONNET:-${CODAXER_MODEL:-${CLAUDE_CODE_MODEL_SONNET:-${CLAUDE_CODE_MODEL:-gpt-5.1-codex}}}}"
+      opus_model="${CODAXER_MODEL_OPUS:-${CLAUDE_CODE_MODEL_OPUS:-gpt-5.1-codex-max}}"
+      haiku_model="${CODAXER_MODEL_HAIKU:-${CLAUDE_CODE_MODEL_HAIKU:-gpt-5.1-codex-mini}}"
+      model_list_yaml=$(cat <<EOF
   - model_name: "sonnet"
     litellm_params:
       model: "openai/${sonnet_model}"
@@ -256,6 +254,53 @@ model_list:
       api_base: "${compat_base_url}"
       api_key: "os.environ/CODEX_COMPAT_API_KEY"
 EOF
+)
+    fi
+  else
+    compat_api_key="${CLAUDE_CODE_API_KEY:-${CODAXER_API_KEY:-}}"
+    compat_base_url="${CLAUDE_CODE_BASE_URL:-${CODAXER_BASE_URL:-}}"
+    sonnet_model="${CLAUDE_CODE_MODEL_SONNET:-${CLAUDE_CODE_MODEL:-${CODAXER_MODEL_SONNET:-${CODAXER_MODEL:-gpt-5.1-codex}}}}"
+    opus_model="${CLAUDE_CODE_MODEL_OPUS:-${CODAXER_MODEL_OPUS:-gpt-5.1-codex-max}}"
+    haiku_model="${CLAUDE_CODE_MODEL_HAIKU:-${CLAUDE_CODE_MODEL_HAIKU:-gpt-5.1-codex-mini}}"
+    model_list_yaml=$(cat <<EOF
+  - model_name: "sonnet"
+    litellm_params:
+      model: "openai/${sonnet_model}"
+      api_base: "${compat_base_url}"
+      api_key: "os.environ/CODEX_COMPAT_API_KEY"
+
+  - model_name: "opus"
+    litellm_params:
+      model: "openai/${opus_model}"
+      api_base: "${compat_base_url}"
+      api_key: "os.environ/CODEX_COMPAT_API_KEY"
+
+  - model_name: "haiku"
+    litellm_params:
+      model: "openai/${haiku_model}"
+      api_base: "${compat_base_url}"
+      api_key: "os.environ/CODEX_COMPAT_API_KEY"
+EOF
+)
+  fi
+
+  if [ -z "$compat_api_key" ] || [ -z "$compat_base_url" ]; then
+    echo "Error: Missing OpenAI-compatible profile."
+    echo "Set CLAUDE_CODE_API_KEY + CLAUDE_CODE_BASE_URL, or CODAXER_API_KEY + CODAXER_BASE_URL."
+    exit 1
+  fi
+
+  export CODEX_COMPAT_API_KEY="$compat_api_key"
+
+  ensure_litellm
+
+  cat > "$config_path" <<EOF
+general_settings:
+  master_key: "$gateway_token"
+
+model_list:
+$model_list_yaml
+EOF
 
   start_litellm_gateway "$config_path"
 
@@ -270,9 +315,13 @@ EOF
 
   echo "Using OpenAI-compatible backend via local LiteLLM gateway:"
   echo "  Gateway: $ANTHROPIC_BASE_URL"
-  echo "  Sonnet:  ${sonnet_model}"
-  echo "  Opus:    ${opus_model}"
-  echo "  Haiku:   ${haiku_model}"
+  if [ -n "${CODAXER_MODELS:-}" ] && [ "${PROVIDER:-}" = "codaxer" ]; then
+    echo "  Models: ${CODAXER_MODELS}"
+  else
+    echo "  Sonnet:  ${sonnet_model}"
+    echo "  Opus:    ${opus_model}"
+    echo "  Haiku:   ${haiku_model}"
+  fi
 
   if [ "$SETUP_ONLY" -eq 1 ]; then
     echo "Setup only mode enabled. Gateway/profile prepared."
@@ -281,6 +330,7 @@ EOF
 
   exec claude "$@"
 }
+
 
 PROVIDER="$(normalize_provider "${CLAUDE_CODE_PROVIDER:-minimax}")"
 if [ "$PROVIDER" = "auto" ]; then

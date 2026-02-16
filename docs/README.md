@@ -1,6 +1,6 @@
-# Auto Dev Loop - The Dream Team
+# NEXUS - The Dream Team
 
-> **"KHÔNG CHỈ TỐT. KHÔNG CHỈ XUẤT SẮC. PHẢI LÀ ĐỈNH CAO."**
+> **"ONE SYSTEM. INFINITE PROJECTS. CONTINUOUS EVOLUTION."**
 
 A self-learning, self-improving AI development system with world-class agents working together 24/7.
 
@@ -8,16 +8,18 @@ A self-learning, self-improving AI development system with world-class agents wo
 
 ## The Dream Team
 
-| Agent | Role | Model | Specialty |
-|-------|------|-------|-----------|
-| **ORION** | Supreme PM | GLM-5 | Best project manager on Earth |
-| **PIXEL** | UI/UX Visionary | GLM-5 / GLM-4.6V | Beats Jony Ive in design |
-| **NOVA** | Code Architect | GLM-5 | 10x engineer, system design master |
-| **CIPHER** | Security Master | GLM-5 | OWASP expert, veto power |
-| **ECHO** | QA Engineer | GLM-5 | Test automation master |
-| **FLUX** | DevOps | GLM-5 | SRE master, CI/CD architect |
+| Agent | Role | Primary Model | Fallback |
+|-------|------|---------------|----------|
+| **ORION** | Supreme PM | MiniMax M2.5 | GLM-5 |
+| **PIXEL** | UI/UX Visionary | MiniMax M2.5 | GLM-4.6V |
+| **NOVA** | Code Architect | MiniMax M2.5 | GLM-5 |
+| **CIPHER** | Security Master | MiniMax M2.5 | GLM-5 |
+| **ECHO** | QA Engineer | GLM-4-Flash | - |
+| **FLUX** | DevOps | MiniMax M2.5 | GLM-5 |
 
-> **Note**: Can run with just GLM-5 for all tasks, or use specialized models for specific capabilities.
+### Computer Control
+- **OpenClaw** - AI-powered computer automation (Browser, Mouse, Keyboard)
+- **Model**: MiniMax M2.5
 
 ---
 
@@ -25,34 +27,46 @@ A self-learning, self-improving AI development system with world-class agents wo
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                     GLM 5.0 (ORION)                         │
-│              Central Controller & Decision Maker            │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-        ┌──────────────────┼──────────────────┐
-        │                  │                  │
-        ▼                  ▼                  ▼
-   ┌─────────┐      ┌──────────┐      ┌──────────┐
-   │  NOVA   │      │  PIXEL   │      │  CIPHER  │
-   │ (Code)  │      │ (UI/UX)  │      │(Security)│
-   └────┬────┘      └────┬─────┘      └────┬─────┘
-        │                │                 │
-        └────────────────┼─────────────────┘
-                         │
-                         ▼
-              ┌─────────────────────┐
-              │    ECHO + FLUX      │
-              │   (QA + Deploy)     │
-              └──────────┬──────────┘
-                         │
-         ┌───────────────┴───────────────┐
-         │                               │
-         ▼                               ▼
-    [ IMPROVE ]                    [ COMPLETE ]
-         │                               │
-         └───────────────────────────────┘
-                         │
-                    (LOOP BACK)
+│                    NEXUS v2.0 "Evolution"                   │
+│                                                             │
+│   ┌─────────────────────────────────────────────────────┐  │
+│   │              ORION (MiniMax M2.5)                    │  │
+│   │           Central Controller & Decisions             │  │
+│   └───────────────────────┬─────────────────────────────┘  │
+│                           │                                 │
+│        ┌──────────────────┼──────────────────┐             │
+│        │                  │                  │             │
+│        ▼                  ▼                  ▼             │
+│   ┌─────────┐      ┌──────────┐      ┌──────────┐        │
+│   │  NOVA   │      │  PIXEL   │      │  CIPHER  │        │
+│   │ (Code)  │      │ (UI/UX)  │      │(Security)│        │
+│   └────┬────┘      └────┬─────┘      └────┬─────┘        │
+│        │                │                 │               │
+│        └────────────────┼─────────────────┘               │
+│                         │                                 │
+│                         ▼                                 │
+│              ┌─────────────────────┐                      │
+│              │    ECHO + FLUX      │                      │
+│              │   (QA + Deploy)     │                      │
+│              └──────────┬──────────┘                      │
+│                         │                                 │
+│         ┌───────────────┴───────────────┐                │
+│         │                               │                │
+│         ▼                               ▼                │
+│    [ IMPROVE ]                    [ COMPLETE ]            │
+│         │                               │                │
+│         └───────────────────────────────┘                │
+│                         │                                 │
+│                         ▼                                 │
+│              ┌─────────────────────┐                      │
+│   ┌─────────│    OpenClaw         │──────────┐           │
+│   │         │  (Computer Control) │          │           │
+│   │         │   MiniMax M2.5      │          │           │
+│   │         └─────────────────────┘          │           │
+│   │                                          │           │
+│   ▼                                          ▼           │
+│ [ Browser ]                          [ Mouse/Keyboard ]  │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -60,28 +74,65 @@ A self-learning, self-improving AI development system with world-class agents wo
 ## Project Structure
 
 ```
-auto-dev-loop/
+nexus-nuance/
 │
-├── src/                    # Source code
-│   ├── core/               # Core framework
-│   ├── agents/             # Dream Team agents
-│   └── memory/             # Learning system
+├── nexus/                    # Core Brain
+│   ├── agents/               # Dream Team agents
+│   │   ├── orion.py          # PM Agent
+│   │   ├── nova.py           # Code Architect
+│   │   ├── pixel.py          # UI/UX Visionary
+│   │   ├── cipher.py         # Security Master
+│   │   ├── echo.py           # QA Engineer
+│   │   └── flux.py           # DevOps
+│   │
+│   ├── memory/               # Learning & Memory System
+│   │   ├── core/             # Core memory operations
+│   │   ├── learning/         # Learning mechanisms
+│   │   ├── feedback/         # User feedback processing
+│   │   └── knowledge/        # Knowledge management
+│   │
+│   ├── orchestration/        # Multi-agent coordination
+│   │   ├── model_router.py   # Model routing
+│   │   ├── agent.py          # Base agent
+│   │   └── computer_controller.py
+│   │
+│   └── self_improvement/     # SICA-style self-modification
+│       ├── discovery.py      # Find improvement opportunities
+│       ├── benchmark.py      # Evaluate performance
+│       ├── patch_generator.py # Generate code patches
+│       ├── safe_apply.py     # Safely apply changes
+│       ├── archive.py        # Archive analysis
+│       └── engine.py         # Main orchestrator
 │
-├── data/                   # Data storage
-│   ├── memory/             # Knowledge store
-│   ├── logs/               # System logs
-│   └── state/              # Learning state
+├── wisdom/                   # Cross-Project Learning
+│   ├── patterns/             # Learned patterns
+│   ├── insights/             # AI-generated insights
+│   ├── experiments/          # Experiment tracking
+│   └── feedback_loops/       # Cross-project feedback
 │
-├── docs/                   # Documentation
-│   └── memory/             # Learning principles
+├── projects/                 # Multi-Project Support
+│   ├── _templates/           # Project templates
+│   └── active/               # Active projects
 │
-├── dashboards/             # HTML dashboards
-├── scripts/                # Utility scripts
-├── tests/                  # Test suite
+├── infrastructure/           # Deployment & Ops
+├── monitor/                  # Web Dashboard
+├── scripts/                  # Utility Scripts
+├── tests/                    # Test Suite
 │
-├── pyproject.toml          # Project metadata
-├── Makefile                # Common commands
-└── requirements.txt        # Dependencies
+├── data/                     # Data Storage (gitignored)
+│   ├── memory/               # Knowledge store
+│   ├── logs/                 # System logs
+│   └── state/                # Learning state
+│
+├── config/                   # Configuration
+│   ├── mcp_config.json       # MCP configuration
+│   └── settings.yaml         # System settings
+│
+├── README.md                 # Main documentation
+├── ARCHITECTURE.md           # Full architecture
+├── pyproject.toml            # Project metadata
+├── Makefile                  # Common commands
+└── requirements.txt          # Dependencies
 ```
 
 ---
@@ -89,18 +140,134 @@ auto-dev-loop/
 ## Quick Start
 
 ```bash
+# Clone repository
+git clone https://github.com/theanh97/nexus-nuance.git
+cd nexus-nuance
+
 # Install dependencies
+pip install -r requirements.txt
+
+# Configure environment
+cp .env.example .env
+# Edit .env with your API keys
+
+# Start the system
+python3 run_system.py --host 127.0.0.1 --port 5050
+
+# Or use Makefile
 make install
-
-# Start the learning system
 make start
-
-# Check status
 make status
-
-# Run knowledge scan
-make scan
 ```
+
+---
+
+## OpenClaw Setup (Computer Control)
+
+```bash
+# Install OpenClaw
+brew install openclaw
+
+# Verify installation
+openclaw --version
+
+# Configure MiniMax as default model
+# Edit ~/.openclaw/openclaw.json:
+{
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "minimax/MiniMax-M2.5"
+      }
+    }
+  },
+  "models": {
+    "providers": {
+      "minimax": {
+        "baseUrl": "https://api.minimax.io/anthropic",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "MiniMax-M2.5",
+            "name": "MiniMax M2.5",
+            "contextWindow": 128000
+          }
+        ]
+      }
+    }
+  }
+}
+
+# Set API key
+export MINIMAX_API_KEY=your_key_here
+
+# Start OpenClaw gateway
+openclaw gateway start
+```
+
+---
+
+## Self-Improvement System
+
+NEXUS includes a SICA-inspired self-improvement engine:
+
+```
+DISCOVER → ANALYZE → GENERATE → APPLY → MEASURE → LEARN
+```
+
+### Features:
+- **Discovery**: Finds code quality, performance, security issues
+- **Benchmark**: Measures system performance before/after changes
+- **Patch Generation**: Creates code fixes using templates
+- **Safe Apply**: Backup + automatic rollback on test failure
+- **Archive Analysis**: Tracks improvement history and patterns
+
+### Usage:
+
+```python
+from nexus.self_improvement import get_improvement_engine
+
+engine = get_improvement_engine()
+result = engine.run_cycle()
+
+print(f"Improvements applied: {result.patches_successful}")
+```
+
+---
+
+## Configuration
+
+### API Keys Required
+
+| Service | Purpose | Required |
+|---------|---------|----------|
+| **MiniMax** | Primary model + OpenClaw | ✅ Yes |
+| GLM (z.ai) | Fallback model | ❌ Optional |
+| Google AI | Fast tasks | ❌ Optional |
+
+### Model Routing
+
+```yaml
+# Adaptive routing (default)
+MODEL_ROUTING_MODE=adaptive
+
+# Or force single model
+MODEL_ROUTING_MODE=single
+DEFAULT_SINGLE_MODEL=minimax/MiniMax-M2.5
+```
+
+---
+
+## Dashboard API
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/status` | System status |
+| `POST /api/chat/ask` | Send command |
+| `GET /api/computer-control/status` | OpenClaw status |
+| `POST /api/openclaw/browser` | Browser control |
+| `POST /api/openclaw/flow/dashboard` | Auto dashboard flow |
+| `GET /api/events/digest` | Event digest |
 
 ---
 
@@ -113,105 +280,7 @@ Implements **human learning principles**:
 3. **Active Recall**: Test knowledge retrieval
 4. **Deliberate Practice**: Focus on weaknesses
 5. **Metacognition**: Self-awareness of learning
-6. **Solution Options**: Always produce feasible next-step options + recommended path
-7. **Portfolio Pivot**: Rotate focus area when one track hits diminishing returns
-
-See `docs/memory/learning-principles.md` for details.
-
----
-
-## Configuration
-
-Edit `config/settings.yaml`:
-
-```yaml
-# Single model mode (recommended)
-model: "glm-5"
-
-# Or multi-model mode
-agents:
-  orion: "glm-5"
-  pixel: "glm-4.6v"  # For vision tasks
-  nova: "glm-5"
-  cipher: "glm-5"
-  echo: "glm-5"
-  flux: "glm-5"
-```
-
----
-
-## API Keys
-
-| Service | Purpose | Required |
-|---------|---------|----------|
-| GLM (z.ai) | All operations | ✅ Yes |
-| Google AI | Optional: Fast tasks | ❌ No |
-| Anthropic | Optional: Vision | ❌ No |
-
----
-
-## Runtime Safety
-
-To avoid stuck/conflicts when many flows run in parallel, runtime singletons are enabled:
-
-- Learning runtime lock: `LEARNING_RUNTIME_LOCK_PATH` (default `data/state/learning_runtime.lock`)
-- AutoDev runtime lock: `AUTODEV_RUNTIME_LOCK_PATH` (default `data/state/autodev_runtime.lock`)
-- Knowledge scan operation lock: `SCAN_OPERATION_LOCK_PATH` (default `data/state/knowledge_scan.lock`)
-- Improvement apply operation lock: `IMPROVEMENT_OPERATION_LOCK_PATH` (default `data/state/improvement_apply.lock`)
-- Daily self-learning operation lock: `DAILY_CYCLE_OPERATION_LOCK_PATH` (default `data/state/daily_self_learning.lock`)
-
-Stagnation safety (to avoid full stall when there are no improvements for many iterations):
-
-- `ENABLE_STAGNATION_UNBLOCK=true`
-- `UNBLOCK_MIN_PROPOSAL_SCORE=7.2`
-- `UNBLOCK_MAX_AUTO_APPROVALS_PER_ITERATION=1`
-
-Useful checks:
-
-```bash
-# Includes lock diagnostics + self-learning status
-python3 scripts/start.py --status
-```
-
-```bash
-# Dashboard API lock snapshot
-curl -s http://localhost:5000/api/runtime/locks
-```
-
-```bash
-# CLI lock snapshot / stale cleanup (runtime + operations)
-python3 scripts/runtime_locks.py
-python3 scripts/runtime_locks.py --cleanup-stale
-```
-
-If a second conflicting runtime is started, it will now fail fast instead of hanging.
-
----
-
-## Gemini Subscription CLI
-
-Gemini API and Gemini CLI subscription are handled separately:
-
-- API path: `GOOGLE_API_KEY` (runtime-callable by default, used in normal chains)
-- Subscription CLI path: `GEMINI_SUBSCRIPTION_AVAILABLE`, `GEMINI_CLI_CMD`, `GEMINI_CLI_ARGS`
-
-Default subscription models in policy:
-
-- `GEMINI_SUBSCRIPTION_FLASH_MODEL=gemini-3.0-flash`
-- `GEMINI_SUBSCRIPTION_PRO_MODEL=gemini-3.0-pro`
-
-To prioritize subscription CLIs in routing (including Gemini CLI) for cost-sensitive work:
-
-```bash
-ENABLE_SUBSCRIPTION_PRIMARY_ROUTING=true
-SUBSCRIPTION_PRIMARY_COST_ONLY=true
-```
-
-Then run:
-
-```bash
-python3 scripts/start.py --sync-models
-```
+6. **Cross-Project Learning**: Share wisdom across all projects
 
 ---
 
@@ -233,12 +302,12 @@ python3 scripts/start.py --sync-models
 
 ## Documentation
 
-- [Architecture](ARCHITECTURE.md)
-- [Project Brain](PROJECT_BRAIN.md)
-- [Provider Quick Settings (GLM + MiniMax)](PROVIDER_QUICK_SETTINGS.md)
-- [Learning Principles](memory/learning-principles.md)
-- [Handover Notes](HANDOVER_2026-02-15.md)
+- [Architecture](../ARCHITECTURE.md)
+- [Computer Control](COMPUTER_CONTROL.md)
+- [Provider Settings](PROVIDER_QUICK_SETTINGS.md)
+- [Human-Like Learning](HUMAN_LIKE_LEARNING.md)
+- [Guardian Agent](GUARDIAN_AGENT.md)
 
 ---
 
-*The Dream Team - Building the future, one iteration at a time.*
+*NEXUS - Building the future, one iteration at a time.*
