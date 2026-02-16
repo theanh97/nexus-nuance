@@ -196,16 +196,31 @@ class Guardian(AsyncAgent):
         paused = bool(status.get("paused"))
         pause_reason = str(status.get("pause_reason", "") or "").strip().lower()
         last_progress_age_sec = int(content.get("last_progress_age_sec", 0) or 0)
+        paused_age_sec = int(content.get("paused_age_sec", 0) or 0)
+        full_auto = bool(content.get("full_auto", False))
+        full_auto_user_pause_max_sec = max(1, int(content.get("full_auto_user_pause_max_sec", 240) or 240))
 
         decision = "resume_orion"
         action = "resume"
         human_reason = f"Guardian recovery for {reason}"
 
         # Respect explicit user pause; do not auto-resume in that case.
-        if paused and pause_reason == "user":
-            decision = "wait_user"
-            action = "none"
-            human_reason = "Orion paused by user command; waiting for user resume."
+        if paused and pause_reason in {"user", "manual_user"}:
+            user_pause_timeout = (
+                full_auto
+                and (paused_age_sec >= full_auto_user_pause_max_sec or "paused_user_timeout" in reason.lower())
+            )
+            if user_pause_timeout:
+                decision = "resume_orion"
+                action = "resume"
+                human_reason = (
+                    f"Full-auto timeout reached ({paused_age_sec}s/{full_auto_user_pause_max_sec}s); "
+                    "resuming Orion continuity."
+                )
+            else:
+                decision = "wait_user"
+                action = "none"
+                human_reason = "Orion paused by user command; waiting for user resume."
         elif paused:
             decision = "resume_orion"
             action = "resume"

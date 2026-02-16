@@ -37,7 +37,7 @@ class NexusIntegration:
     def __init__(self):
         self.chat = get_chat_learner()
         self.improver = get_autonomous_improver()
-        self.feedback = get_feedback_manager()
+        self.feedback_manager = get_feedback_manager()
         self.judgment = get_judgment_engine()
         self.audit = get_audit_logger()
 
@@ -88,9 +88,9 @@ class NexusIntegration:
         Học từ explicit feedback.
         """
         if feedback_type == "thumbs_up":
-            self.feedback.record_explicit_feedback("thumbs_up", target, 1)
+            self.feedback_manager.record_explicit_feedback("thumbs_up", target, 1)
         elif feedback_type == "thumbs_down":
-            self.feedback.record_explicit_feedback("thumbs_down", target, -1)
+            self.feedback_manager.record_explicit_feedback("thumbs_down", target, -1)
 
         self.audit.log_user_feedback(feedback_type, target, value)
 
@@ -115,7 +115,7 @@ class NexusIntegration:
         """
         chat_summary = self.chat.get_session_summary()
         improver_stats = self.improver.get_stats()
-        feedback_stats = self.feedback.get_feedback_summary()
+        feedback_stats = self.feedback_manager.get_feedback_summary()
 
         return {
             "chat": {

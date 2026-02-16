@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Any
 from pathlib import Path
 from collections import defaultdict
 import threading
+from .storage_v2 import record_learning_event
 
 
 class UserFeedbackManager:
@@ -100,9 +101,19 @@ class UserFeedbackManager:
         if self.learning_file.exists():
             try:
                 with open(self.learning_file, 'r', encoding='utf-8') as f:
-                    self.learning_rules = json.load(f)
+                    data = json.load(f)
+                    if isinstance(data, dict) and ("rules" in data or "patterns" in data):
+                        rules = data.get("rules", {})
+                        patterns = data.get("patterns", {})
+                        self.learning_rules = rules if isinstance(rules, dict) else {}
+                        self.preference_patterns = patterns if isinstance(patterns, dict) else {}
+                    elif isinstance(data, dict):
+                        # Backward-compatible legacy shape where rules were stored directly.
+                        self.learning_rules = data
             except Exception:
                 pass
+
+        self.stats["patterns_learned"] = len(self.preference_patterns)
 
     def _save(self):
         """Save feedback data to disk."""
@@ -114,6 +125,24 @@ class UserFeedbackManager:
                     "stats": self.stats,
                     "last_updated": datetime.now().isoformat()
                 }, f, indent=2, ensure_ascii=False)
+
+    def _emit_learning_event(self, event_type: str, content: str, value: float, risk: float, context: Optional[Dict] = None):
+        try:
+            record_learning_event(
+                {
+                    "ts": datetime.now().isoformat(),
+                    "source": "user_feedback",
+                    "event_type": event_type,
+                    "content": str(content)[:500],
+                    "context": context or {},
+                    "novelty_score": 0.5,
+                    "value_score": max(0.0, min(1.0, float(value))),
+                    "risk_score": max(0.0, min(1.0, float(risk))),
+                    "confidence": 0.85,
+                }
+            )
+        except Exception:
+            return
 
             # Save preferences
             with open(self.preferences_file, 'w', encoding='utf-8') as f:
@@ -161,6 +190,13 @@ class UserFeedbackManager:
 
             # Learn from this feedback
             self._learn_from_feedback(entry)
+            self._emit_learning_event(
+                event_type=f"explicit_{feedback_type}",
+                content=target,
+                value=0.8 if value > 0 else 0.6,
+                risk=0.2 if value > 0 else 0.35,
+                context=context,
+            )
 
             self._save()
             return entry
@@ -194,6 +230,13 @@ class UserFeedbackManager:
 
             # Learn correction pattern
             self._learn_correction(entry)
+            self._emit_learning_event(
+                event_type="user_correction",
+                content=f"{original[:120]} -> {corrected[:120]}",
+                value=0.95,
+                risk=0.25,
+                context=context,
+            )
 
             self._save()
             return entry
@@ -221,6 +264,13 @@ class UserFeedbackManager:
 
             # Learn approval pattern
             self._learn_approval(entry)
+            self._emit_learning_event(
+                event_type="user_approval",
+                content=action,
+                value=0.85,
+                risk=0.2,
+                context=details,
+            )
 
             self._save()
             return entry
@@ -250,6 +300,13 @@ class UserFeedbackManager:
 
             # Learn denial pattern
             self._learn_denial(entry)
+            self._emit_learning_event(
+                event_type="user_denial",
+                content=action,
+                value=0.75,
+                risk=0.4,
+                context={"reason": reason, **(details or {})},
+            )
 
             self._save()
             return entry
@@ -292,6 +349,13 @@ class UserFeedbackManager:
 
             # Learn implicit pattern
             self._learn_from_feedback(entry)
+            self._emit_learning_event(
+                event_type=f"implicit_{signal}",
+                content=target,
+                value=0.65 if entry.get("value", 0) > 0 else 0.45,
+                risk=0.3,
+                context=context,
+            )
 
             self._save()
             return entry

@@ -121,6 +121,13 @@ _openclaw_metrics: Dict[str, int] = {
     "queue_cancelled": 0,
     "queue_idempotent_hit": 0,
     "queue_manual_override": 0,
+    "policy_auto_approved": 0,
+    "policy_manual_required": 0,
+    "policy_denied": 0,
+    "dispatch_remote": 0,
+    "dispatch_failover": 0,
+    "circuit_opened": 0,
+    "circuit_blocked": 0,
 }
 _openclaw_metric_events: List[Dict[str, Any]] = []
 _openclaw_metrics_updated_at: Optional[datetime] = None
@@ -207,6 +214,47 @@ OPENCLAW_COMMANDS_WAL_PATH = Path(
         str(Path(__file__).parent.parent / "data" / "state" / "openclaw_commands_wal.jsonl"),
     )
 )
+CONTROL_PLANE_DEFAULT_LEASE_TTL_SEC = max(10, int(os.getenv("CONTROL_PLANE_DEFAULT_LEASE_TTL_SEC", "35")))
+CONTROL_PLANE_MAX_WORKERS = max(8, int(os.getenv("CONTROL_PLANE_MAX_WORKERS", "120")))
+OPENCLAW_POLICY_MOSTLY_AUTO = _env_bool("OPENCLAW_POLICY_MOSTLY_AUTO", True)
+OPENCLAW_CIRCUIT_TRIGGER_COUNT = max(2, int(os.getenv("OPENCLAW_CIRCUIT_TRIGGER_COUNT", "3")))
+OPENCLAW_CIRCUIT_OPEN_SEC = max(20, int(os.getenv("OPENCLAW_CIRCUIT_OPEN_SEC", "60")))
+OPENCLAW_CIRCUIT_CLASS_BLOCK_SEC = max(60, int(os.getenv("OPENCLAW_CIRCUIT_CLASS_BLOCK_SEC", "300")))
+OPENCLAW_CIRCUIT_ESCALATE_AFTER = max(1, int(os.getenv("OPENCLAW_CIRCUIT_ESCALATE_AFTER", "2")))
+OPENCLAW_HIGH_RISK_ALLOWLIST = {
+    token.strip().lower()
+    for token in os.getenv(
+        "OPENCLAW_HIGH_RISK_ALLOWLIST",
+        "status,start,snapshot,open,navigate,hard_refresh,click,type,press,attach,flow",
+    ).split(",")
+    if token.strip()
+}
+OPENCLAW_CRITICAL_KEYWORDS = {
+    token.strip().lower()
+    for token in os.getenv(
+        "OPENCLAW_CRITICAL_KEYWORDS",
+        "shutdown,rm -rf,delete all,wipe,kill -9,format",
+    ).split(",")
+    if token.strip()
+}
+OPENCLAW_HARD_DENY_KEYWORDS = {
+    token.strip().lower()
+    for token in os.getenv(
+        "OPENCLAW_HARD_DENY_KEYWORDS",
+        "shutdown,rm -rf,wipe,delete all,format disk",
+    ).split(",")
+    if token.strip()
+}
+AUTONOMY_PROFILE_DEFAULT = str(os.getenv("AUTONOMY_PROFILE", "balanced") or "").strip().lower() or "balanced"
+MONITOR_FULL_AUTO_USER_PAUSE_MAX_SEC = max(
+    60,
+    int(os.getenv("MONITOR_FULL_AUTO_USER_PAUSE_MAX_SEC", "240")),
+)
+MONITOR_FULL_AUTO_MAINTENANCE_LEASE_SEC = max(
+    30,
+    int(os.getenv("MONITOR_FULL_AUTO_MAINTENANCE_LEASE_SEC", "180")),
+)
+GUARDIAN_CONTROL_TOKEN = str(os.getenv("GUARDIAN_CONTROL_TOKEN", "") or "").strip()
 
 _monitor_supervisor_thread: Optional[threading.Thread] = None
 _monitor_supervisor_stop_event = threading.Event()
@@ -214,6 +262,8 @@ _monitor_supervisor_lock = threading.RLock()
 _monitor_supervisor_enabled = MONITOR_AUTOPILOT_ENABLED_DEFAULT
 _monitor_last_recovery_at: Dict[str, datetime] = {}
 _monitor_last_reason: Dict[str, str] = {}
+_monitor_autopilot_pause_until: Optional[datetime] = None
+_autonomy_profile = AUTONOMY_PROFILE_DEFAULT if AUTONOMY_PROFILE_DEFAULT in {"safe", "balanced", "full_auto"} else "balanced"
 _computer_control_enabled = MONITOR_COMPUTER_CONTROL_ENABLED_DEFAULT
 _monitor_progress_thread: Optional[threading.Thread] = None
 _monitor_progress_stop_event = threading.Event()
@@ -227,6 +277,8 @@ _api_rate_buckets: Dict[str, Dict[str, Any]] = defaultdict(dict)
 _api_rate_limit_blocked_total = 0
 _api_rate_limit_blocked_by_bucket: Dict[str, int] = defaultdict(int)
 _api_rate_limit_blocked_events: List[float] = []
+_guardian_control_audit_lock = threading.Lock()
+_guardian_control_audit: List[Dict[str, Any]] = []
 
 
 def _extract_dashboard_token() -> str:
@@ -341,6 +393,33 @@ def _to_bool(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _normalize_autonomy_profile(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"safe", "balanced", "full_auto"}:
+        return text
+    return "balanced"
+
+
+def _get_autonomy_profile() -> str:
+    with _monitor_supervisor_lock:
+        return _autonomy_profile
+
+
+def _is_full_auto_profile() -> bool:
+    return _get_autonomy_profile() == "full_auto"
+
+
+def _set_autonomy_profile(profile: str) -> str:
+    global _autonomy_profile, _monitor_autopilot_pause_until, _monitor_supervisor_enabled
+    normalized = _normalize_autonomy_profile(profile)
+    with _monitor_supervisor_lock:
+        _autonomy_profile = normalized
+        if normalized == "full_auto":
+            _monitor_supervisor_enabled = True
+            _monitor_autopilot_pause_until = None
+    return normalized
+
+
 def _parse_task_type(value: Any) -> Optional[TaskType]:
     text = str(value or "").strip().lower()
     for item in TaskType:
@@ -447,11 +526,16 @@ class _OpenClawQueuedCommand:
     idempotency_key: str
     created_at: datetime
     timeout_ms: int
+    risk_level: str = "medium"
+    decision: str = "auto_approved"
+    target_worker: str = ""
+    resolved_worker: str = ""
     state: str = "queued"
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
     result: Dict[str, Any] = field(default_factory=dict)
     error: str = ""
+    failure_class: str = ""
     deferred_reason: str = ""
     deferred_count: int = 0
     done_event: threading.Event = field(default_factory=threading.Event)
@@ -471,6 +555,440 @@ class _OpenClawSessionState:
 
     def __post_init__(self) -> None:
         self.cond = threading.Condition(self.lock)
+
+
+@dataclass
+class _ControlPlaneWorker:
+    worker_id: str
+    capabilities: List[str] = field(default_factory=list)
+    version: str = ""
+    region: str = ""
+    mode: str = "remote"
+    base_url: str = ""
+    lease_ttl_sec: int = CONTROL_PLANE_DEFAULT_LEASE_TTL_SEC
+    assigned_policies: List[str] = field(default_factory=list)
+    last_heartbeat: Optional[datetime] = None
+    health: str = "unknown"
+    queue_depth: int = 0
+    running_tasks: int = 0
+    backpressure_level: str = "normal"
+    last_error: str = ""
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+class _ControlPlaneRegistry:
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._workers: Dict[str, _ControlPlaneWorker] = {}
+        self._failure_streak: Dict[Tuple[str, str], int] = {}
+        self._circuits: Dict[str, Dict[str, Any]] = {}
+        self._class_open_count: Dict[str, int] = {}
+        self._class_blocked_until: Dict[str, datetime] = {}
+        self._updated_at: Optional[datetime] = None
+
+    def _touch(self) -> None:
+        self._updated_at = datetime.now()
+
+    def _default_policies(self) -> List[str]:
+        return [
+            "openclaw-mostly-auto-v1",
+            "openclaw-circuit-breaker-v1",
+        ]
+
+    def _normalize_capabilities(self, capabilities: Any) -> List[str]:
+        if isinstance(capabilities, list):
+            values = [str(item).strip().lower() for item in capabilities if str(item).strip()]
+        else:
+            values = [str(capabilities).strip().lower()] if str(capabilities or "").strip() else []
+        deduped: List[str] = []
+        for item in values:
+            if item not in deduped:
+                deduped.append(item)
+        return deduped
+
+    def _refresh_circuit_locked(self) -> None:
+        now = datetime.now()
+        expired_workers = [
+            worker_id
+            for worker_id, state in self._circuits.items()
+            if now >= state.get("open_until", now)
+        ]
+        for worker_id in expired_workers:
+            self._circuits.pop(worker_id, None)
+
+        expired_classes = [
+            failure_class
+            for failure_class, until in self._class_blocked_until.items()
+            if now >= until
+        ]
+        for failure_class in expired_classes:
+            self._class_blocked_until.pop(failure_class, None)
+
+    def _is_worker_alive_locked(self, worker: _ControlPlaneWorker) -> bool:
+        if worker.health not in {"ok", "degraded", "unknown"}:
+            return False
+        if worker.mode == "local":
+            return True
+        if not worker.last_heartbeat:
+            return False
+        age = (datetime.now() - worker.last_heartbeat).total_seconds()
+        return age <= max(5, int(worker.lease_ttl_sec))
+
+    def _serialize_worker_locked(self, worker: _ControlPlaneWorker) -> Dict[str, Any]:
+        alive = self._is_worker_alive_locked(worker)
+        circuit = self._circuits.get(worker.worker_id, {})
+        return {
+            "worker_id": worker.worker_id,
+            "capabilities": list(worker.capabilities),
+            "version": worker.version,
+            "region": worker.region,
+            "mode": worker.mode,
+            "base_url": worker.base_url,
+            "lease_ttl_sec": int(worker.lease_ttl_sec),
+            "assigned_policies": list(worker.assigned_policies),
+            "alive": alive,
+            "last_heartbeat": worker.last_heartbeat.isoformat() if worker.last_heartbeat else None,
+            "health": worker.health,
+            "queue_depth": int(worker.queue_depth),
+            "running_tasks": int(worker.running_tasks),
+            "backpressure_level": worker.backpressure_level,
+            "last_error": worker.last_error,
+            "circuit_open": bool(circuit),
+            "circuit": {
+                "failure_class": circuit.get("failure_class"),
+                "open_until": circuit.get("open_until").isoformat() if isinstance(circuit.get("open_until"), datetime) else None,
+                "count": int(circuit.get("count", 0) or 0),
+            } if circuit else {},
+            "metadata": dict(worker.metadata or {}),
+        }
+
+    def seed_from_instances(self, instances: List[Dict[str, Any]]) -> None:
+        for instance in instances:
+            worker_id = str(instance.get("id", "")).strip()
+            if not worker_id:
+                continue
+            mode = str(instance.get("mode", "remote")).strip().lower() or "remote"
+            base_url = str(instance.get("base_url", "")).strip()
+            self.register(
+                worker_id=worker_id,
+                capabilities=["orion", "openclaw", "guardian"],
+                version="seeded",
+                region="local",
+                mode="local" if mode == "local" else "remote",
+                base_url=base_url,
+                lease_ttl_sec=CONTROL_PLANE_DEFAULT_LEASE_TTL_SEC,
+                metadata={"seeded": True},
+            )
+
+    def register(
+        self,
+        worker_id: str,
+        capabilities: Any,
+        version: str = "",
+        region: str = "",
+        mode: str = "remote",
+        base_url: str = "",
+        lease_ttl_sec: int = CONTROL_PLANE_DEFAULT_LEASE_TTL_SEC,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        wid = str(worker_id or "").strip().lower()
+        if not wid:
+            return {"success": False, "error": "Missing worker_id", "error_code": "MISSING_WORKER_ID"}
+        with self._lock:
+            if len(self._workers) >= CONTROL_PLANE_MAX_WORKERS and wid not in self._workers:
+                return {"success": False, "error": "Worker limit reached", "error_code": "WORKER_LIMIT"}
+            worker = self._workers.get(wid)
+            if worker is None:
+                worker = _ControlPlaneWorker(worker_id=wid)
+                self._workers[wid] = worker
+            worker.capabilities = self._normalize_capabilities(capabilities) or ["openclaw"]
+            worker.version = str(version or worker.version or "").strip()
+            worker.region = str(region or worker.region or "").strip()
+            normalized_mode = str(mode or worker.mode or "remote").strip().lower()
+            worker.mode = "local" if normalized_mode == "local" else "remote"
+            worker.base_url = str(base_url or worker.base_url or "").strip().rstrip("/")
+            worker.lease_ttl_sec = max(5, int(lease_ttl_sec or worker.lease_ttl_sec))
+            worker.assigned_policies = self._default_policies()
+            worker.last_heartbeat = datetime.now()
+            worker.health = "ok" if worker.mode == "local" else (worker.health if worker.health else "unknown")
+            if isinstance(metadata, dict):
+                worker.metadata.update(metadata)
+            self._touch()
+            row = self._serialize_worker_locked(worker)
+        return {
+            "success": True,
+            "worker": row,
+            "lease_ttl_sec": int(row.get("lease_ttl_sec", CONTROL_PLANE_DEFAULT_LEASE_TTL_SEC)),
+            "assigned_policies": row.get("assigned_policies", []),
+            "control_channel": "/api/guardian/control",
+            "timestamp": datetime.now().isoformat(),
+        }
+
+    def heartbeat(
+        self,
+        worker_id: str,
+        health: str = "ok",
+        queue_depth: int = 0,
+        running_tasks: int = 0,
+        backpressure_level: str = "normal",
+        capabilities: Any = None,
+        version: str = "",
+        region: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+        lease_ttl_sec: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        wid = str(worker_id or "").strip().lower()
+        if not wid:
+            return {"success": False, "error": "Missing worker_id", "error_code": "MISSING_WORKER_ID"}
+
+        with self._lock:
+            worker = self._workers.get(wid)
+            if worker is None:
+                worker = _ControlPlaneWorker(worker_id=wid)
+                self._workers[wid] = worker
+            if capabilities is not None:
+                normalized = self._normalize_capabilities(capabilities)
+                if normalized:
+                    worker.capabilities = normalized
+            if version:
+                worker.version = str(version).strip()
+            if region:
+                worker.region = str(region).strip()
+            if lease_ttl_sec is not None:
+                worker.lease_ttl_sec = max(5, int(lease_ttl_sec))
+            worker.health = str(health or "unknown").strip().lower() or "unknown"
+            worker.queue_depth = max(0, int(queue_depth or 0))
+            worker.running_tasks = max(0, int(running_tasks or 0))
+            normalized_backpressure = str(backpressure_level or "normal").strip().lower() or "normal"
+            if normalized_backpressure not in {"normal", "high", "critical"}:
+                normalized_backpressure = "normal"
+            worker.backpressure_level = normalized_backpressure
+            worker.last_heartbeat = datetime.now()
+            if isinstance(metadata, dict):
+                worker.metadata.update(metadata)
+            self._refresh_circuit_locked()
+
+            next_actions: List[str] = []
+            if worker.health not in {"ok", "degraded", "unknown"}:
+                next_actions.append("recover_worker")
+            if worker.queue_depth > OPENCLAW_SESSION_QUEUE_MAX:
+                next_actions.append("drain_queue")
+            if worker.backpressure_level in {"high", "critical"}:
+                next_actions.append("reduce_load")
+            if wid in self._circuits:
+                next_actions.append("hold_commands")
+            self._touch()
+            row = self._serialize_worker_locked(worker)
+        return {
+            "success": True,
+            "worker": row,
+            "lease_ttl_sec": int(row.get("lease_ttl_sec", CONTROL_PLANE_DEFAULT_LEASE_TTL_SEC)),
+            "next_actions": next_actions,
+            "backpressure_level": row.get("backpressure_level", "normal"),
+            "timestamp": datetime.now().isoformat(),
+        }
+
+    def sync_instance_snapshot(self, instances: List[Dict[str, Any]]) -> None:
+        if not isinstance(instances, list):
+            return
+        now = datetime.now()
+        with self._lock:
+            for item in instances:
+                worker_id = str(item.get("id", "")).strip().lower()
+                if not worker_id:
+                    continue
+                worker = self._workers.get(worker_id)
+                if worker is None:
+                    worker = _ControlPlaneWorker(
+                        worker_id=worker_id,
+                        capabilities=["orion", "openclaw", "guardian"],
+                    )
+                    self._workers[worker_id] = worker
+                worker.mode = "local" if str(item.get("mode", "")).strip().lower() == "local" else "remote"
+                worker.base_url = str(item.get("base_url", "") or worker.base_url).strip().rstrip("/")
+                online = bool(item.get("online"))
+                worker.health = "ok" if online else "down"
+                worker.queue_depth = int(item.get("active_flow_count", 0) or 0)
+                worker.running_tasks = 1 if bool(item.get("running")) else 0
+                if online:
+                    worker.last_heartbeat = now
+            self._touch()
+
+    def _failure_class_blocked_locked(self, failure_class: str) -> bool:
+        self._refresh_circuit_locked()
+        blocked_until = self._class_blocked_until.get(failure_class)
+        if not blocked_until:
+            return False
+        return datetime.now() < blocked_until
+
+    def can_dispatch(self, worker_id: str, failure_class: str = "") -> Dict[str, Any]:
+        wid = str(worker_id or "").strip().lower()
+        with self._lock:
+            self._refresh_circuit_locked()
+            worker = self._workers.get(wid)
+            if not worker:
+                return {"allowed": False, "error_code": "WORKER_NOT_FOUND", "reason": "Worker not registered"}
+            if not self._is_worker_alive_locked(worker):
+                return {"allowed": False, "error_code": "WORKER_UNHEALTHY", "reason": "Worker lease expired or unhealthy"}
+            circuit = self._circuits.get(wid)
+            if circuit:
+                return {
+                    "allowed": False,
+                    "error_code": "CIRCUIT_OPEN",
+                    "reason": "Worker circuit is open",
+                    "open_until": circuit.get("open_until").isoformat() if isinstance(circuit.get("open_until"), datetime) else None,
+                }
+            fclass = str(failure_class or "").strip().lower()
+            if fclass and self._failure_class_blocked_locked(fclass):
+                _openclaw_metrics_inc("circuit_blocked")
+                return {
+                    "allowed": False,
+                    "error_code": "FAILURE_CLASS_BLOCKED",
+                    "reason": f"Failure class '{fclass}' temporarily blocked",
+                    "blocked_until": self._class_blocked_until.get(fclass).isoformat() if self._class_blocked_until.get(fclass) else None,
+                }
+            return {"allowed": True}
+
+    def resolve_worker(
+        self,
+        requested_worker: str = "",
+        required_capability: str = "openclaw",
+        exclude: Optional[Set[str]] = None,
+    ) -> Dict[str, Any]:
+        requested = str(requested_worker or "").strip().lower()
+        capability = str(required_capability or "openclaw").strip().lower()
+        excluded = {str(item).strip().lower() for item in (exclude or set()) if str(item).strip()}
+        with self._lock:
+            self._refresh_circuit_locked()
+            rows = list(self._workers.values())
+            candidates: List[_ControlPlaneWorker] = []
+            for worker in rows:
+                if worker.worker_id in excluded:
+                    continue
+                if capability and capability not in worker.capabilities:
+                    continue
+                if not self._is_worker_alive_locked(worker):
+                    continue
+                if worker.worker_id in self._circuits:
+                    continue
+                candidates.append(worker)
+
+            if requested:
+                worker = self._workers.get(requested)
+                if worker and worker in candidates:
+                    return {
+                        "available": True,
+                        "worker": self._serialize_worker_locked(worker),
+                        "reason": "requested_worker_selected",
+                    }
+
+            if not candidates:
+                return {"available": False, "worker": None, "reason": "no_eligible_worker"}
+
+            candidates.sort(
+                key=lambda item: (
+                    int(item.queue_depth),
+                    int(item.running_tasks),
+                    0 if item.mode == "local" else 1,
+                    item.worker_id,
+                )
+            )
+            selected = candidates[0]
+            return {
+                "available": True,
+                "worker": self._serialize_worker_locked(selected),
+                "reason": "least_loaded_worker_selected",
+            }
+
+    def record_dispatch_result(self, worker_id: str, success: bool, failure_class: str = "unknown") -> Dict[str, Any]:
+        wid = str(worker_id or "").strip().lower()
+        fclass = str(failure_class or "unknown").strip().lower() or "unknown"
+        now = datetime.now()
+        with self._lock:
+            self._refresh_circuit_locked()
+            worker = self._workers.get(wid)
+            if worker:
+                if success:
+                    worker.last_error = ""
+                else:
+                    worker.last_error = fclass
+            if success:
+                stale_keys = [key for key in self._failure_streak if key[0] == wid]
+                for key in stale_keys:
+                    self._failure_streak.pop(key, None)
+                self._touch()
+                return {"success": True, "circuit_opened": False}
+
+            key = (wid, fclass)
+            streak = int(self._failure_streak.get(key, 0)) + 1
+            self._failure_streak[key] = streak
+            circuit_opened = False
+            class_blocked = False
+            circuit_state = self._circuits.get(wid, {})
+            if streak >= OPENCLAW_CIRCUIT_TRIGGER_COUNT:
+                open_until = now + timedelta(seconds=OPENCLAW_CIRCUIT_OPEN_SEC)
+                count = int((circuit_state or {}).get("count", 0)) + 1
+                self._circuits[wid] = {
+                    "failure_class": fclass,
+                    "opened_at": now,
+                    "open_until": open_until,
+                    "count": count,
+                }
+                self._failure_streak[key] = 0
+                self._class_open_count[fclass] = int(self._class_open_count.get(fclass, 0)) + 1
+                _openclaw_metrics_inc("circuit_opened")
+                circuit_opened = True
+                if self._class_open_count[fclass] >= OPENCLAW_CIRCUIT_ESCALATE_AFTER:
+                    blocked_until = now + timedelta(seconds=OPENCLAW_CIRCUIT_CLASS_BLOCK_SEC)
+                    self._class_blocked_until[fclass] = blocked_until
+                    _openclaw_metrics_inc("circuit_blocked")
+                    class_blocked = True
+            self._touch()
+            current = self._circuits.get(wid, {})
+            return {
+                "success": True,
+                "streak": streak,
+                "circuit_opened": circuit_opened,
+                "class_blocked": class_blocked,
+                "circuit": {
+                    "failure_class": current.get("failure_class"),
+                    "open_until": current.get("open_until").isoformat() if isinstance(current.get("open_until"), datetime) else None,
+                    "count": int(current.get("count", 0) or 0),
+                } if current else {},
+            }
+
+    def snapshot(self) -> Dict[str, Any]:
+        with self._lock:
+            self._refresh_circuit_locked()
+            rows = [self._serialize_worker_locked(worker) for worker in self._workers.values()]
+            alive = sum(1 for row in rows if bool(row.get("alive")))
+            blocked = {
+                fclass: until.isoformat()
+                for fclass, until in self._class_blocked_until.items()
+            }
+            circuits = []
+            for wid, state in self._circuits.items():
+                circuits.append({
+                    "worker_id": wid,
+                    "failure_class": state.get("failure_class"),
+                    "open_until": state.get("open_until").isoformat() if isinstance(state.get("open_until"), datetime) else None,
+                    "count": int(state.get("count", 0) or 0),
+                })
+            updated_at = self._updated_at.isoformat() if self._updated_at else None
+        rows.sort(key=lambda item: item.get("worker_id", ""))
+        circuits.sort(key=lambda item: item.get("worker_id", ""))
+        return {
+            "registered_workers": len(rows),
+            "alive_workers": alive,
+            "workers": rows,
+            "circuits": circuits,
+            "blocked_failure_classes": blocked,
+            "updated_at": updated_at,
+        }
+
+
+_control_plane_registry = _ControlPlaneRegistry()
+_control_plane_registry.seed_from_instances(ORION_INSTANCES)
 
 
 class _OpenClawCommandManager:
@@ -496,6 +1014,10 @@ class _OpenClawCommandManager:
                     "session_id": command.session_id,
                     "source": command.source,
                     "command_type": command.command_type,
+                    "risk_level": command.risk_level,
+                    "decision": command.decision,
+                    "target_worker": command.target_worker,
+                    "resolved_worker": command.resolved_worker,
                     "state": command.state,
                 }, ensure_ascii=True) + "\n")
         except Exception:
@@ -513,6 +1035,10 @@ class _OpenClawCommandManager:
             "command_type": cmd.command_type,
             "session_id": cmd.session_id,
             "source": cmd.source,
+            "risk_level": cmd.risk_level,
+            "decision": cmd.decision,
+            "target_worker": cmd.target_worker,
+            "resolved_worker": cmd.resolved_worker,
             "state": cmd.state,
             "created_at": cmd.created_at.isoformat(),
             "started_at": cmd.started_at.isoformat() if cmd.started_at else None,
@@ -521,6 +1047,7 @@ class _OpenClawCommandManager:
             "deferred_reason": cmd.deferred_reason,
             "deferred_count": int(cmd.deferred_count),
             "error": cmd.error,
+            "failure_class": cmd.failure_class,
             "result": cmd.result,
         }
 
@@ -594,10 +1121,26 @@ class _OpenClawCommandManager:
             cmd.state = "completed" if bool((cmd.result or {}).get("success")) else "failed"
             cmd.error = "" if cmd.state == "completed" else str((cmd.result or {}).get("error", "command failed"))
             if cmd.state == "completed":
+                cmd.failure_class = ""
+            else:
+                failure_class = str((cmd.result or {}).get("failure_class", "")).strip().lower()
+                if not failure_class:
+                    failure_class = _classify_openclaw_failure(cmd.result)
+                cmd.failure_class = failure_class or "unknown"
+            if cmd.state == "completed":
                 _openclaw_metrics_inc("queue_executed")
             else:
                 _openclaw_metrics_inc("queue_failed")
                 session.last_error = cmd.error
+            dispatch = cmd.result.get("dispatch") if isinstance(cmd.result.get("dispatch"), dict) else {}
+            already_recorded = bool((cmd.result or {}).get("_dispatch_result_recorded"))
+            result_worker = str(dispatch.get("worker_id") or cmd.resolved_worker or "").strip().lower()
+            if result_worker and not already_recorded:
+                _control_plane_registry.record_dispatch_result(
+                    worker_id=result_worker,
+                    success=cmd.state == "completed",
+                    failure_class=cmd.failure_class or "unknown",
+                )
             self._persist_wal("finish", cmd)
             cmd.done_event.set()
             with session.cond:
@@ -614,6 +1157,10 @@ class _OpenClawCommandManager:
         priority: int = 0,
         idempotency_key: str = "",
         timeout_ms: int = OPENCLAW_BROWSER_TIMEOUT_MS,
+        risk_level: str = "medium",
+        decision: str = "auto_approved",
+        target_worker: str = "",
+        resolved_worker: str = "",
     ) -> Dict[str, Any]:
         normalized_session = str(session_id or "default").strip() or "default"
         normalized_source = str(source or "manual").strip().lower()
@@ -648,6 +1195,10 @@ class _OpenClawCommandManager:
             idempotency_key=str(idempotency_key or ""),
             created_at=datetime.now(),
             timeout_ms=max(1000, int(timeout_ms)),
+            risk_level=str(risk_level or "medium").strip().lower() or "medium",
+            decision=str(decision or "auto_approved").strip().lower() or "auto_approved",
+            target_worker=str(target_worker or "").strip().lower(),
+            resolved_worker=str(resolved_worker or "").strip().lower(),
         )
         with session.cond:
             queued_count = len(session.manual_queue) + len(session.autopilot_queue)
@@ -1576,7 +2127,9 @@ def _computer_control_action(action: str, payload: Optional[Dict[str, Any]] = No
 
 
 def _monitor_auto_approve_safe_decisions() -> None:
-    if not (MONITOR_AUTO_APPROVE_SAFE_DECISIONS or MONITOR_AUTO_APPROVE_ALL_DECISIONS):
+    full_auto = _is_full_auto_profile()
+    auto_approve_all = bool(MONITOR_AUTO_APPROVE_ALL_DECISIONS or full_auto)
+    if not (MONITOR_AUTO_APPROVE_SAFE_DECISIONS or auto_approve_all):
         return
     try:
         pending = list(state.pending_decisions)
@@ -1586,7 +2139,7 @@ def _monitor_auto_approve_safe_decisions() -> None:
         try:
             kind = str(item.get("kind", "")).strip()
             if kind != "command_intervention":
-                if MONITOR_AUTO_APPROVE_ALL_DECISIONS:
+                if auto_approve_all:
                     decision_id = str(item.get("id", "")).strip()
                     if decision_id:
                         approved = state.approve_decision(decision_id)
@@ -1594,10 +2147,10 @@ def _monitor_auto_approve_safe_decisions() -> None:
                             state.add_agent_log("guardian", f"🤖 Auto-approved decision: {approved.get('title', kind or 'decision')}", "success")
                 continue
             risk = str(item.get("risk_level", "medium")).strip().lower()
-            if not MONITOR_AUTO_APPROVE_ALL_DECISIONS and risk not in {"low"}:
+            if not auto_approve_all and risk not in {"low"}:
                 continue
             if not bool(item.get("auto_execute_on_approve", False)):
-                if not MONITOR_AUTO_APPROVE_ALL_DECISIONS:
+                if not auto_approve_all:
                     continue
             decision_id = str(item.get("id", "")).strip()
             if not decision_id:
@@ -1606,7 +2159,7 @@ def _monitor_auto_approve_safe_decisions() -> None:
             if not approved:
                 continue
             command = str(approved.get("command", "")).strip()
-            if command and MONITOR_AUTO_EXECUTE_COMMANDS:
+            if command and (MONITOR_AUTO_EXECUTE_COMMANDS or full_auto):
                 execution = _execute_approved_shell_command(command)
                 if execution.get("success"):
                     state.add_agent_log("guardian", f"🤖 Auto-executed decision: {execution.get('command')}", "success")
@@ -1632,6 +2185,7 @@ def _build_learning_v2_snapshot() -> Dict[str, Any]:
         proposals = proposals_data.get("proposals", []) if isinstance(proposals_data.get("proposals"), list) else []
         runs = storage.get_experiment_runs(limit=300)
         evidences = storage.list_outcome_evidence(limit=300)
+        learning_events = storage.list_learning_events(limit=500)
 
         status_counts: Dict[str, int] = {}
         for row in proposals:
@@ -1648,9 +2202,74 @@ def _build_learning_v2_snapshot() -> Dict[str, Any]:
             "verified": status_counts.get("verified", 0),
             "rejected": status_counts.get("rejected", 0),
         }
+        now_dt = datetime.now()
+
+        def _safe_ratio(num: int, den: int) -> float:
+            return round(float(num) / float(den), 4) if den > 0 else 0.0
+
+        approved_or_beyond = (
+            status_counts.get("approved", 0)
+            + status_counts.get("executed", 0)
+            + status_counts.get("verified", 0)
+        )
+        executed_or_beyond = status_counts.get("executed", 0) + status_counts.get("verified", 0)
+        proposal_funnel["conversion"] = {
+            "approval_rate": _safe_ratio(approved_or_beyond, proposal_funnel["created"]),
+            "execution_rate": _safe_ratio(executed_or_beyond, approved_or_beyond),
+            "verification_rate": _safe_ratio(proposal_funnel["verified"], executed_or_beyond),
+            "verified_from_created_rate": _safe_ratio(proposal_funnel["verified"], proposal_funnel["created"]),
+        }
+
+        def _parse_time(value: Any):
+            if not value:
+                return None
+            if isinstance(value, datetime):
+                return value
+            try:
+                return datetime.fromisoformat(str(value))
+            except Exception:
+                return None
+
+        def _window_funnel(hours: int) -> Dict[str, Any]:
+            window_seconds = max(1, int(hours)) * 3600
+            cohort: List[Dict[str, Any]] = []
+            for row in proposals:
+                if not isinstance(row, dict):
+                    continue
+                created_at = _parse_time(row.get("created_at"))
+                if not created_at:
+                    continue
+                if (now_dt - created_at).total_seconds() <= window_seconds:
+                    cohort.append(row)
+            created = len(cohort)
+            approved = 0
+            executed = 0
+            verified_window = 0
+            for row in cohort:
+                status = str(row.get("status", "")).strip().lower()
+                if status in {"approved", "executed", "verified"}:
+                    approved += 1
+                if status in {"executed", "verified"}:
+                    executed += 1
+                if status == "verified":
+                    verified_window += 1
+            return {
+                "created": created,
+                "approved": approved,
+                "executed": executed,
+                "verified": verified_window,
+                "approval_rate": _safe_ratio(approved, created),
+                "execution_rate": _safe_ratio(executed, approved),
+                "verification_rate": _safe_ratio(verified_window, executed),
+                "verified_from_created_rate": _safe_ratio(verified_window, created),
+            }
+
+        proposal_funnel["window_24h"] = _window_funnel(24)
+        proposal_funnel["window_7d"] = _window_funnel(24 * 7)
 
         verdict_counts = {"win": 0, "loss": 0, "inconclusive": 0}
         pending_recheck_runs = 0
+        retry_exhausted_runs = 0
         for run in runs:
             verification = run.get("verification", {}) if isinstance(run.get("verification"), dict) else {}
             verdict = str(verification.get("verdict", "")).strip().lower()
@@ -1658,6 +2277,8 @@ def _build_learning_v2_snapshot() -> Dict[str, Any]:
                 verdict_counts[verdict] += 1
             if bool(verification.get("pending_recheck", False)):
                 pending_recheck_runs += 1
+            if bool(verification.get("retry_exhausted", False)):
+                retry_exhausted_runs += 1
 
         verified_total = sum(verdict_counts.values())
         confidence_values: List[float] = []
@@ -1667,7 +2288,6 @@ def _build_learning_v2_snapshot() -> Dict[str, Any]:
         error_delta_values: List[float] = []
         trend_24h = {"win": 0, "loss": 0, "inconclusive": 0}
         trend_7d = {"win": 0, "loss": 0, "inconclusive": 0}
-        now_dt = datetime.now()
         for evd in evidences:
             if not isinstance(evd, dict):
                 continue
@@ -1724,8 +2344,44 @@ def _build_learning_v2_snapshot() -> Dict[str, Any]:
             "avg_error_delta": _avg(error_delta_values),
             "evidence_samples": len(evidences),
             "pending_recheck_runs": pending_recheck_runs,
+            "retry_exhausted_runs": retry_exhausted_runs,
             "trend_24h": trend_24h,
             "trend_7d": trend_7d,
+        }
+        stream_counts = {"production": 0, "non_production": 0, "unknown": 0}
+        stream_trend_24h = {"production": 0, "non_production": 0}
+        stream_trend_7d = {"production": 0, "non_production": 0}
+        source_counts: Dict[str, int] = {}
+        for event in learning_events:
+            if not isinstance(event, dict):
+                continue
+            stream = str(event.get("stream", "")).strip().lower()
+            if stream not in {"production", "non_production"}:
+                stream = "non_production" if bool(event.get("is_non_production", False)) else "production"
+            stream_counts[stream] = stream_counts.get(stream, 0) + 1
+            source = str(event.get("source", "")).strip() or "unknown"
+            source_counts[source] = source_counts.get(source, 0) + 1
+            ts_dt = _parse_time(event.get("ts"))
+            if ts_dt:
+                age_sec = (now_dt - ts_dt).total_seconds()
+                if age_sec <= 24 * 3600:
+                    stream_trend_24h[stream] = stream_trend_24h.get(stream, 0) + 1
+                if age_sec <= 7 * 24 * 3600:
+                    stream_trend_7d[stream] = stream_trend_7d.get(stream, 0) + 1
+        total_events = sum(stream_counts.values())
+        production_events = stream_counts.get("production", 0)
+        non_production_events = stream_counts.get("non_production", 0)
+        top_sources = sorted(source_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        learning_event_quality = {
+            "total_events": total_events,
+            "production_events": production_events,
+            "non_production_events": non_production_events,
+            "production_ratio": _safe_ratio(production_events, total_events),
+            "non_production_ratio": _safe_ratio(non_production_events, total_events),
+            "stream_counts": stream_counts,
+            "trend_24h": stream_trend_24h,
+            "trend_7d": stream_trend_7d,
+            "top_sources": [{"source": src, "count": count} for src, count in top_sources],
         }
 
         policy_state = {}
@@ -1738,12 +2394,41 @@ def _build_learning_v2_snapshot() -> Dict[str, Any]:
             "enabled": True,
             "proposal_funnel": proposal_funnel,
             "outcome_quality": quality,
+            "learning_event_quality": learning_event_quality,
             "policy_state": policy_state if isinstance(policy_state, dict) else {},
             "updated_at": datetime.now().isoformat(),
         }
     except Exception as exc:
         logger.warning(f"Failed building learning v2 snapshot: {exc}")
         return {"enabled": False, "error": str(exc)}
+
+
+def _guardian_control_audit_tail(limit: int = 20) -> List[Dict[str, Any]]:
+    size = max(1, int(limit))
+    with _guardian_control_audit_lock:
+        return list(_guardian_control_audit[-size:])
+
+
+def _append_guardian_control_audit(
+    action: str,
+    actor: str,
+    reason: str,
+    success: bool,
+    detail: Optional[Dict[str, Any]] = None,
+) -> None:
+    row = {
+        "timestamp": datetime.now().isoformat(),
+        "action": str(action or "").strip().lower(),
+        "actor": str(actor or "unknown").strip(),
+        "reason": str(reason or "").strip(),
+        "success": bool(success),
+    }
+    if isinstance(detail, dict) and detail:
+        row["detail"] = detail
+    with _guardian_control_audit_lock:
+        _guardian_control_audit.append(row)
+        if len(_guardian_control_audit) > 300:
+            del _guardian_control_audit[:-300]
 
 
 def build_status_payload() -> Dict[str, Any]:
@@ -1754,10 +2439,23 @@ def build_status_payload() -> Dict[str, Any]:
             payload["runtime"] = status_handler() or {}
         except Exception as exc:
             logger.error(f"Runtime status handler failed: {exc}")
-    payload["orion_instances"] = get_orion_instances_snapshot()
+    instances = get_orion_instances_snapshot()
+    _control_plane_registry.sync_instance_snapshot(instances)
+    payload["orion_instances"] = instances
     payload["monitor_supervisor"] = _monitor_supervisor_status()
     payload["computer_control"] = _computer_control_status()
     payload["learning_v2"] = _build_learning_v2_snapshot()
+    payload["autonomy"] = {
+        "profile": _get_autonomy_profile(),
+        "full_auto": _is_full_auto_profile(),
+        "full_auto_user_pause_max_sec": MONITOR_FULL_AUTO_USER_PAUSE_MAX_SEC,
+        "full_auto_maintenance_lease_sec": MONITOR_FULL_AUTO_MAINTENANCE_LEASE_SEC,
+    }
+    payload["control_plane"] = _control_plane_registry.snapshot()
+    payload["guardian_control"] = {
+        "token_required": bool(GUARDIAN_CONTROL_TOKEN),
+        "audit_tail": _guardian_control_audit_tail(limit=12),
+    }
 
     ops = _build_ops_snapshot()
     digest = _build_events_digest(limit=140)
@@ -1790,12 +2488,23 @@ def _build_system_slo_snapshot() -> Dict[str, Any]:
     counters = metrics.get("counters") if isinstance(metrics.get("counters"), dict) else {}
     rate_limit = _build_api_rate_limit_snapshot(window_sec=300)
     queue = metrics.get("queue") if isinstance(metrics.get("queue"), dict) else {}
+    control_plane = _control_plane_registry.snapshot()
+    queue_ok = int(counters.get("queue_executed", 0) or 0)
+    queue_fail = int(counters.get("queue_failed", 0) or 0)
+    queue_total = queue_ok + queue_fail
+    policy_auto = int(counters.get("policy_auto_approved", 0) or 0)
+    policy_manual = int(counters.get("policy_manual_required", 0) or 0)
+    policy_total = max(1, policy_auto + policy_manual)
     return {
         "timestamp": now.isoformat(),
         "uptime_sec": max(0, int((now - _monitor_process_started_at).total_seconds())),
         "monitor": {
             "autopilot_enabled": bool(monitor.get("enabled")),
             "thread_alive": bool(monitor.get("thread_alive")),
+            "autonomy_profile": monitor.get("autonomy_profile"),
+            "full_auto": bool(monitor.get("full_auto")),
+            "autopilot_pause_until": monitor.get("autopilot_pause_until"),
+            "full_auto_maintenance_lease_sec": monitor.get("full_auto_maintenance_lease_sec"),
             "last_reason": monitor.get("last_reason"),
             "last_recovery": monitor.get("last_recovery"),
         },
@@ -1818,8 +2527,45 @@ def _build_system_slo_snapshot() -> Dict[str, Any]:
             "total_sessions": int(queue.get("total_sessions", 0) or 0),
             "total_queue_depth": int(queue.get("total_queue_depth", 0) or 0),
             "queue_wait_p95_ms": int(queue.get("queue_wait_p95_ms", 0) or 0),
+            "command_success_rate": round(float(queue_ok) / max(1, queue_total), 4),
+            "human_intervention_rate": round(float(policy_manual) / policy_total, 4),
+            "queue_executed": queue_ok,
+            "queue_failed": queue_fail,
+        },
+        "control_plane": {
+            "registered_workers": int(control_plane.get("registered_workers", 0) or 0),
+            "alive_workers": int(control_plane.get("alive_workers", 0) or 0),
+            "open_circuits": len(control_plane.get("circuits", []) if isinstance(control_plane.get("circuits"), list) else []),
+            "blocked_failure_classes": control_plane.get("blocked_failure_classes", {}),
         },
         "api_rate_limit": rate_limit,
+    }
+
+
+def _build_slo_summary() -> Dict[str, Any]:
+    base = _build_system_slo_snapshot()
+    routing = base.get("routing") if isinstance(base.get("routing"), dict) else {}
+    oc_queue = base.get("openclaw_queue") if isinstance(base.get("openclaw_queue"), dict) else {}
+    control = base.get("control_plane") if isinstance(base.get("control_plane"), dict) else {}
+    return {
+        "timestamp": base.get("timestamp"),
+        "uptime_sec": base.get("uptime_sec"),
+        "targets": {
+            "availability": "balanced",
+            "routing_success_rate_min": 0.95,
+            "queue_wait_p95_ms_max": 2000,
+            "human_intervention_rate_max": 0.15,
+        },
+        "current": {
+            "routing_success_rate": float(routing.get("success_rate", 0.0) or 0.0),
+            "routing_p95_latency_ms": int(routing.get("p95_latency_ms", 0) or 0),
+            "queue_wait_p95_ms": int(oc_queue.get("queue_wait_p95_ms", 0) or 0),
+            "command_success_rate": float(oc_queue.get("command_success_rate", 0.0) or 0.0),
+            "human_intervention_rate": float(oc_queue.get("human_intervention_rate", 0.0) or 0.0),
+            "alive_workers": int(control.get("alive_workers", 0) or 0),
+            "registered_workers": int(control.get("registered_workers", 0) or 0),
+        },
+        "detail": base,
     }
 
 
@@ -1897,6 +2643,7 @@ def get_orion_instances_snapshot() -> List[Dict[str, Any]]:
             "running": False,
             "paused": False,
             "pause_reason": "",
+            "paused_since": None,
             "iteration": None,
             "active_flow_count": 0,
             "agent_count": 0,
@@ -1912,6 +2659,7 @@ def get_orion_instances_snapshot() -> List[Dict[str, Any]]:
                 "running": bool(runtime.get("running", False)),
                 "paused": bool(runtime.get("paused", False)),
                 "pause_reason": str(runtime.get("pause_reason", "") or ""),
+                "paused_since": runtime.get("paused_since"),
                 "iteration": runtime.get("iteration"),
                 "active_flow_count": int(runtime.get("active_flow_count", 0) or 0),
                 "agent_count": len(runtime.get("agents") or []),
@@ -1934,6 +2682,7 @@ def get_orion_instances_snapshot() -> List[Dict[str, Any]]:
                 "running": bool(runtime.get("running", False)),
                 "paused": bool(runtime.get("paused", False)),
                 "pause_reason": str(runtime.get("pause_reason", "") or ""),
+                "paused_since": runtime.get("paused_since"),
                 "iteration": runtime.get("iteration"),
                 "active_flow_count": int(runtime.get("active_flow_count", 0) or 0),
                 "agent_count": len(runtime.get("agents") or []),
@@ -1948,6 +2697,7 @@ def get_orion_instances_snapshot() -> List[Dict[str, Any]]:
 def _monitor_supervisor_status() -> Dict[str, Any]:
     with _monitor_supervisor_lock:
         startup_age_sec = max(0, int((datetime.now() - _monitor_process_started_at).total_seconds()))
+        pause_until = _monitor_autopilot_pause_until.isoformat() if _monitor_autopilot_pause_until else None
         return {
             "enabled": bool(_monitor_supervisor_enabled),
             "thread_alive": bool(_monitor_supervisor_thread and _monitor_supervisor_thread.is_alive()),
@@ -1956,15 +2706,32 @@ def _monitor_supervisor_status() -> Dict[str, Any]:
             "cooldown_sec": MONITOR_RECOVERY_COOLDOWN_SEC,
             "startup_grace_sec": MONITOR_STARTUP_GRACE_SEC,
             "startup_age_sec": startup_age_sec,
+            "autonomy_profile": _get_autonomy_profile(),
+            "full_auto": _is_full_auto_profile(),
+            "autopilot_pause_until": pause_until,
+            "full_auto_user_pause_max_sec": MONITOR_FULL_AUTO_USER_PAUSE_MAX_SEC,
+            "full_auto_maintenance_lease_sec": MONITOR_FULL_AUTO_MAINTENANCE_LEASE_SEC,
             "last_recovery": {key: value.isoformat() for key, value in _monitor_last_recovery_at.items()},
             "last_reason": dict(_monitor_last_reason),
         }
 
 
 def _monitor_set_supervisor_enabled(enabled: bool) -> None:
-    global _monitor_supervisor_enabled
+    global _monitor_supervisor_enabled, _monitor_autopilot_pause_until
     with _monitor_supervisor_lock:
         _monitor_supervisor_enabled = bool(enabled)
+        if enabled:
+            _monitor_autopilot_pause_until = None
+
+
+def _monitor_pause_supervisor_temporarily(duration_sec: int) -> str:
+    global _monitor_supervisor_enabled, _monitor_autopilot_pause_until
+    lease = max(30, int(duration_sec))
+    until = datetime.now() + timedelta(seconds=lease)
+    with _monitor_supervisor_lock:
+        _monitor_supervisor_enabled = False
+        _monitor_autopilot_pause_until = until
+    return until.isoformat()
 
 
 def _monitor_maybe_recover_instance(instance: Dict[str, Any]) -> None:
@@ -1981,9 +2748,14 @@ def _monitor_maybe_recover_instance(instance: Dict[str, Any]) -> None:
     paused = bool(instance.get("paused"))
     running = bool(instance.get("running"))
     pause_reason = str(instance.get("pause_reason", "") or "").strip().lower()
+    paused_since = _parse_iso_datetime(instance.get("paused_since"))
+    paused_age_sec = int((now - paused_since).total_seconds()) if paused_since else 0
 
-    if paused and pause_reason != "user":
+    if paused and pause_reason not in {"user", "manual_user"}:
         reason = f"paused:{pause_reason or 'unknown'}"
+    elif paused and pause_reason in {"user", "manual_user"} and _is_full_auto_profile():
+        if paused_age_sec >= MONITOR_FULL_AUTO_USER_PAUSE_MAX_SEC:
+            reason = f"paused_user_timeout:{paused_age_sec}s"
     elif running:
         last_progress_at = _parse_iso_datetime(instance.get("last_progress_at"))
         if last_progress_at:
@@ -2042,12 +2814,30 @@ def _monitor_maybe_recover_instance(instance: Dict[str, Any]) -> None:
 
 
 def _monitor_supervisor_loop() -> None:
+    global _monitor_supervisor_enabled, _monitor_autopilot_pause_until
     while not _monitor_supervisor_stop_event.is_set():
         try:
             with _monitor_supervisor_lock:
                 enabled = bool(_monitor_supervisor_enabled)
+                pause_until = _monitor_autopilot_pause_until
+                autonomy_profile = _autonomy_profile
+            now = datetime.now()
+            if autonomy_profile == "full_auto":
+                if pause_until and now >= pause_until:
+                    with _monitor_supervisor_lock:
+                        _monitor_supervisor_enabled = True
+                        _monitor_autopilot_pause_until = None
+                        enabled = True
+                    state.add_agent_log("guardian", "♻️ Full-auto resumed monitor autopilot after maintenance lease.", "success")
+                elif not pause_until and not enabled:
+                    with _monitor_supervisor_lock:
+                        _monitor_supervisor_enabled = True
+                        enabled = True
+                    state.add_agent_log("guardian", "🛡️ Full-auto enforced monitor autopilot ON.", "warning")
             if enabled:
-                for instance in get_orion_instances_snapshot():
+                instances = get_orion_instances_snapshot()
+                _control_plane_registry.sync_instance_snapshot(instances)
+                for instance in instances:
                     _monitor_maybe_recover_instance(instance)
                 _monitor_auto_approve_safe_decisions()
         except Exception as exc:
@@ -2336,10 +3126,21 @@ def _build_openclaw_metrics_snapshot(include_events: bool = False, event_limit: 
     attach_attempts = max(1, int(counters.get("attach_attempts", 0)))
     flow_runs = max(1, int(counters.get("flow_runs", 0)))
     queue_snapshot = _openclaw_command_manager.queue_snapshot() if OPENCLAW_QUEUE_ENABLED else {}
+    policy_auto = int(counters.get("policy_auto_approved", 0) or 0)
+    policy_manual = int(counters.get("policy_manual_required", 0) or 0)
+    policy_denied = int(counters.get("policy_denied", 0) or 0)
+    policy_total = max(1, policy_auto + policy_manual + policy_denied)
     payload: Dict[str, Any] = {
         "counters": counters,
         "attach_success_rate": round(float(counters.get("attach_success", 0)) / attach_attempts, 4),
         "flow_success_rate": round(float(counters.get("flow_success", 0)) / flow_runs, 4),
+        "policy": {
+            "auto_approved": policy_auto,
+            "manual_required": policy_manual,
+            "denied": policy_denied,
+            "auto_approval_rate": round(float(policy_auto) / policy_total, 4),
+            "manual_intervention_rate": round(float(policy_manual) / policy_total, 4),
+        },
         "updated_at": updated_at,
         "attach_state": attach_state,
         "token": {
@@ -2350,6 +3151,7 @@ def _build_openclaw_metrics_snapshot(include_events: bool = False, event_limit: 
             "checked_at": info.checked_at.isoformat() if info.checked_at else None,
         },
         "queue": queue_snapshot,
+        "control_plane": _control_plane_registry.snapshot(),
     }
     if include_events:
         payload["events"] = events[-max(1, event_limit):]
@@ -2414,6 +3216,27 @@ def _render_openclaw_prometheus_metrics(snapshot: Dict[str, Any]) -> str:
         "# HELP monitor_openclaw_queue_manual_override_total OpenClaw manual override events.",
         "# TYPE monitor_openclaw_queue_manual_override_total counter",
         f"monitor_openclaw_queue_manual_override_total {metric('queue_manual_override')}",
+        "# HELP monitor_openclaw_policy_auto_approved_total OpenClaw policy auto-approved decisions.",
+        "# TYPE monitor_openclaw_policy_auto_approved_total counter",
+        f"monitor_openclaw_policy_auto_approved_total {metric('policy_auto_approved')}",
+        "# HELP monitor_openclaw_policy_manual_required_total OpenClaw policy manual-required decisions.",
+        "# TYPE monitor_openclaw_policy_manual_required_total counter",
+        f"monitor_openclaw_policy_manual_required_total {metric('policy_manual_required')}",
+        "# HELP monitor_openclaw_policy_denied_total OpenClaw policy denied decisions.",
+        "# TYPE monitor_openclaw_policy_denied_total counter",
+        f"monitor_openclaw_policy_denied_total {metric('policy_denied')}",
+        "# HELP monitor_openclaw_dispatch_remote_total OpenClaw remote dispatch count.",
+        "# TYPE monitor_openclaw_dispatch_remote_total counter",
+        f"monitor_openclaw_dispatch_remote_total {metric('dispatch_remote')}",
+        "# HELP monitor_openclaw_dispatch_failover_total OpenClaw failover dispatch count.",
+        "# TYPE monitor_openclaw_dispatch_failover_total counter",
+        f"monitor_openclaw_dispatch_failover_total {metric('dispatch_failover')}",
+        "# HELP monitor_openclaw_circuit_opened_total OpenClaw circuit opened events.",
+        "# TYPE monitor_openclaw_circuit_opened_total counter",
+        f"monitor_openclaw_circuit_opened_total {metric('circuit_opened')}",
+        "# HELP monitor_openclaw_circuit_blocked_total OpenClaw blocked failure-class events.",
+        "# TYPE monitor_openclaw_circuit_blocked_total counter",
+        f"monitor_openclaw_circuit_blocked_total {metric('circuit_blocked')}",
     ]
     return "\n".join(lines) + "\n"
 
@@ -3213,6 +4036,258 @@ def _openclaw_dashboard_flow(chat_text: str = "", approve: bool = True, deny: bo
     }
 
 
+def _normalize_risk_level(value: Any, fallback: str = "medium") -> str:
+    text = str(value or "").strip().lower()
+    if text in {"low", "medium", "high", "critical"}:
+        return text
+    return fallback
+
+
+def _normalize_openclaw_action_key(command_type: str, payload: Dict[str, Any]) -> str:
+    ctype = str(command_type or "").strip().lower()
+    if ctype == "browser":
+        return str(payload.get("action", "")).strip().lower()
+    if ctype == "flow":
+        return "flow"
+    if ctype == "attach":
+        return "attach"
+    return ctype or "unknown"
+
+
+def _contains_critical_keyword(payload: Dict[str, Any]) -> bool:
+    text = " ".join(
+        str(payload.get(key, ""))
+        for key in ("action", "chat_text", "command", "text")
+        if payload.get(key)
+    ).strip().lower()
+    if not text:
+        return False
+    normalized = "".join(
+        ch for ch in unicodedata.normalize("NFD", text)
+        if unicodedata.category(ch) != "Mn"
+    )
+    return any(keyword in normalized for keyword in OPENCLAW_CRITICAL_KEYWORDS)
+
+
+def _contains_hard_deny_keyword(payload: Dict[str, Any]) -> bool:
+    text = " ".join(
+        str(payload.get(key, ""))
+        for key in ("action", "chat_text", "command", "text")
+        if payload.get(key)
+    ).strip().lower()
+    if not text:
+        return False
+    normalized = "".join(
+        ch for ch in unicodedata.normalize("NFD", text)
+        if unicodedata.category(ch) != "Mn"
+    )
+    return any(keyword in normalized for keyword in OPENCLAW_HARD_DENY_KEYWORDS)
+
+
+def _classify_openclaw_failure(result: Any) -> str:
+    if not isinstance(result, dict):
+        return "unknown"
+    error_code = str(result.get("error_code", "")).strip().upper()
+    if error_code in {"TOKEN_MISSING"}:
+        return "token"
+    if error_code in {"HEALTH_ERROR", "HEALTH_UNAVAILABLE"}:
+        return "health"
+    if error_code in {"ATTACH_FAILED", "ATTACH_THROTTLED"}:
+        return "attach"
+    if error_code in {"MANUAL_REQUIRED", "POLICY_DENIED", "FAILURE_CLASS_BLOCKED"}:
+        return "policy"
+    if error_code in {"WORKER_UNAVAILABLE", "WORKER_UNHEALTHY", "WORKER_NOT_FOUND", "CIRCUIT_OPEN"}:
+        return "provider"
+    if error_code in {"QUEUE_TIMEOUT"}:
+        return "network"
+
+    text_parts = [
+        str(result.get("error", "")),
+        str(result.get("stderr", "")),
+        str(result.get("message", "")),
+    ]
+    inner = result.get("result") if isinstance(result.get("result"), dict) else {}
+    if inner:
+        text_parts.extend(
+            [
+                str(inner.get("error", "")),
+                str(inner.get("stderr", "")),
+                str(inner.get("message", "")),
+            ]
+        )
+    text = " ".join(text_parts).strip().lower()
+    if any(token in text for token in ("token", "unauthorized", "forbidden", "auth")):
+        return "token"
+    if any(token in text for token in ("health", "gateway status", "unhealthy", "not ready")):
+        return "health"
+    if any(token in text for token in ("attach", "extension relay", "chrome extension", "no tab is connected")):
+        return "attach"
+    if any(token in text for token in ("policy", "manual", "denied", "blocked")):
+        return "policy"
+    if any(token in text for token in ("http ", "timeout", "network", "connection", "refused", "remote")):
+        return "network"
+    return "unknown"
+
+
+def _openclaw_payload_public(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: value
+        for key, value in (payload or {}).items()
+        if not str(key).startswith("_")
+    }
+
+
+def _evaluate_openclaw_policy(command_type: str, payload: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+    action_key = _normalize_openclaw_action_key(command_type, payload)
+    route_mode = str(context.get("route_mode", "auto")).strip().lower() or "auto"
+    requested_worker = str(context.get("target_worker", "")).strip().lower()
+    risk_level = _normalize_risk_level(context.get("risk_level"), fallback="medium")
+    if _contains_critical_keyword(payload):
+        risk_level = "critical"
+
+    decision = "auto_approved"
+    reasons: List[str] = []
+    error_code = ""
+    token_status: Dict[str, Any] = {}
+    resolved_worker = requested_worker
+    failover_from = ""
+    full_auto = _is_full_auto_profile()
+
+    if _contains_hard_deny_keyword(payload):
+        decision = "denied"
+        reasons.append("hard_deny_keyword")
+        error_code = "POLICY_DENIED"
+
+    if decision == "auto_approved" and not OPENCLAW_POLICY_MOSTLY_AUTO and risk_level in {"high", "critical"}:
+        decision = "manual_required"
+        reasons.append("mostly_auto_disabled")
+        error_code = "MANUAL_REQUIRED"
+    elif decision == "auto_approved" and risk_level == "critical" and not full_auto:
+        decision = "manual_required"
+        reasons.append("critical_risk_requires_manual")
+        error_code = "MANUAL_REQUIRED"
+    elif decision == "auto_approved" and risk_level == "high" and action_key not in OPENCLAW_HIGH_RISK_ALLOWLIST and not full_auto:
+        decision = "manual_required"
+        reasons.append("high_risk_action_not_allowlisted")
+        error_code = "MANUAL_REQUIRED"
+
+    info = _collect_token_info(force_refresh=False)
+    token_status = _create_token_status(info)
+    if not info.token:
+        decision = "denied"
+        reasons.append("token_missing")
+        error_code = "TOKEN_MISSING"
+    elif not info.health_ok:
+        decision = "denied"
+        reasons.append("gateway_health_unavailable")
+        error_code = "HEALTH_UNAVAILABLE"
+
+    if route_mode == "direct":
+        resolved_worker = LOCAL_INSTANCE_ID
+    else:
+        selection = _control_plane_registry.resolve_worker(
+            requested_worker=requested_worker,
+            required_capability="openclaw",
+        )
+        if not selection.get("available"):
+            decision = "denied"
+            reasons.append("worker_unavailable")
+            error_code = "WORKER_UNAVAILABLE"
+        else:
+            worker = selection.get("worker") if isinstance(selection.get("worker"), dict) else {}
+            resolved_worker = str(worker.get("worker_id", "")).strip().lower()
+            can_dispatch = _control_plane_registry.can_dispatch(resolved_worker)
+            if not can_dispatch.get("allowed"):
+                fallback = _control_plane_registry.resolve_worker(
+                    requested_worker="",
+                    required_capability="openclaw",
+                    exclude={resolved_worker} if resolved_worker else set(),
+                )
+                if fallback.get("available"):
+                    fallback_worker = fallback.get("worker") if isinstance(fallback.get("worker"), dict) else {}
+                    failover_from = resolved_worker
+                    resolved_worker = str(fallback_worker.get("worker_id", "")).strip().lower()
+                    _openclaw_metrics_inc("dispatch_failover")
+                    reasons.append("primary_worker_blocked_fallback_selected")
+                else:
+                    decision = "denied"
+                    reasons.append(str(can_dispatch.get("reason", "worker_dispatch_blocked")))
+                    error_code = str(can_dispatch.get("error_code", "WORKER_UNAVAILABLE"))
+
+    if decision == "auto_approved":
+        _openclaw_metrics_inc("policy_auto_approved")
+    elif decision == "manual_required":
+        _openclaw_metrics_inc("policy_manual_required")
+    else:
+        _openclaw_metrics_inc("policy_denied")
+
+    return {
+        "allowed": decision == "auto_approved",
+        "decision": decision,
+        "risk_level": risk_level,
+        "autonomy_profile": _get_autonomy_profile(),
+        "full_auto": full_auto,
+        "reasons": reasons,
+        "error_code": error_code,
+        "action_key": action_key,
+        "token_status": token_status,
+        "target_worker": requested_worker,
+        "resolved_worker": resolved_worker,
+        "failover_from": failover_from,
+        "route_mode": route_mode,
+    }
+
+
+def _dispatch_openclaw_remote(worker: Dict[str, Any], command_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    worker_id = str(worker.get("worker_id", "")).strip().lower()
+    base_url = str(worker.get("base_url", "")).strip().rstrip("/")
+    if not base_url:
+        return {
+            "success": False,
+            "error_code": "WORKER_UNAVAILABLE",
+            "error": f"Worker '{worker_id}' has no base_url",
+            "failure_class": "provider",
+        }
+    endpoint_map = {
+        "browser": "/api/openclaw/browser",
+        "flow": "/api/openclaw/flow/dashboard",
+        "attach": "/api/openclaw/extension/attach",
+    }
+    endpoint = endpoint_map.get(str(command_type or "").strip().lower())
+    if not endpoint:
+        return {
+            "success": False,
+            "error_code": "UNSUPPORTED_COMMAND",
+            "error": f"Unsupported command_type '{command_type}'",
+            "failure_class": "unknown",
+        }
+    body = _openclaw_payload_public(payload)
+    body["mode"] = "sync"
+    body["route_mode"] = "direct"
+    timeout_sec = max(2.0, min(25.0, float(int(body.get("timeout_ms", OPENCLAW_BROWSER_TIMEOUT_MS) or OPENCLAW_BROWSER_TIMEOUT_MS) / 1000.0) + 1.5))
+    remote = _http_json("POST", f"{base_url}{endpoint}", payload=body, timeout_sec=timeout_sec)
+    if not isinstance(remote, dict):
+        return {
+            "success": False,
+            "error_code": "REMOTE_INVALID_RESPONSE",
+            "error": "Remote worker returned invalid response",
+            "failure_class": "network",
+        }
+    result = dict(remote)
+    result["dispatch"] = {
+        "mode": "remote",
+        "worker_id": worker_id,
+        "base_url": base_url,
+    }
+    if not bool(result.get("success")):
+        result["failure_class"] = _classify_openclaw_failure(result)
+        if "error_code" not in result:
+            result["error_code"] = "REMOTE_EXECUTION_FAILED"
+        if "error" not in result:
+            result["error"] = "Remote dispatch failed"
+    return result
+
+
 def _execute_openclaw_browser_action(data: Dict[str, Any]) -> Dict[str, Any]:
     action = str(data.get("action", "")).strip().lower()
     if not action:
@@ -3297,14 +4372,93 @@ def _execute_openclaw_attach_action(_: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _openclaw_queue_executor(command_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+def _openclaw_queue_executor_local(command_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     if command_type == "browser":
         return _execute_openclaw_browser_action(payload)
     if command_type == "flow":
         return _execute_openclaw_flow_action(payload)
     if command_type == "attach":
         return _execute_openclaw_attach_action(payload)
-    return {"success": False, "error": f"Unsupported queued command_type '{command_type}'"}
+    return {"success": False, "error": f"Unsupported queued command_type '{command_type}'", "error_code": "UNSUPPORTED_COMMAND"}
+
+
+def _openclaw_queue_executor(command_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    route_mode = str(payload.get("route_mode", "auto")).strip().lower() or "auto"
+    routing = payload.get("_routing") if isinstance(payload.get("_routing"), dict) else {}
+    resolved_worker = str(
+        routing.get("resolved_worker")
+        or payload.get("resolved_worker")
+        or ""
+    ).strip().lower()
+    if not resolved_worker:
+        selected = _control_plane_registry.resolve_worker(required_capability="openclaw")
+        if selected.get("available"):
+            selected_worker = selected.get("worker") if isinstance(selected.get("worker"), dict) else {}
+            resolved_worker = str(selected_worker.get("worker_id", "")).strip().lower()
+
+    if route_mode != "direct" and resolved_worker and resolved_worker != LOCAL_INSTANCE_ID:
+        gate = _control_plane_registry.can_dispatch(resolved_worker)
+        if not gate.get("allowed"):
+            return {
+                "success": False,
+                "error": str(gate.get("reason", "worker dispatch blocked")),
+                "error_code": str(gate.get("error_code", "WORKER_UNAVAILABLE")),
+                "failure_class": _classify_openclaw_failure(gate),
+                "dispatch": {"mode": "blocked", "worker_id": resolved_worker},
+            }
+
+        selected = _control_plane_registry.resolve_worker(
+            requested_worker=resolved_worker,
+            required_capability="openclaw",
+        )
+        worker = selected.get("worker") if isinstance(selected.get("worker"), dict) else {}
+        remote_result = _dispatch_openclaw_remote(worker, command_type, payload)
+        if remote_result.get("success"):
+            _openclaw_metrics_inc("dispatch_remote")
+            return remote_result
+
+        failure_class = str(remote_result.get("failure_class", "")).strip().lower() or _classify_openclaw_failure(remote_result)
+        _control_plane_registry.record_dispatch_result(
+            worker_id=resolved_worker,
+            success=False,
+            failure_class=failure_class,
+        )
+        remote_result["_dispatch_result_recorded"] = True
+        fallback = _control_plane_registry.resolve_worker(
+            requested_worker="",
+            required_capability="openclaw",
+            exclude={resolved_worker},
+        )
+        if fallback.get("available"):
+            fallback_worker = fallback.get("worker") if isinstance(fallback.get("worker"), dict) else {}
+            fallback_worker_id = str(fallback_worker.get("worker_id", "")).strip().lower()
+            _openclaw_metrics_inc("dispatch_failover")
+            if fallback_worker_id and fallback_worker_id != LOCAL_INSTANCE_ID:
+                remote_fallback = _dispatch_openclaw_remote(fallback_worker, command_type, payload)
+                dispatch = remote_fallback.get("dispatch") if isinstance(remote_fallback.get("dispatch"), dict) else {}
+                dispatch["failover_from"] = resolved_worker
+                dispatch["failover_to"] = fallback_worker_id
+                remote_fallback["dispatch"] = dispatch
+                return remote_fallback
+            local_fallback = _openclaw_queue_executor_local(command_type, payload)
+            local_fallback["dispatch"] = {
+                "mode": "failover_local",
+                "worker_id": LOCAL_INSTANCE_ID,
+                "failover_from": resolved_worker,
+            }
+            if not local_fallback.get("success"):
+                local_fallback["failure_class"] = _classify_openclaw_failure(local_fallback)
+            return local_fallback
+        remote_result.setdefault("dispatch", {"mode": "remote_failed", "worker_id": resolved_worker})
+        if "failure_class" not in remote_result:
+            remote_result["failure_class"] = failure_class or "unknown"
+        return remote_result
+
+    local_result = _openclaw_queue_executor_local(command_type, payload)
+    local_result["dispatch"] = {"mode": "local", "worker_id": LOCAL_INSTANCE_ID}
+    if not local_result.get("success"):
+        local_result["failure_class"] = _classify_openclaw_failure(local_result)
+    return local_result
 
 
 def _parse_openclaw_queue_context(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -3318,6 +4472,11 @@ def _parse_openclaw_queue_context(data: Dict[str, Any]) -> Dict[str, Any]:
     timeout_ms = max(1000, int(data.get("timeout_ms") or OPENCLAW_BROWSER_TIMEOUT_MS))
     priority = int(data.get("priority", 0) or 0)
     idempotency_key = str(data.get("idempotency_key", "") or "").strip()
+    route_mode = str(data.get("route_mode", "auto")).strip().lower() or "auto"
+    if route_mode not in {"auto", "direct"}:
+        route_mode = "auto"
+    target_worker = str(data.get("target_worker", data.get("worker_id", "")) or "").strip().lower()
+    risk_level = _normalize_risk_level(data.get("risk_level"), fallback="medium")
     return {
         "source": source,
         "mode": mode,
@@ -3325,29 +4484,76 @@ def _parse_openclaw_queue_context(data: Dict[str, Any]) -> Dict[str, Any]:
         "timeout_ms": timeout_ms,
         "priority": priority,
         "idempotency_key": idempotency_key,
+        "route_mode": route_mode,
+        "target_worker": target_worker,
+        "risk_level": risk_level,
     }
 
 
 def _enqueue_openclaw_command(command_type: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    context = _parse_openclaw_queue_context(data)
+    policy = _evaluate_openclaw_policy(command_type, data, context)
+    if not policy.get("allowed"):
+        decision = str(policy.get("decision", "manual_required"))
+        error_code = str(policy.get("error_code", "POLICY_DENIED") or "POLICY_DENIED")
+        if decision == "manual_required" and error_code == "POLICY_DENIED":
+            error_code = "MANUAL_REQUIRED"
+        return {
+            "success": False,
+            "error": "Manual approval required by policy" if decision == "manual_required" else "Command denied by policy",
+            "error_code": error_code,
+            "decision": decision,
+            "risk_level": policy.get("risk_level", "medium"),
+            "policy_reasons": policy.get("reasons", []),
+            "token_status": policy.get("token_status", {}),
+            "target_worker": policy.get("target_worker"),
+            "resolved_worker": policy.get("resolved_worker"),
+            "queue_state": _openclaw_command_manager.queue_snapshot() if OPENCLAW_QUEUE_ENABLED else {"enabled": False},
+            "session_id": context.get("session_id"),
+        }
+
+    payload = dict(data or {})
+    payload["route_mode"] = context.get("route_mode", "auto")
+    payload["_routing"] = {
+        "target_worker": policy.get("target_worker", ""),
+        "resolved_worker": policy.get("resolved_worker", ""),
+        "failover_from": policy.get("failover_from", ""),
+    }
+    payload["_policy"] = {
+        "decision": policy.get("decision", "auto_approved"),
+        "risk_level": policy.get("risk_level", "medium"),
+        "reasons": policy.get("reasons", []),
+        "action_key": policy.get("action_key", ""),
+    }
+
     if not OPENCLAW_QUEUE_ENABLED:
-        result = _openclaw_queue_executor(command_type, data)
+        result = _openclaw_queue_executor(command_type, payload)
         return {
             "success": bool(result.get("success")),
             "request_id": None,
             "mode": "sync",
             "result": result,
             "queue_state": {"enabled": False},
+            "decision": policy.get("decision", "auto_approved"),
+            "risk_level": policy.get("risk_level", "medium"),
+            "target_worker": policy.get("target_worker", ""),
+            "resolved_worker": policy.get("resolved_worker", ""),
+            "policy_reasons": policy.get("reasons", []),
+            "token_status": policy.get("token_status", {}),
         }
 
-    context = _parse_openclaw_queue_context(data)
     enqueued = _openclaw_command_manager.enqueue(
         command_type=command_type,
-        payload=data,
+        payload=payload,
         session_id=context["session_id"],
         source=context["source"],
         priority=context["priority"],
         idempotency_key=context["idempotency_key"],
         timeout_ms=context["timeout_ms"],
+        risk_level=str(policy.get("risk_level", "medium")),
+        decision=str(policy.get("decision", "auto_approved")),
+        target_worker=str(policy.get("target_worker", "")),
+        resolved_worker=str(policy.get("resolved_worker", "")),
     )
     if not enqueued.get("success"):
         return {
@@ -3356,6 +4562,11 @@ def _enqueue_openclaw_command(command_type: str, data: Dict[str, Any]) -> Dict[s
             "error_code": enqueued.get("error_code", "QUEUE_ENQUEUE_FAILED"),
             "queue_state": _openclaw_command_manager.queue_snapshot(),
             "session_id": context["session_id"],
+            "decision": policy.get("decision", "auto_approved"),
+            "risk_level": policy.get("risk_level", "medium"),
+            "target_worker": policy.get("target_worker", ""),
+            "resolved_worker": policy.get("resolved_worker", ""),
+            "token_status": policy.get("token_status", {}),
         }
 
     request_id = str(enqueued.get("request_id", ""))
@@ -3368,6 +4579,12 @@ def _enqueue_openclaw_command(command_type: str, data: Dict[str, Any]) -> Dict[s
             "mode": "async",
             "idempotent_replay": bool(enqueued.get("idempotent_replay")),
             "queue_state": _openclaw_command_manager.queue_snapshot(),
+            "decision": policy.get("decision", "auto_approved"),
+            "risk_level": policy.get("risk_level", "medium"),
+            "target_worker": policy.get("target_worker", ""),
+            "resolved_worker": policy.get("resolved_worker", ""),
+            "policy_reasons": policy.get("reasons", []),
+            "token_status": policy.get("token_status", {}),
         }
 
     waited = _openclaw_command_manager.wait_command(request_id, timeout_sec=max(1.0, context["timeout_ms"] / 1000.0))
@@ -3377,6 +4594,11 @@ def _enqueue_openclaw_command(command_type: str, data: Dict[str, Any]) -> Dict[s
             "error": "Queued command not found",
             "error_code": "QUEUE_REQUEST_NOT_FOUND",
             "request_id": request_id,
+            "decision": policy.get("decision", "auto_approved"),
+            "risk_level": policy.get("risk_level", "medium"),
+            "target_worker": policy.get("target_worker", ""),
+            "resolved_worker": policy.get("resolved_worker", ""),
+            "token_status": policy.get("token_status", {}),
         }
     finished = str(waited.get("state", "")) in {"completed", "failed", "cancelled"}
     outcome = waited.get("result") if isinstance(waited.get("result"), dict) else {}
@@ -3390,7 +4612,27 @@ def _enqueue_openclaw_command(command_type: str, data: Dict[str, Any]) -> Dict[s
         "command": waited,
         "result": outcome if finished else {},
         "queue_state": _openclaw_command_manager.queue_snapshot(),
+        "decision": policy.get("decision", "auto_approved"),
+        "risk_level": policy.get("risk_level", "medium"),
+        "target_worker": policy.get("target_worker", ""),
+        "resolved_worker": policy.get("resolved_worker", ""),
+        "policy_reasons": policy.get("reasons", []),
+        "token_status": policy.get("token_status", {}),
+        "failure_class": _classify_openclaw_failure(outcome) if finished and not bool(outcome.get("success")) else "",
     }
+
+
+def _openclaw_error_http_status(error_code: str) -> int:
+    code = str(error_code or "").strip().upper()
+    if code == "QUEUE_FULL":
+        return 429
+    if code in {"MANUAL_REQUIRED"}:
+        return 409
+    if code in {"WORKER_UNAVAILABLE", "WORKER_UNHEALTHY", "CIRCUIT_OPEN"}:
+        return 503
+    if code in {"TOKEN_MISSING", "HEALTH_UNAVAILABLE", "POLICY_DENIED", "FAILURE_CLASS_BLOCKED"}:
+        return 403
+    return 400
 
 
 _openclaw_command_manager.set_executor(_openclaw_queue_executor)
@@ -3620,6 +4862,84 @@ def _extract_orion_instance_id(message: str, fallback: str) -> str:
     return candidate if candidate in known else fallback
 
 
+def _normalize_intent_text(text: str) -> str:
+    raw = str(text or "").lower()
+    raw = raw.replace("đ", "d")
+    raw = "".join(ch for ch in unicodedata.normalize("NFD", raw) if unicodedata.category(ch) != "Mn")
+    raw = re.sub(r"[^a-z0-9\s]+", " ", raw)
+    return re.sub(r"\s+", " ", raw).strip()
+
+
+def _contains_any(haystack: str, needles: List[str]) -> bool:
+    return any(token in haystack for token in needles if token)
+
+
+def _infer_flexible_chat_request(text: str) -> Optional[str]:
+    normalized = _normalize_intent_text(text)
+    if not normalized:
+        return None
+
+    # Quick numeric shortcuts and verbal forms.
+    if normalized in {"1", "mot", "so 1", "lua chon 1", "option 1"}:
+        return "tóm tắt dự án"
+    if normalized in {"2", "hai", "so 2", "lua chon 2", "option 2"}:
+        return "điều khiển flow"
+    if normalized in {"3", "ba", "so 3", "lua chon 3", "option 3"}:
+        return "guardian gỡ kẹt"
+
+    summary_signals = [
+        "tom tat",
+        "tong quan",
+        "tinh hinh",
+        "dang chay gi",
+        "con cai gi dang chay",
+        "dang lam gi",
+        "status",
+        "trang thai",
+        "progress",
+        "hien tai sao roi",
+    ]
+    recover_signals = [
+        "go ket",
+        "go stuck",
+        "unstick",
+        "bi ket",
+        "bi do",
+        "guardian xu ly",
+        "guardian go",
+        "cuu orion",
+    ]
+    run_cycle_signals = [
+        "run cycle",
+        "run_cycle",
+        "chay vong",
+        "chay 1 vong",
+        "chay mot vong",
+        "them mot vong",
+    ]
+    pause_signals = ["pause", "tam dung", "dung lai", "hold"]
+    resume_signals = ["resume", "tiep tuc", "chay tiep", "bat lai", "mo lai"]
+    flow_control_signals = ["dieu khien flow", "flow control", "dieu khien he thong"]
+    uiux_signals = ["ui ux", "giao dien", "trai nghiem", "ux", "ui"]
+    improve_signals = ["danh gia", "cai thien", "nang cap", "de xuat", "toi uu"]
+
+    if _contains_any(normalized, recover_signals):
+        return "guardian gỡ kẹt"
+    if _contains_any(normalized, run_cycle_signals):
+        return "chạy 1 vòng Orion"
+    if _contains_any(normalized, pause_signals):
+        return "pause"
+    if _contains_any(normalized, resume_signals):
+        return "resume"
+    if _contains_any(normalized, flow_control_signals):
+        return "điều khiển flow"
+    if _contains_any(normalized, uiux_signals) and _contains_any(normalized, improve_signals):
+        return "uiux review"
+    if _contains_any(normalized, summary_signals):
+        return "tóm tắt dự án"
+    return None
+
+
 def _build_chat_report(
     intent: str,
     executed: bool,
@@ -3673,6 +4993,24 @@ def _build_chat_report(
 def _build_project_chat_reply(message: str, instance_id: Optional[str] = None) -> Dict[str, Any]:
     text = str(message or "").strip()
     lowered = text.lower()
+    compact = re.sub(r"\s+", "", lowered)
+    # Accept compact menu shortcuts from unified chat UI.
+    if re.fullmatch(r"[\(\[]?1[\)\]\.]?", compact):
+        text = "tóm tắt dự án"
+        lowered = text
+    elif re.fullmatch(r"[\(\[]?2[\)\]\.]?", compact):
+        text = "điều khiển flow"
+        lowered = text
+    elif re.fullmatch(r"[\(\[]?3[\)\]\.]?", compact):
+        text = "guardian gỡ kẹt"
+        lowered = text
+
+    inferred = _infer_flexible_chat_request(text)
+    if inferred:
+        text = inferred
+        lowered = inferred.lower()
+    normalized_intent = _normalize_intent_text(text)
+
     resolved_instance = _extract_orion_instance_id(text, str(instance_id or LOCAL_INSTANCE_ID))
     instance_info = _instance_by_id(resolved_instance)
     instance_label = str(instance_info.get("name", resolved_instance))
@@ -3705,6 +5043,49 @@ def _build_project_chat_reply(message: str, instance_id: Optional[str] = None) -
         payload.setdefault("reasoning", reasoning)
         payload.setdefault("feedback_recent", feedback_recent)
         return payload
+
+    def _adaptive_fallback_text() -> str:
+        runtime_line = str(activity.get("summary") or _runtime_status_text(runtime))
+        success = int(counts.get("success", 0) or 0)
+        warning = int(counts.get("warning", 0) or 0)
+        error = int(counts.get("error", 0) or 0)
+        feedback_tags = [str(item.get("category") or "general") for item in feedback_recent[:2]]
+        agent_preview = "; ".join(activity_lines[:2]) if activity_lines else "Chưa có telemetry agent rõ ràng."
+
+        tone = "Mình đã nhận yêu cầu và sẽ tự điều phối theo trạng thái realtime."
+        if re.search(r"(ui|ux|giao dien|trai nghiem|professional|don gian|dep)", normalized_intent):
+            tone = "Mình đang ưu tiên nâng UI/UX theo hướng tối giản, rõ ràng và dễ kiểm soát."
+        elif re.search(r"(tai sao|why|sao|bug|loi|error|ket|stuck)", normalized_intent):
+            tone = "Mình thấy bạn đang báo vấn đề cần xử lý ngay, nên sẽ ưu tiên nhánh ổn định trước."
+
+        suggestion = "Bạn có thể nói tự nhiên như: 'còn gì đang chạy', 'guardian gỡ kẹt', 'pause all', 'pixel status'."
+        if error > 0:
+            suggestion = "Mình đề xuất xử lý lỗi trước: 'guardian gỡ kẹt' hoặc 'pause all' rồi 'resume all'."
+        elif warning > 4:
+            suggestion = "Mình đề xuất giảm nhiễu cảnh báo rồi tối ưu UI: 'đánh giá UI UX hiện tại'."
+
+        return (
+            f"[{instance_label}] {tone}\n"
+            f"{runtime_line}\n"
+            f"Tín hiệu hiện tại: {success} success, {warning} warning, {error} error. Top agent: {top_agent}.\n"
+            f"Sự kiện mới nhất: {latest_msg}\n"
+            f"Realtime agents: {agent_preview}\n"
+            f"Feedback gần nhất: {feedback_tags or ['none']}\n"
+            f"{suggestion}"
+        )
+
+    if re.search(r"(khong hoi|khong can hoi|khong xac nhan|hoi lien tuc|confirm lien tuc|qua nhieu hoi)", normalized_intent):
+        _monitor_set_supervisor_enabled(True)
+        result = _call_instance_command(resolved_instance, "guardian", "autopilot_on", "high", {"source": "chat_feedback_guard"})
+        return {
+            "intent": "autonomy_feedback_ack",
+            "executed": bool(result.get("success", True)),
+            "result": _with_context(result),
+            "reply": (
+                f"[{instance_label}] Đã ghi nhận feedback và giữ chế độ tự vận hành liên tục. "
+                "Guardian autopilot đang ON, monitor supervisor ON, hệ thống sẽ ưu tiên tự xử lý thay vì chờ xác nhận."
+            ),
+        }
 
     # Permission/approval prompt intent
     command_candidate = ""
@@ -3921,6 +5302,58 @@ def _build_project_chat_reply(message: str, instance_id: Optional[str] = None) -
             "reply": f"[{instance_label}] Đã tắt Guardian autopilot. Hệ thống sẽ không auto-recover nữa.",
         }
 
+    if "uiux review" in lowered or re.search(r"(ui ?/?ux|giao diện|trải nghiệm).*(đánh giá|cải thiện|nâng cấp|đề xuất|tối ưu)", lowered):
+        risk_errors = int(counts.get("error", 0) or 0)
+        risk_warnings = int(counts.get("warning", 0) or 0)
+        focus = []
+        if risk_errors > 0:
+            focus.append("Ưu tiên loại bỏ trạng thái lỗi hiển thị gây mất niềm tin người dùng.")
+        if risk_warnings > 4:
+            focus.append("Giảm nhiễu cảnh báo trên màn hình chính, chỉ giữ tín hiệu thực sự quan trọng.")
+        focus.extend([
+            "Đẩy Chat thành chế độ focus mặc định khi người dùng cần thao tác điều khiển.",
+            "Giữ light/dark đồng nhất về tương phản, giảm neon để tăng tính professional.",
+            "Tăng tốc thao tác bằng prompt chips + phím tắt thay vì menu cứng.",
+        ])
+        reply = (
+            f"[{instance_label}] Đánh giá UI/UX realtime:\n"
+            f"- Trạng thái hiện tại: errors={risk_errors}, warnings={risk_warnings}, top agent={top_agent}.\n"
+            "- Hướng cải tiến ưu tiên:\n"
+            + "\n".join([f"  • {item}" for item in focus[:4]])
+            + "\nMình sẽ tiếp tục auto-tinh chỉnh theo vòng lặp feedback tiếp theo."
+        )
+        return {
+            "intent": "uiux_review",
+            "executed": False,
+            "result": _with_context({
+                "agent_activity": activity,
+                "ai_summary": ai_summary,
+                "reasoning": reasoning,
+                "feedback_recent": feedback_recent,
+            }),
+            "reply": reply,
+        }
+
+    # Quick helper for option (2) in unified chat menu.
+    if re.search(r"(điều khiển flow|flow control|nhóm 2|group 2|option 2)", lowered):
+        return {
+            "intent": "assistant_control_help",
+            "executed": False,
+            "result": _with_context({
+                "ai_summary": ai_summary,
+                "reasoning": reasoning,
+                "feedback_recent": feedback_recent,
+            }),
+            "reply": (
+                f"[{instance_label}] Nhóm điều khiển flow:\n"
+                "- pause / resume (toàn hệ thống hoặc Orion)\n"
+                "- chạy 1 vòng Orion\n"
+                "- guardian gỡ kẹt\n"
+                "- pixel on/off, nova on/off, echo on/off\n"
+                "Ví dụ nhanh: 'resume all', 'chạy 1 vòng Orion 1', 'pixel off'."
+            ),
+        }
+
     # Status / project info intent
     if re.search(r"(trạng thái|status|dự án|project|tiến độ|đang làm gì|what are you working|tóm tắt)", lowered):
         runtime_line = str(activity.get("summary") or _runtime_status_text(runtime))
@@ -3963,11 +5396,7 @@ def _build_project_chat_reply(message: str, instance_id: Optional[str] = None) -
             "reasoning": reasoning,
             "feedback_recent": feedback_recent,
         }),
-        "reply": (
-            "Mình có thể giúp theo 3 nhóm: (1) tóm tắt tiến độ dự án, "
-            "(2) điều khiển flow Orion/Guardian, (3) gỡ stuck tự động. "
-            "Bạn có thể nói: 'tóm tắt dự án', 'guardian gỡ kẹt Orion 2', hoặc 'chạy 1 vòng Orion 3'."
-        ),
+        "reply": _adaptive_fallback_text(),
     }
 
 
@@ -4005,6 +5434,16 @@ def get_system_slo():
     return jsonify({
         "success": True,
         "slo": _build_system_slo_snapshot(),
+        "timestamp": datetime.now().isoformat(),
+    })
+
+
+@app.route('/api/slo/summary')
+def get_slo_summary():
+    """Balanced SLO summary for control-plane/openclaw/monitor."""
+    return jsonify({
+        "success": True,
+        "slo": _build_slo_summary(),
         "timestamp": datetime.now().isoformat(),
     })
 
@@ -4079,6 +5518,63 @@ def get_openclaw_metrics_prometheus():
     return Response(body, mimetype="text/plain; version=0.0.4; charset=utf-8")
 
 
+@app.route('/api/control-plane/workers')
+def control_plane_workers():
+    return jsonify({
+        "success": True,
+        "control_plane": _control_plane_registry.snapshot(),
+        "timestamp": datetime.now().isoformat(),
+    })
+
+
+@app.route('/api/control-plane/workers/register', methods=['POST'])
+def control_plane_worker_register():
+    rate_limited = _rate_limited("control_plane_workers_register", API_RATE_LIMIT_COMMAND_PER_MIN, 60)
+    if rate_limited:
+        return rate_limited
+    data = request.get_json(silent=True) or {}
+    worker_id = str(data.get("worker_id", "")).strip().lower()
+    if not worker_id:
+        return jsonify({"success": False, "error": "Missing worker_id"}), 400
+    result = _control_plane_registry.register(
+        worker_id=worker_id,
+        capabilities=data.get("capabilities", ["openclaw", "orion"]),
+        version=str(data.get("version", "")).strip(),
+        region=str(data.get("region", "")).strip(),
+        mode=str(data.get("mode", "remote")).strip().lower(),
+        base_url=str(data.get("base_url", "")).strip(),
+        lease_ttl_sec=max(5, int(data.get("lease_ttl_sec", CONTROL_PLANE_DEFAULT_LEASE_TTL_SEC) or CONTROL_PLANE_DEFAULT_LEASE_TTL_SEC)),
+        metadata=data.get("metadata") if isinstance(data.get("metadata"), dict) else {},
+    )
+    status = 200 if result.get("success") else 400
+    return jsonify(result), status
+
+
+@app.route('/api/control-plane/workers/heartbeat', methods=['POST'])
+def control_plane_worker_heartbeat():
+    rate_limited = _rate_limited("control_plane_workers_heartbeat", API_RATE_LIMIT_COMMAND_PER_MIN, 60)
+    if rate_limited:
+        return rate_limited
+    data = request.get_json(silent=True) or {}
+    worker_id = str(data.get("worker_id", "")).strip().lower()
+    if not worker_id:
+        return jsonify({"success": False, "error": "Missing worker_id"}), 400
+    result = _control_plane_registry.heartbeat(
+        worker_id=worker_id,
+        health=str(data.get("health", "ok")).strip().lower(),
+        queue_depth=int(data.get("queue_depth", 0) or 0),
+        running_tasks=int(data.get("running_tasks", 0) or 0),
+        backpressure_level=str(data.get("backpressure_level", "normal")).strip().lower(),
+        capabilities=data.get("capabilities"),
+        version=str(data.get("version", "")).strip(),
+        region=str(data.get("region", "")).strip(),
+        metadata=data.get("metadata") if isinstance(data.get("metadata"), dict) else {},
+        lease_ttl_sec=int(data.get("lease_ttl_sec")) if data.get("lease_ttl_sec") is not None else None,
+    )
+    status = 200 if result.get("success") else 400
+    return jsonify(result), status
+
+
 @app.route('/api/openclaw/browser', methods=['POST'])
 def openclaw_browser_command():
     rate_limited = _rate_limited("openclaw_browser", API_RATE_LIMIT_OPENCLAW_PER_MIN, 60)
@@ -4096,8 +5592,14 @@ def openclaw_browser_command():
             "error_code": queued.get("error_code", "QUEUE_FAILED"),
             "queue_state": queued.get("queue_state", {}),
             "session_id": queued.get("session_id"),
+            "decision": queued.get("decision"),
+            "risk_level": queued.get("risk_level"),
+            "policy_reasons": queued.get("policy_reasons", []),
+            "token_status": queued.get("token_status", {}),
+            "target_worker": queued.get("target_worker"),
+            "resolved_worker": queued.get("resolved_worker"),
             "timestamp": datetime.now().isoformat(),
-        }), 429 if queued.get("error_code") == "QUEUE_FULL" else 400
+        }), _openclaw_error_http_status(str(queued.get("error_code", "")))
     if queued.get("mode") == "async":
         return jsonify({
             "success": True,
@@ -4106,6 +5608,10 @@ def openclaw_browser_command():
             "session_id": queued.get("session_id"),
             "queue_state": queued.get("queue_state", {}),
             "idempotent_replay": queued.get("idempotent_replay", False),
+            "decision": queued.get("decision"),
+            "risk_level": queued.get("risk_level"),
+            "target_worker": queued.get("target_worker"),
+            "resolved_worker": queued.get("resolved_worker"),
             "timestamp": datetime.now().isoformat(),
         }), 202
     if queued.get("timed_out"):
@@ -4116,6 +5622,10 @@ def openclaw_browser_command():
             "request_id": queued.get("request_id"),
             "command": queued.get("command", {}),
             "queue_state": queued.get("queue_state", {}),
+            "decision": queued.get("decision"),
+            "risk_level": queued.get("risk_level"),
+            "target_worker": queued.get("target_worker"),
+            "resolved_worker": queued.get("resolved_worker"),
             "timestamp": datetime.now().isoformat(),
         }), 202
     result = queued.get("result") if isinstance(queued.get("result"), dict) else {}
@@ -4128,6 +5638,11 @@ def openclaw_browser_command():
         "session_id": queued.get("session_id"),
         "queue_state": queued.get("queue_state", {}),
         "idempotent_replay": queued.get("idempotent_replay", False),
+        "decision": queued.get("decision"),
+        "risk_level": queued.get("risk_level"),
+        "target_worker": queued.get("target_worker"),
+        "resolved_worker": queued.get("resolved_worker"),
+        "failure_class": queued.get("failure_class") or result.get("failure_class"),
         "timestamp": datetime.now().isoformat(),
     }
     if "attach" in result:
@@ -4149,8 +5664,14 @@ def openclaw_flow_dashboard():
             "error_code": queued.get("error_code", "QUEUE_FAILED"),
             "queue_state": queued.get("queue_state", {}),
             "session_id": queued.get("session_id"),
+            "decision": queued.get("decision"),
+            "risk_level": queued.get("risk_level"),
+            "policy_reasons": queued.get("policy_reasons", []),
+            "token_status": queued.get("token_status", {}),
+            "target_worker": queued.get("target_worker"),
+            "resolved_worker": queued.get("resolved_worker"),
             "timestamp": datetime.now().isoformat(),
-        }), 429 if queued.get("error_code") == "QUEUE_FULL" else 400
+        }), _openclaw_error_http_status(str(queued.get("error_code", "")))
     if queued.get("mode") == "async":
         return jsonify({
             "success": True,
@@ -4158,6 +5679,10 @@ def openclaw_flow_dashboard():
             "request_id": queued.get("request_id"),
             "session_id": queued.get("session_id"),
             "queue_state": queued.get("queue_state", {}),
+            "decision": queued.get("decision"),
+            "risk_level": queued.get("risk_level"),
+            "target_worker": queued.get("target_worker"),
+            "resolved_worker": queued.get("resolved_worker"),
             "timestamp": datetime.now().isoformat(),
         }), 202
     if queued.get("timed_out"):
@@ -4168,6 +5693,10 @@ def openclaw_flow_dashboard():
             "request_id": queued.get("request_id"),
             "command": queued.get("command", {}),
             "queue_state": queued.get("queue_state", {}),
+            "decision": queued.get("decision"),
+            "risk_level": queued.get("risk_level"),
+            "target_worker": queued.get("target_worker"),
+            "resolved_worker": queued.get("resolved_worker"),
             "timestamp": datetime.now().isoformat(),
         }), 202
     result = queued.get("result") if isinstance(queued.get("result"), dict) else {}
@@ -4177,6 +5706,11 @@ def openclaw_flow_dashboard():
         "request_id": queued.get("request_id"),
         "session_id": queued.get("session_id"),
         "queue_state": queued.get("queue_state", {}),
+        "decision": queued.get("decision"),
+        "risk_level": queued.get("risk_level"),
+        "target_worker": queued.get("target_worker"),
+        "resolved_worker": queued.get("resolved_worker"),
+        "failure_class": queued.get("failure_class") or result.get("failure_class"),
         "timestamp": datetime.now().isoformat(),
     })
 
@@ -4195,8 +5729,14 @@ def openclaw_extension_attach():
             "error_code": queued.get("error_code", "QUEUE_FAILED"),
             "queue_state": queued.get("queue_state", {}),
             "session_id": queued.get("session_id"),
+            "decision": queued.get("decision"),
+            "risk_level": queued.get("risk_level"),
+            "policy_reasons": queued.get("policy_reasons", []),
+            "token_status": queued.get("token_status", {}),
+            "target_worker": queued.get("target_worker"),
+            "resolved_worker": queued.get("resolved_worker"),
             "timestamp": datetime.now().isoformat(),
-        }), 429 if queued.get("error_code") == "QUEUE_FULL" else 400
+        }), _openclaw_error_http_status(str(queued.get("error_code", "")))
     if queued.get("mode") == "async":
         return jsonify({
             "success": True,
@@ -4204,6 +5744,10 @@ def openclaw_extension_attach():
             "request_id": queued.get("request_id"),
             "session_id": queued.get("session_id"),
             "queue_state": queued.get("queue_state", {}),
+            "decision": queued.get("decision"),
+            "risk_level": queued.get("risk_level"),
+            "target_worker": queued.get("target_worker"),
+            "resolved_worker": queued.get("resolved_worker"),
             "timestamp": datetime.now().isoformat(),
         }), 202
     if queued.get("timed_out"):
@@ -4214,6 +5758,10 @@ def openclaw_extension_attach():
             "request_id": queued.get("request_id"),
             "command": queued.get("command", {}),
             "queue_state": queued.get("queue_state", {}),
+            "decision": queued.get("decision"),
+            "risk_level": queued.get("risk_level"),
+            "target_worker": queued.get("target_worker"),
+            "resolved_worker": queued.get("resolved_worker"),
             "timestamp": datetime.now().isoformat(),
         }), 202
     result = queued.get("result") if isinstance(queued.get("result"), dict) else {}
@@ -4223,6 +5771,11 @@ def openclaw_extension_attach():
         "request_id": queued.get("request_id"),
         "session_id": queued.get("session_id"),
         "queue_state": queued.get("queue_state", {}),
+        "decision": queued.get("decision"),
+        "risk_level": queued.get("risk_level"),
+        "target_worker": queued.get("target_worker"),
+        "resolved_worker": queued.get("resolved_worker"),
+        "failure_class": queued.get("failure_class") or result.get("failure_class"),
         "timestamp": datetime.now().isoformat(),
     })
 
@@ -4243,7 +5796,101 @@ def openclaw_queue_snapshot():
     return jsonify({
         "success": True,
         "queue": _openclaw_command_manager.queue_snapshot(),
+        "control_plane": _control_plane_registry.snapshot(),
         "timestamp": datetime.now().isoformat(),
+    })
+
+
+@app.route('/api/openclaw/commands', methods=['POST'])
+def openclaw_commands_dispatch():
+    rate_limited = _rate_limited("openclaw_commands_dispatch", API_RATE_LIMIT_OPENCLAW_PER_MIN, 60)
+    if rate_limited:
+        return rate_limited
+
+    data = request.get_json(silent=True) or {}
+    command_type = str(data.get("command_type", "")).strip().lower()
+    nested_command = data.get("command") if isinstance(data.get("command"), dict) else {}
+    if not command_type:
+        command_type = str(nested_command.get("type", "")).strip().lower()
+    if not command_type:
+        command_type = "browser"
+    if command_type not in {"browser", "flow", "attach"}:
+        return jsonify({
+            "success": False,
+            "error": f"Unsupported command_type '{command_type}'",
+            "error_code": "UNSUPPORTED_COMMAND",
+        }), 400
+
+    payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
+    if not payload:
+        payload = dict(nested_command.get("payload", {})) if isinstance(nested_command.get("payload"), dict) else {}
+    if not payload:
+        payload = dict(data)
+
+    for key in (
+        "session_id",
+        "source",
+        "mode",
+        "timeout_ms",
+        "priority",
+        "idempotency_key",
+        "target_worker",
+        "worker_id",
+        "risk_level",
+        "route_mode",
+    ):
+        if key in data and key not in payload:
+            payload[key] = data.get(key)
+    if command_type == "browser" and "action" in data and "action" not in payload:
+        payload["action"] = data.get("action")
+
+    queued = _enqueue_openclaw_command(command_type, payload)
+    base_response = {
+        "request_id": queued.get("request_id"),
+        "session_id": queued.get("session_id"),
+        "decision": queued.get("decision"),
+        "risk_level": queued.get("risk_level"),
+        "target_worker": queued.get("target_worker"),
+        "resolved_worker": queued.get("resolved_worker"),
+        "policy_reasons": queued.get("policy_reasons", []),
+        "token_status": queued.get("token_status", {}),
+        "queue_state": queued.get("queue_state", {}),
+        "timestamp": datetime.now().isoformat(),
+    }
+    if not queued.get("success"):
+        return jsonify({
+            "success": False,
+            "error": queued.get("error", "OpenClaw command rejected"),
+            "error_code": queued.get("error_code", "QUEUE_FAILED"),
+            **base_response,
+        }), _openclaw_error_http_status(str(queued.get("error_code", "")))
+
+    if queued.get("mode") == "async":
+        return jsonify({
+            "success": True,
+            "accepted": True,
+            "command_type": command_type,
+            **base_response,
+        }), 202
+
+    if queued.get("timed_out"):
+        return jsonify({
+            "success": False,
+            "error": "Command execution timeout; poll command status",
+            "error_code": "QUEUE_TIMEOUT",
+            "command_type": command_type,
+            "command": queued.get("command", {}),
+            **base_response,
+        }), 202
+
+    result = queued.get("result") if isinstance(queued.get("result"), dict) else {}
+    return jsonify({
+        "success": bool(result.get("success")),
+        "command_type": command_type,
+        "result": result,
+        "command": queued.get("command", {}),
+        "failure_class": queued.get("failure_class") or result.get("failure_class"),
+        **base_response,
     })
 
 
@@ -4273,7 +5920,7 @@ def openclaw_command_cancel(request_id: str):
 @app.route('/api/openclaw/sessions/<session_id>/manual-hold', methods=['POST'])
 def openclaw_manual_hold(session_id: str):
     data = request.get_json(silent=True) or {}
-    enabled = bool(data.get("enabled", True))
+    enabled = _to_bool(data.get("enabled", True))
     duration_sec = max(1, int(data.get("duration_sec", OPENCLAW_MANUAL_HOLD_SEC)))
     result = _openclaw_command_manager.set_manual_hold(session_id=session_id, enabled=enabled, duration_sec=duration_sec)
     return jsonify({
@@ -4591,7 +6238,7 @@ def computer_control_toggle():
     """Enable/disable computer-control actions."""
     global _computer_control_enabled
     data = request.get_json(silent=True) or {}
-    enabled = bool(data.get("enabled", True))
+    enabled = _to_bool(data.get("enabled", True))
     _computer_control_enabled = enabled
     state.add_agent_log(
         "guardian",
@@ -4670,9 +6317,218 @@ def user_profile():
 @app.route('/api/orion/instances')
 def get_orion_instances():
     """List all Orion instances and current health."""
+    instances = get_orion_instances_snapshot()
+    _control_plane_registry.sync_instance_snapshot(instances)
     return jsonify({
-        "instances": get_orion_instances_snapshot(),
+        "instances": instances,
         "default_instance_id": LOCAL_INSTANCE_ID,
+        "timestamp": datetime.now().isoformat(),
+    })
+
+
+@app.route('/api/autonomy/profile', methods=['GET', 'POST'])
+def autonomy_profile():
+    if request.method == "GET":
+        return jsonify({
+            "success": True,
+            "autonomy": {
+                "profile": _get_autonomy_profile(),
+                "full_auto": _is_full_auto_profile(),
+                "full_auto_user_pause_max_sec": MONITOR_FULL_AUTO_USER_PAUSE_MAX_SEC,
+                "full_auto_maintenance_lease_sec": MONITOR_FULL_AUTO_MAINTENANCE_LEASE_SEC,
+            },
+            "monitor_supervisor": _monitor_supervisor_status(),
+            "timestamp": datetime.now().isoformat(),
+        })
+
+    data = request.get_json(silent=True) or {}
+    profile = _normalize_autonomy_profile(data.get("profile", "balanced"))
+    applied = _set_autonomy_profile(profile)
+    state.add_agent_log("guardian", f"🧠 Autonomy profile -> {applied.upper()}", "success")
+    apply_results: Dict[str, Any] = {}
+    instances = get_orion_instances_snapshot()
+    for instance in instances:
+        instance_id = str(instance.get("id", "")).strip()
+        if not instance_id:
+            continue
+        apply_results[instance_id] = _call_instance_command(
+            instance_id=instance_id,
+            target="system",
+            command=f"set_autonomy_profile {applied}",
+            priority="high",
+            options={"source": "autonomy_profile_api"},
+        )
+    if applied == "full_auto":
+        _monitor_set_supervisor_enabled(True)
+        for instance in instances:
+            instance_id = str(instance.get("id", "")).strip()
+            if not instance_id:
+                continue
+            autopilot_result = _call_instance_command(
+                instance_id=instance_id,
+                target="guardian",
+                command="autopilot_on",
+                priority="high",
+                options={"reason": "autonomy_profile_full_auto"},
+            )
+            apply_results.setdefault(instance_id, {})
+            if isinstance(apply_results[instance_id], dict):
+                apply_results[instance_id]["guardian_autopilot"] = autopilot_result
+    return jsonify({
+        "success": True,
+        "autonomy": {
+            "profile": applied,
+            "full_auto": applied == "full_auto",
+            "full_auto_user_pause_max_sec": MONITOR_FULL_AUTO_USER_PAUSE_MAX_SEC,
+            "full_auto_maintenance_lease_sec": MONITOR_FULL_AUTO_MAINTENANCE_LEASE_SEC,
+        },
+        "instance_apply_results": apply_results,
+        "monitor_supervisor": _monitor_supervisor_status(),
+        "timestamp": datetime.now().isoformat(),
+    })
+
+
+def _guardian_control_auth(data: Dict[str, Any]) -> Dict[str, Any]:
+    if not GUARDIAN_CONTROL_TOKEN:
+        return {"authorized": True, "token_required": False, "actor": str(data.get("actor", "dashboard")).strip() or "dashboard"}
+    provided = str(request.headers.get("X-Guardian-Control-Token", "")).strip()
+    if not provided:
+        provided = str(data.get("token", "")).strip()
+    actor = str(data.get("actor", "dashboard")).strip() or "dashboard"
+    if provided and provided == GUARDIAN_CONTROL_TOKEN:
+        return {"authorized": True, "token_required": True, "actor": actor}
+    return {"authorized": False, "token_required": True, "actor": actor}
+
+
+@app.route('/api/guardian/autopilot/status')
+def guardian_autopilot_status():
+    return jsonify({
+        "success": True,
+        "guardian": {
+            "autopilot": _monitor_supervisor_status(),
+            "policy_mostly_auto": bool(OPENCLAW_POLICY_MOSTLY_AUTO),
+            "token_required": bool(GUARDIAN_CONTROL_TOKEN),
+            "control_plane": _control_plane_registry.snapshot(),
+            "audit_tail": _guardian_control_audit_tail(limit=20),
+        },
+        "timestamp": datetime.now().isoformat(),
+    })
+
+
+@app.route('/api/guardian/control', methods=['POST'])
+def guardian_control():
+    rate_limited = _rate_limited("guardian_control", API_RATE_LIMIT_COMMAND_PER_MIN, 60)
+    if rate_limited:
+        return rate_limited
+    data = request.get_json(silent=True) or {}
+    action = str(data.get("action", "")).strip().lower()
+    reason = str(data.get("reason", "")).strip()
+    if action not in {"pause_autopilot", "resume_autopilot", "shutdown"}:
+        return jsonify({"success": False, "error": "Unsupported action"}), 400
+    if not reason:
+        return jsonify({"success": False, "error": "Missing reason"}), 400
+
+    auth = _guardian_control_auth(data)
+    actor = str(auth.get("actor", "dashboard"))
+    if not auth.get("authorized"):
+        _append_guardian_control_audit(action=action, actor=actor, reason=reason, success=False, detail={"error": "unauthorized"})
+        return jsonify({"success": False, "error": "Unauthorized", "token_required": True}), 401
+
+    if action == "pause_autopilot":
+        if _is_full_auto_profile():
+            lease_sec = _int_in_range(
+                data.get("lease_sec", data.get("duration_sec", MONITOR_FULL_AUTO_MAINTENANCE_LEASE_SEC)),
+                MONITOR_FULL_AUTO_MAINTENANCE_LEASE_SEC,
+                30,
+                7200,
+            )
+            pause_until = _monitor_pause_supervisor_temporarily(lease_sec)
+            state.add_agent_log(
+                "guardian",
+                f"🧷 Full-auto maintenance lease active ({lease_sec}s) via guardian control ({reason})",
+                "warning",
+            )
+            _append_guardian_control_audit(
+                action=action,
+                actor=actor,
+                reason=reason,
+                success=True,
+                detail={"temporary_pause": True, "lease_sec": lease_sec, "pause_until": pause_until},
+            )
+            return jsonify({
+                "success": True,
+                "action": action,
+                "temporary_pause": True,
+                "lease_sec": lease_sec,
+                "pause_until": pause_until,
+                "supervisor": _monitor_supervisor_status(),
+                "timestamp": datetime.now().isoformat(),
+            })
+
+        _monitor_set_supervisor_enabled(False)
+        state.add_agent_log("guardian", f"🛑 Guardian control paused autopilot ({reason})", "warning")
+        _append_guardian_control_audit(
+            action=action,
+            actor=actor,
+            reason=reason,
+            success=True,
+            detail={"temporary_pause": False},
+        )
+        return jsonify({
+            "success": True,
+            "action": action,
+            "temporary_pause": False,
+            "supervisor": _monitor_supervisor_status(),
+            "timestamp": datetime.now().isoformat(),
+        })
+
+    if action == "resume_autopilot":
+        _monitor_set_supervisor_enabled(True)
+        state.add_agent_log("guardian", f"✅ Guardian control resumed autopilot ({reason})", "success")
+        _append_guardian_control_audit(action=action, actor=actor, reason=reason, success=True)
+        return jsonify({
+            "success": True,
+            "action": action,
+            "supervisor": _monitor_supervisor_status(),
+            "timestamp": datetime.now().isoformat(),
+        })
+
+    # action == shutdown
+    _monitor_set_supervisor_enabled(False)
+    shutdown_results: Dict[str, Any] = {}
+    success_count = 0
+    instances = get_orion_instances_snapshot()
+    for item in instances:
+        instance_id = str(item.get("id", "")).strip() or LOCAL_INSTANCE_ID
+        result = _call_instance_command(
+            instance_id=instance_id,
+            target="orion",
+            command="shutdown",
+            priority="high",
+            options={"source": "guardian_control", "reason": reason, "actor": actor},
+        )
+        ok = bool(result.get("success", False))
+        if ok:
+            success_count += 1
+        shutdown_results[instance_id] = result
+    state.add_agent_log("guardian", f"🧯 Guardian control issued SHUTDOWN ({reason})", "warning")
+    _append_guardian_control_audit(
+        action=action,
+        actor=actor,
+        reason=reason,
+        success=success_count > 0,
+        detail={"instances": len(instances), "success_count": success_count},
+    )
+    return jsonify({
+        "success": success_count > 0,
+        "action": action,
+        "summary": {
+            "instances": len(instances),
+            "success": success_count,
+            "failed": max(0, len(instances) - success_count),
+        },
+        "results": shutdown_results,
+        "supervisor": _monitor_supervisor_status(),
         "timestamp": datetime.now().isoformat(),
     })
 
@@ -4688,19 +6544,57 @@ def monitor_autopilot():
         })
 
     data = request.get_json(silent=True) or {}
-    enabled = bool(data.get("enabled", True))
-    _monitor_set_supervisor_enabled(enabled)
+    enabled = _to_bool(data.get("enabled", True))
+    temporary_pause = False
+    pause_until = None
+    lease_sec = None
+    if enabled:
+        _monitor_set_supervisor_enabled(True)
+    elif _is_full_auto_profile():
+        lease_sec = _int_in_range(
+            data.get("lease_sec", data.get("duration_sec", MONITOR_FULL_AUTO_MAINTENANCE_LEASE_SEC)),
+            MONITOR_FULL_AUTO_MAINTENANCE_LEASE_SEC,
+            30,
+            7200,
+        )
+        pause_until = _monitor_pause_supervisor_temporarily(lease_sec)
+        temporary_pause = True
+    else:
+        _monitor_set_supervisor_enabled(False)
     state.add_agent_log(
         "guardian",
-        f"🧭 Monitor autopilot {'enabled' if enabled else 'disabled'} by dashboard",
+        (
+            f"🧷 Monitor autopilot maintenance lease ({lease_sec}s) by dashboard"
+            if temporary_pause
+            else f"🧭 Monitor autopilot {'enabled' if enabled else 'disabled'} by dashboard"
+        ),
         "success" if enabled else "warning",
     )
-    return jsonify({
+    _append_guardian_control_audit(
+        action="resume_autopilot" if enabled else "pause_autopilot",
+        actor="dashboard",
+        reason="monitor_autopilot_api_full_auto_lease" if temporary_pause else "monitor_autopilot_api",
+        success=True,
+        detail=(
+            {"temporary_pause": True, "lease_sec": lease_sec, "pause_until": pause_until}
+            if temporary_pause
+            else {"temporary_pause": False}
+        ),
+    )
+    supervisor_snapshot = _monitor_supervisor_status()
+    response_payload = {
         "success": True,
-        "enabled": enabled,
-        "supervisor": _monitor_supervisor_status(),
+        "enabled": bool(supervisor_snapshot.get("enabled")),
+        "requested_enabled": enabled,
+        "temporary_pause": temporary_pause,
+        "supervisor": supervisor_snapshot,
         "timestamp": datetime.now().isoformat(),
-    })
+    }
+    if pause_until:
+        response_payload["pause_until"] = pause_until
+    if lease_sec:
+        response_payload["lease_sec"] = lease_sec
+    return jsonify(response_payload)
 
 
 @app.route('/api/cost-guard', methods=['GET', 'POST'])

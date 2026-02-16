@@ -267,7 +267,22 @@ DEFAULT_SINGLE_MODEL=minimax/MiniMax-M2.5
 | `GET /api/computer-control/status` | OpenClaw status |
 | `POST /api/openclaw/browser` | Browser control (returns structured error_code + token_info health data) |
 | `POST /api/openclaw/flow/dashboard` | Auto dashboard flow (short-circuits on token/health failure and reports step-by-step steps) |
+| `POST /api/openclaw/commands` | Unified OpenClaw dispatch with policy decision + worker routing |
+| `GET /api/openclaw/commands/<request_id>` | OpenClaw command lifecycle/status |
+| `GET /api/openclaw/metrics` | OpenClaw counters (token/health/attach/flow), supports `?events=1` |
+| `GET /api/openclaw/metrics/prometheus` | Prometheus metrics for OpenClaw monitoring |
+| `GET /api/control-plane/workers` | Control-plane worker registry + circuit states |
+| `POST /api/control-plane/workers/register` | Register worker to control-plane |
+| `POST /api/control-plane/workers/heartbeat` | Worker heartbeat + backpressure actions |
+| `GET /api/guardian/autopilot/status` | Guardian autopilot + control-plane status |
+| `POST /api/guardian/control` | Guardian control actions (`pause_autopilot`, `resume_autopilot`, `shutdown`) |
+| `GET/POST /api/autonomy/profile` | Read/set autonomy profile (`safe`, `balanced`, `full_auto`) and sync to Orion runtime |
+| `GET /api/slo/summary` | Balanced SLO summary |
 | `GET /api/events/digest` | Event digest |
+
+`full_auto` behavior:
+- User pause is treated as temporary in automation context; Orion is auto-resumed after `MONITOR_FULL_AUTO_USER_PAUSE_MAX_SEC`.
+- `pause_autopilot` becomes a maintenance lease in `full_auto` (not an infinite OFF) via `MONITOR_FULL_AUTO_MAINTENANCE_LEASE_SEC`.
 
 ---
 

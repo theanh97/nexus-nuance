@@ -211,6 +211,95 @@ def main():
             print(f"  • No-learning streak: {self_check.get('no_learning_streak', 0)}")
             print(f"  • No-improvement streak: {self_check.get('no_improvement_streak', 0)}")
             print(f"  • Warning threshold: {self_check.get('warn_streak_threshold', 'N/A')}")
+            print(f"  • Learning window open: {self_check.get('learning_window_open', False)}")
+            print(f"  • Improvement window open: {self_check.get('improvement_window_open', False)}")
+
+        funnel = report.get("proposal_funnel", {})
+        if funnel:
+            print(f"\n🧪 Proposal Funnel:")
+            print(f"  • Created: {funnel.get('created', 0)}")
+            print(f"  • Pending Approval: {funnel.get('pending_approval', 0)}")
+            print(f"  • Approved: {funnel.get('approved', 0)}")
+            print(f"  • Executed: {funnel.get('executed', 0)}")
+            print(f"  • Verified: {funnel.get('verified', 0)}")
+            conversion = funnel.get("conversion", {}) if isinstance(funnel.get("conversion"), dict) else {}
+            if conversion:
+                print(
+                    "  • Conversion (all-time) a/e/v: "
+                    f"{conversion.get('approval_rate', 0)}/"
+                    f"{conversion.get('execution_rate', 0)}/"
+                    f"{conversion.get('verification_rate', 0)}"
+                )
+            w24 = funnel.get("window_24h", {}) if isinstance(funnel.get("window_24h"), dict) else {}
+            if w24:
+                print(
+                    "  • 24h created→verified: "
+                    f"{w24.get('created', 0)}→{w24.get('verified', 0)} "
+                    f"({w24.get('verified_from_created_rate', 0)})"
+                )
+
+        outcome = report.get("outcome_quality", {})
+        if outcome:
+            print(f"\n📉 Outcome Quality:")
+            print(f"  • Verified total: {outcome.get('verified_total', 0)}")
+            print(f"  • Win rate: {outcome.get('win_rate', 0)}")
+            print(f"  • Loss rate: {outcome.get('loss_rate', 0)}")
+            print(f"  • Inconclusive rate: {outcome.get('inconclusive_rate', 0)}")
+            print(f"  • Pending recheck runs: {outcome.get('pending_recheck_runs', 0)}")
+            print(f"  • Retry exhausted runs: {outcome.get('retry_exhausted_runs', 0)}")
+            print(f"  • Avg confidence: {outcome.get('avg_confidence', 0)}")
+            print(f"  • Avg latency delta (ms): {outcome.get('avg_latency_delta_ms', 0)}")
+            print(f"  • Avg error delta: {outcome.get('avg_error_delta', 0)}")
+            print(f"  • Avg execution cost (USD): {outcome.get('avg_execution_cost_usd', 0)}")
+            t24 = outcome.get("trend_24h", {}) if isinstance(outcome.get("trend_24h"), dict) else {}
+            print(
+                f"  • Trend 24h (w/l/i): "
+                f"{t24.get('win', 0)}/{t24.get('loss', 0)}/{t24.get('inconclusive', 0)}"
+            )
+        event_quality = report.get("learning_event_quality", {})
+        if event_quality:
+            print(f"\n🧼 Learning Event Quality:")
+            print(f"  • Total events: {event_quality.get('total_events', 0)}")
+            print(
+                "  • Production/non-production: "
+                f"{event_quality.get('production_events', 0)}/"
+                f"{event_quality.get('non_production_events', 0)}"
+            )
+            print(f"  • Production ratio: {event_quality.get('production_ratio', 0)}")
+            trend = event_quality.get("trend_24h", {}) if isinstance(event_quality.get("trend_24h"), dict) else {}
+            print(
+                "  • 24h stream (prod/non-prod): "
+                f"{trend.get('production', 0)}/{trend.get('non_production', 0)}"
+            )
+
+        policy = report.get("policy_state", {})
+        if policy:
+            selected = policy.get("selected", {}) if isinstance(policy.get("selected"), dict) else {}
+            print(f"\n🎛️ Policy State:")
+            print(f"  • Approve threshold arm: {selected.get('approve_threshold', 'N/A')}")
+            print(f"  • Scan min-score arm: {selected.get('scan_min_score', 'N/A')}")
+            print(f"  • Focus policy arm: {selected.get('focus_policy', 'N/A')}")
+
+        guardrail = report.get("execution_guardrail", {})
+        if guardrail:
+            print(f"\n🛡️ Execution Guardrail:")
+            print(f"  • Canary enabled: {guardrail.get('canary_enabled', False)}")
+            print(f"  • Real-apply enabled: {guardrail.get('executor_real_apply_enabled', False)}")
+            print(
+                f"  • Normal runs (1h): "
+                f"{guardrail.get('normal_mode_runs_last_hour', 0)}/{guardrail.get('normal_mode_max_per_hour', 0)}"
+            )
+            print(f"  • Cooldown remaining (s): {guardrail.get('normal_mode_cooldown_remaining_sec', 0)}")
+            print(f"  • Last reason: {guardrail.get('normal_mode_last_reason', 'N/A')}")
+
+        windows = report.get("windows", {})
+        if windows:
+            print(f"\n🪟 Opportunity Windows:")
+            print(f"  • Learning opportunities: {windows.get('learning_opportunities', 0)}")
+            print(f"  • Improvement opportunities: {windows.get('improvement_opportunities', 0)}")
+            print(f"  • Windowed self-check: {windows.get('windowed_self_check_enabled', False)}")
+            print(f"  • Synthetic opportunities: {windows.get('synthetic_opportunities_enabled', False)}")
+            print(f"  • No-opportunity iterations: {windows.get('no_opportunity_iterations', 0)}")
 
         focus = report.get("focus", {})
         critical = focus.get("critical_problems", [])

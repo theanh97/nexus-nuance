@@ -29,6 +29,13 @@ from .self_debugger import (
     track_error, health_check, SelfDebugger
 )
 from .advanced_learning import get_learning_engine, AdvancedLearningEngine
+from .storage_v2 import get_storage_v2
+from .proposal_engine import get_proposal_engine_v2
+from .experiment_executor import get_experiment_executor
+from .outcome_verifier import get_outcome_verifier
+from .learning_policy import get_learning_policy_state, select_learning_policy, update_learning_policy
+from .memory_governor import get_memory_governor
+from .migrate_proposals_v1_to_v2 import migrate_once as migrate_proposals_v1_to_v2
 
 # NEW: Import working API-based learning modules
 try:
@@ -140,6 +147,42 @@ class LearningLoop:
             get_learning_engine() if self.enable_advanced_learning else None
         )
         self.prompt_system = get_prompt_system()
+        self.storage_v2 = get_storage_v2()
+        self.proposal_engine_v2 = get_proposal_engine_v2()
+        self.executor_v2 = get_experiment_executor()
+        self.verifier_v2 = get_outcome_verifier()
+        self.governor = get_memory_governor()
+        self.enable_proposal_v2 = os.getenv("ENABLE_PROPOSAL_V2", "true").strip().lower() == "true"
+        self.enable_experiment_executor = os.getenv("ENABLE_EXPERIMENT_EXECUTOR", "true").strip().lower() == "true"
+        self.execution_mode_default = str(os.getenv("EXECUTION_MODE_DEFAULT", "safe")).strip().lower() or "safe"
+        self.enable_policy_bandit = os.getenv("ENABLE_POLICY_BANDIT", "true").strip().lower() == "true"
+        self.enable_windowed_self_check = os.getenv("ENABLE_WINDOWED_SELF_CHECK", "true").strip().lower() == "true"
+        self.enable_synthetic_opportunities = os.getenv("ENABLE_SYNTHETIC_OPPORTUNITIES", "true").strip().lower() == "true"
+        self.synthetic_opportunity_threshold = int(os.getenv("SYNTHETIC_OPPORTUNITY_THRESHOLD", "3"))
+        self.verification_retry_interval_sec = int(os.getenv("VERIFICATION_RETRY_INTERVAL_SECONDS", "300"))
+        self.verification_retry_max_attempts = int(os.getenv("VERIFICATION_RETRY_MAX_ATTEMPTS", "3"))
+        self.enable_normal_mode_canary = os.getenv("ENABLE_NORMAL_MODE_CANARY", "true").strip().lower() == "true"
+        self.normal_mode_max_per_hour = int(os.getenv("NORMAL_MODE_MAX_PER_HOUR", "1"))
+        self.normal_mode_min_priority = float(os.getenv("NORMAL_MODE_MIN_PRIORITY", "0.9"))
+        self.normal_mode_allowed_risk = set(
+            x.strip().lower()
+            for x in str(os.getenv("NORMAL_MODE_ALLOWED_RISK", "low")).split(",")
+            if x.strip()
+        ) or {"low"}
+        self.normal_mode_cooldown_sec = int(os.getenv("NORMAL_MODE_COOLDOWN_SECONDS", "1800"))
+        self.normal_mode_cooldown_until: Optional[str] = None
+        self.normal_mode_execution_history: List[str] = []
+        self.normal_mode_successes = 0
+        self.normal_mode_losses = 0
+        self.normal_mode_last_reason = "not_evaluated"
+        self.window_learning_opportunities = 0
+        self.window_improvement_opportunities = 0
+        self.no_opportunity_iterations = 0
+        if self.enable_proposal_v2:
+            try:
+                migrate_proposals_v1_to_v2()
+            except Exception:
+                pass
 
         self.notes_dir = self.base_path.parent / "logs"
         self.notes_dir.mkdir(parents=True, exist_ok=True)
@@ -181,6 +224,18 @@ class LearningLoop:
                 self.applied_proposals = set(data.get("applied_proposals", []))
                 self.no_improvement_streak = int(data.get("no_improvement_streak", 0))
                 self.no_learning_streak = int(data.get("no_learning_streak", 0))
+                self.window_learning_opportunities = int(data.get("window_learning_opportunities", 0))
+                self.window_improvement_opportunities = int(data.get("window_improvement_opportunities", 0))
+                self.no_opportunity_iterations = int(data.get("no_opportunity_iterations", 0))
+                self.normal_mode_cooldown_until = data.get("normal_mode_cooldown_until")
+                self.normal_mode_execution_history = (
+                    data.get("normal_mode_execution_history", [])
+                    if isinstance(data.get("normal_mode_execution_history"), list)
+                    else []
+                )[-500:]
+                self.normal_mode_successes = int(data.get("normal_mode_successes", 0))
+                self.normal_mode_losses = int(data.get("normal_mode_losses", 0))
+                self.normal_mode_last_reason = str(data.get("normal_mode_last_reason", self.normal_mode_last_reason))
                 loaded_focus = str(data.get("current_focus_area", self.current_focus_area)).strip().lower()
                 if loaded_focus in self.FOCUS_AREAS:
                     self.current_focus_area = loaded_focus
@@ -203,6 +258,14 @@ class LearningLoop:
                 "applied_proposals": sorted(list(self.applied_proposals))[-500:],
                 "no_improvement_streak": self.no_improvement_streak,
                 "no_learning_streak": self.no_learning_streak,
+                "window_learning_opportunities": self.window_learning_opportunities,
+                "window_improvement_opportunities": self.window_improvement_opportunities,
+                "no_opportunity_iterations": self.no_opportunity_iterations,
+                "normal_mode_cooldown_until": self.normal_mode_cooldown_until,
+                "normal_mode_execution_history": self.normal_mode_execution_history[-200:],
+                "normal_mode_successes": self.normal_mode_successes,
+                "normal_mode_losses": self.normal_mode_losses,
+                "normal_mode_last_reason": self.normal_mode_last_reason,
                 "current_focus_area": self.current_focus_area,
                 "last_updated": datetime.now().isoformat()
             }, f, indent=2)
@@ -251,6 +314,21 @@ class LearningLoop:
                 category="interactions",
                 importance=interaction.get("importance", 5)
             )
+
+        # Feed normalized event stream for proposal v2.
+        self._record_learning_event(
+            {
+                "ts": datetime.now().isoformat(),
+                "source": interaction.get("agent", "interaction"),
+                "event_type": interaction.get("type", "interaction"),
+                "content": str(interaction.get("error") or interaction.get("details") or "")[:400],
+                "context": interaction.get("context", {}) if isinstance(interaction.get("context"), dict) else {},
+                "novelty_score": 0.6 if interaction.get("significant", False) else 0.35,
+                "value_score": 0.75 if interaction.get("success") else 0.65,
+                "risk_score": 0.25 if interaction.get("success") else 0.55,
+                "confidence": 0.7 if interaction.get("success") else 0.5,
+            }
+        )
 
         # NEW: Also learn from user feedback if available
         if API_LEARNING_AVAILABLE:
@@ -543,6 +621,103 @@ class LearningLoop:
             return datetime.fromisoformat(str(value))
         except (ValueError, TypeError):
             return None
+
+    def _prune_normal_mode_history(self, now: Optional[datetime] = None) -> List[datetime]:
+        now = now or datetime.now()
+        kept: List[str] = []
+        parsed: List[datetime] = []
+        for raw in self.normal_mode_execution_history[-500:]:
+            ts = self._parse_time(raw)
+            if not ts:
+                continue
+            if (now - ts).total_seconds() <= 3600:
+                kept.append(ts.isoformat())
+                parsed.append(ts)
+        self.normal_mode_execution_history = kept
+        return parsed
+
+    def _execution_guardrail_snapshot(self) -> Dict:
+        now = datetime.now()
+        history = self._prune_normal_mode_history(now=now)
+        cooldown_until_dt = self._parse_time(self.normal_mode_cooldown_until)
+        cooldown_remaining = 0
+        if cooldown_until_dt:
+            cooldown_remaining = max(0, int((cooldown_until_dt - now).total_seconds()))
+        return {
+            "canary_enabled": self.enable_normal_mode_canary,
+            "executor_real_apply_enabled": bool(getattr(self.executor_v2, "enable_real_apply", False)),
+            "normal_mode_max_per_hour": self.normal_mode_max_per_hour,
+            "normal_mode_runs_last_hour": len(history),
+            "normal_mode_min_priority": self.normal_mode_min_priority,
+            "normal_mode_allowed_risk": sorted(list(self.normal_mode_allowed_risk)),
+            "normal_mode_cooldown_until": self.normal_mode_cooldown_until,
+            "normal_mode_cooldown_remaining_sec": cooldown_remaining,
+            "normal_mode_successes": self.normal_mode_successes,
+            "normal_mode_losses": self.normal_mode_losses,
+            "normal_mode_last_reason": self.normal_mode_last_reason,
+        }
+
+    def _select_execution_mode_for_proposal(self, proposal: Dict) -> Dict[str, str]:
+        default_mode = self.execution_mode_default if self.execution_mode_default in {"safe", "normal"} else "safe"
+        if default_mode != "normal":
+            self.normal_mode_last_reason = "default_safe_mode"
+            return {"mode": "safe", "reason": self.normal_mode_last_reason}
+        if not self.enable_normal_mode_canary:
+            self.normal_mode_last_reason = "canary_disabled"
+            return {"mode": "safe", "reason": self.normal_mode_last_reason}
+        if not bool(getattr(self.executor_v2, "enable_real_apply", False)):
+            self.normal_mode_last_reason = "real_apply_disabled"
+            return {"mode": "safe", "reason": self.normal_mode_last_reason}
+
+        now = datetime.now()
+        cooldown_until_dt = self._parse_time(self.normal_mode_cooldown_until)
+        if cooldown_until_dt and cooldown_until_dt > now:
+            self.normal_mode_last_reason = "cooldown_active"
+            return {"mode": "safe", "reason": self.normal_mode_last_reason}
+
+        recent = self._prune_normal_mode_history(now=now)
+        if len(recent) >= max(1, self.normal_mode_max_per_hour):
+            self.normal_mode_last_reason = "hourly_quota_exceeded"
+            return {"mode": "safe", "reason": self.normal_mode_last_reason}
+
+        risk_level = str(proposal.get("risk_level", "high")).strip().lower()
+        priority = float(proposal.get("priority", 0.0) or 0.0)
+        if risk_level not in self.normal_mode_allowed_risk:
+            self.normal_mode_last_reason = f"risk_not_allowed:{risk_level}"
+            return {"mode": "safe", "reason": self.normal_mode_last_reason}
+        if priority < float(self.normal_mode_min_priority):
+            self.normal_mode_last_reason = "priority_below_canary_threshold"
+            return {"mode": "safe", "reason": self.normal_mode_last_reason}
+
+        self.normal_mode_last_reason = "canary_allowed"
+        return {"mode": "normal", "reason": self.normal_mode_last_reason}
+
+    def _record_normal_mode_outcome(self, verdict: str, proposal_id: str) -> None:
+        now = datetime.now()
+        self.normal_mode_execution_history.append(now.isoformat())
+        self._prune_normal_mode_history(now=now)
+        verdict = str(verdict).strip().lower()
+        if verdict == "loss":
+            self.normal_mode_losses += 1
+            self.normal_mode_cooldown_until = (now + timedelta(seconds=max(60, self.normal_mode_cooldown_sec))).isoformat()
+            self.proposal_engine_v2.mark_status(
+                proposal_id,
+                "verified",
+                rollback_guardrail_triggered=True,
+                rollback_reason="loss_detected_after_normal_mode_execution",
+                rollback_triggered_at=now.isoformat(),
+            )
+            self._append_rnd_note(
+                note_type="normal_mode_guardrail_cooldown",
+                severity="warning",
+                message=f"Normal-mode loss detected. Cooldown activated for {self.normal_mode_cooldown_sec}s.",
+                context={
+                    "proposal_id": proposal_id,
+                    "cooldown_until": self.normal_mode_cooldown_until,
+                },
+            )
+        elif verdict == "win":
+            self.normal_mode_successes += 1
 
     def _daily_notes_path(self, dt: Optional[datetime] = None) -> Path:
         ts = dt or datetime.now()
@@ -1093,10 +1268,42 @@ class LearningLoop:
         advanced = results.get("advanced_review", {}) if isinstance(results.get("advanced_review"), dict) else {}
 
         learned_now = int(scan.get("filtered_count", 0)) > 0 or int(advanced.get("reviewed_items", 0)) > 0
-        improved_now = int(improvements.get("applied", 0)) > 0
+        v2 = results.get("v2_pipeline", {}) if isinstance(results.get("v2_pipeline"), dict) else {}
+        improved_now = (
+            int(improvements.get("applied", 0)) > 0
+            or int(v2.get("wins", 0)) > 0
+            or (int(v2.get("verified", 0)) > 0 and int(v2.get("losses", 0)) == 0)
+        )
 
-        self.no_learning_streak = 0 if learned_now else self.no_learning_streak + 1
-        self.no_improvement_streak = 0 if improved_now else self.no_improvement_streak + 1
+        learning_window_open = "scan" in results or "advanced_review" in results
+        improvement_window_open = (
+            int(improvements.get("total_seen", 0)) > 0
+            or int((results.get("v2_pipeline") or {}).get("created", 0)) > 0
+            or int((results.get("v2_pipeline") or {}).get("approved", 0)) > 0
+        )
+        synthetic_window = False
+        if not learning_window_open and not improvement_window_open:
+            self.no_opportunity_iterations += 1
+            if (
+                self.enable_synthetic_opportunities
+                and self.no_opportunity_iterations >= max(1, self.synthetic_opportunity_threshold)
+            ):
+                synthetic_window = True
+                learning_window_open = True
+                improvement_window_open = True
+        else:
+            self.no_opportunity_iterations = 0
+
+        if self.enable_windowed_self_check:
+            if learning_window_open:
+                self.window_learning_opportunities += 1
+                self.no_learning_streak = 0 if learned_now else self.no_learning_streak + 1
+            if improvement_window_open:
+                self.window_improvement_opportunities += 1
+                self.no_improvement_streak = 0 if improved_now else self.no_improvement_streak + 1
+        else:
+            self.no_learning_streak = 0 if learned_now else self.no_learning_streak + 1
+            self.no_improvement_streak = 0 if improved_now else self.no_improvement_streak + 1
 
         warnings = []
         suggestions = []
@@ -1111,6 +1318,8 @@ class LearningLoop:
 
         if int(results.get("health", {}).get("open_issues", 0)) > 0:
             suggestions.append("Prioritize resolving open issues before generating new changes.")
+        if synthetic_window:
+            suggestions.append("Synthetic opportunity window opened to prevent blind stagnation; trigger scan/verify soon.")
 
         return {
             "enabled": self.enable_iteration_self_check,
@@ -1118,8 +1327,244 @@ class LearningLoop:
             "improved_now": improved_now,
             "no_learning_streak": self.no_learning_streak,
             "no_improvement_streak": self.no_improvement_streak,
+            "learning_window_open": learning_window_open,
+            "improvement_window_open": improvement_window_open,
+            "learning_opportunities": self.window_learning_opportunities,
+            "improvement_opportunities": self.window_improvement_opportunities,
+            "synthetic_window_open": synthetic_window,
+            "no_opportunity_iterations": self.no_opportunity_iterations,
             "warnings": warnings[:5],
             "suggestions": suggestions[:5],
+        }
+
+    def _record_learning_event(self, event: Dict) -> Optional[str]:
+        if not isinstance(event, dict):
+            return None
+        if not self.governor.should_keep(event, category="learning_event"):
+            return None
+        return self.storage_v2.record_learning_event(event)
+
+    def _events_from_scan(self, scan_results: Dict) -> List[Dict]:
+        events: List[Dict] = []
+        if not isinstance(scan_results, dict):
+            return events
+        for item in scan_results.get("top_items", [])[:10]:
+            score = float(item.get("score", 0) or 0)
+            events.append(
+                {
+                    "ts": datetime.now().isoformat(),
+                    "source": item.get("source", "scan"),
+                    "event_type": "scan_insight",
+                    "content": item.get("title", ""),
+                    "title": f"Integrate: {item.get('title', 'insight')}",
+                    "hypothesis": item.get("potential_improvement", "Integrating this insight improves the system."),
+                    "expected_impact": f"score={score:.2f}",
+                    "novelty_score": min(1.0, score / 10.0),
+                    "value_score": min(1.0, score / 10.0),
+                    "risk_score": 0.25 if score >= 7.0 else 0.4,
+                    "confidence": 0.65 if score >= 7.0 else 0.55,
+                    "context": {"category": item.get("category"), "url": item.get("url", "")},
+                }
+            )
+        return events
+
+    def _run_v2_proposal_cycle(self, results: Dict) -> Dict:
+        summary = {
+            "created": 0,
+            "approved": 0,
+            "executed": 0,
+            "verified": 0,
+            "retry_attempted": 0,
+            "retry_verified": 0,
+            "safe_mode_runs": 0,
+            "normal_mode_runs": 0,
+            "canary_blocked": 0,
+            "wins": 0,
+            "losses": 0,
+            "inconclusive": 0,
+            "runs": [],
+        }
+        if not self.enable_proposal_v2:
+            return summary
+
+        selected_policy = {}
+        if self.enable_policy_bandit:
+            selected_policy = select_learning_policy()
+            try:
+                if "approve_threshold" in selected_policy:
+                    self.proposal_engine_v2.auto_approve_threshold = float(selected_policy["approve_threshold"])
+                if "scan_min_score" in selected_policy:
+                    self.scanner.proposal_threshold = max(0.0, float(selected_policy["scan_min_score"]))
+            except (TypeError, ValueError):
+                pass
+
+        events = []
+        scan = results.get("scan", {}) if isinstance(results.get("scan"), dict) else {}
+        events.extend(self._events_from_scan(scan))
+        for event in events:
+            event_id = self._record_learning_event(event)
+            if event_id:
+                event["id"] = event_id
+
+        created = self.proposal_engine_v2.generate_from_events(events, limit=20)
+        summary["created"] = len(created)
+        summary["approved"] = sum(1 for p in created if p.get("status") == "approved")
+        adaptive_threshold = self.proposal_engine_v2.auto_approve_threshold
+        if self.no_improvement_streak >= self.focus_rotation_warn_streak:
+            adaptive_threshold = max(0.0, adaptive_threshold - 0.2)
+        summary["approved"] += int(
+            self.proposal_engine_v2.auto_approve_safe(limit=3, min_priority=adaptive_threshold) or 0
+        )
+
+        if not self.enable_experiment_executor:
+            return summary
+
+        actionable = [p for p in self.proposal_engine_v2.list_pending() if p.get("status") == "approved"][:3]
+        self.window_improvement_opportunities += len(actionable)
+        for proposal in actionable:
+            mode_decision = self._select_execution_mode_for_proposal(proposal)
+            run_mode = str(mode_decision.get("mode", "safe"))
+            run_reason = str(mode_decision.get("reason", "unknown"))
+            if run_mode == "normal":
+                summary["normal_mode_runs"] += 1
+            else:
+                summary["safe_mode_runs"] += 1
+                if run_reason not in {"default_safe_mode", "canary_allowed"}:
+                    summary["canary_blocked"] += 1
+            exec_result = self.executor_v2.execute_proposal(
+                proposal_id=str(proposal.get("id")),
+                mode=run_mode,
+            )
+            if not exec_result.get("ok"):
+                continue
+            summary["executed"] += 1
+            run_id = exec_result.get("run_id")
+            verdict = "inconclusive"
+            if run_id:
+                verify = self.verifier_v2.verify_experiment(run_id)
+                if verify.get("ok"):
+                    if not bool(verify.get("pending_recheck", False)):
+                        summary["verified"] += 1
+                    evidence = verify.get("evidence", {})
+                    verdict = evidence.get("verdict", "inconclusive")
+                    if verdict == "win":
+                        summary["wins"] += 1
+                    elif verdict == "loss":
+                        summary["losses"] += 1
+                    else:
+                        summary["inconclusive"] += 1
+                    if run_mode == "normal":
+                        self._record_normal_mode_outcome(verdict=verdict, proposal_id=str(proposal.get("id")))
+                    if self.enable_policy_bandit:
+                        update_learning_policy({"verdict": verdict, "selected": selected_policy})
+            summary["runs"].append(
+                {
+                    "proposal_id": proposal.get("id"),
+                    "run_id": run_id,
+                    "verdict": verdict,
+                    "mode": run_mode,
+                    "canary_reason": run_reason,
+                }
+            )
+
+        retry_summary = self._retry_pending_verifications(limit=3)
+        summary["retry_attempted"] = int(retry_summary.get("attempted", 0))
+        summary["retry_verified"] = int(retry_summary.get("verified", 0))
+        summary["retry_finalized_exhausted"] = int(retry_summary.get("finalized_exhausted", 0))
+        summary["verified"] += int(retry_summary.get("verified", 0))
+        summary["wins"] += int(retry_summary.get("wins", 0))
+        summary["losses"] += int(retry_summary.get("losses", 0))
+        summary["inconclusive"] += int(retry_summary.get("inconclusive", 0))
+
+        return summary
+
+    def _retry_pending_verifications(self, limit: int = 3) -> Dict:
+        if not self.enable_proposal_v2:
+            return {
+                "attempted": 0,
+                "verified": 0,
+                "wins": 0,
+                "losses": 0,
+                "inconclusive": 0,
+                "finalized_exhausted": 0,
+            }
+        now = datetime.now()
+        attempted = 0
+        verified = 0
+        wins = 0
+        losses = 0
+        inconclusive = 0
+        finalized_exhausted = 0
+        max_attempts = max(1, self.verification_retry_max_attempts)
+        runs = self.storage_v2.get_experiment_runs(limit=500)
+        for run in reversed(runs):
+            if attempted >= max(1, limit):
+                break
+            if not isinstance(run, dict):
+                continue
+            run_id = str(run.get("id", "")).strip()
+            if not run_id:
+                continue
+            verification = run.get("verification", {}) if isinstance(run.get("verification"), dict) else {}
+            if not bool(verification.get("pending_recheck", False)):
+                continue
+            attempts = int(verification.get("attempts", 0) or 0)
+            if attempts >= max_attempts:
+                finalized_at = datetime.now().isoformat()
+                final_verdict = str(verification.get("verdict", "inconclusive")).strip().lower() or "inconclusive"
+                try:
+                    final_confidence = float(verification.get("confidence", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    final_confidence = 0.0
+                finalized_verification = dict(verification)
+                finalized_verification.update(
+                    {
+                        "pending_recheck": False,
+                        "retry_exhausted": True,
+                        "finalized_reason": "max_retries_exhausted",
+                        "verified_at": finalized_at,
+                    }
+                )
+                self.storage_v2.update_experiment_run(run_id, {"verification": finalized_verification})
+                proposal_id = str(run.get("proposal_id", "")).strip()
+                if proposal_id:
+                    self.proposal_engine_v2.mark_status(
+                        proposal_id,
+                        "executed",
+                        verification_pending=False,
+                        verification_exhausted=True,
+                        verification_finalized_at=finalized_at,
+                        verification_final_reason="max_retries_exhausted",
+                        verdict=final_verdict,
+                        verdict_confidence=final_confidence,
+                    )
+                finalized_exhausted += 1
+                continue
+            last_verified_at = self._parse_time(verification.get("verified_at"))
+            if last_verified_at and (now - last_verified_at).total_seconds() < max(10, self.verification_retry_interval_sec):
+                continue
+
+            recheck = self.verifier_v2.verify_experiment(run_id)
+            attempted += 1
+            if not recheck.get("ok"):
+                continue
+            verdict = str(((recheck.get("evidence") or {}).get("verdict", "inconclusive"))).strip().lower()
+            if verdict == "win":
+                wins += 1
+            elif verdict == "loss":
+                losses += 1
+            else:
+                inconclusive += 1
+            if not bool(recheck.get("pending_recheck", False)):
+                verified += 1
+
+        return {
+            "attempted": attempted,
+            "verified": verified,
+            "wins": wins,
+            "losses": losses,
+            "inconclusive": inconclusive,
+            "finalized_exhausted": finalized_exhausted,
         }
 
     def _ingest_scan_into_advanced_learning(self, scan_results: Dict) -> int:
@@ -1353,6 +1798,26 @@ class LearningLoop:
                 improvement_guard.release()
         results["improvements"] = improvement_summary
 
+        # 3b. Run v2 proposal -> execute -> verify pipeline.
+        try:
+            v2_summary = self._run_v2_proposal_cycle(results)
+            results["v2_pipeline"] = v2_summary
+            if (
+                int(v2_summary.get("created", 0)) > 0
+                or int(v2_summary.get("executed", 0)) > 0
+                or int(v2_summary.get("verified", 0)) > 0
+            ):
+                results["actions"].append("v2_pipeline")
+        except Exception as e:
+            track_error(
+                "SYSTEM",
+                "v2_pipeline_error",
+                str(e),
+                context={"iteration": self.iteration},
+                recoverable=True,
+            )
+            results["errors"].append({"step": "v2_pipeline", "error": str(e)})
+
         # 4. Advanced learning review
         if self._should_run_advanced_review():
             try:
@@ -1529,6 +1994,7 @@ class LearningLoop:
                 "iteration": self.iteration,
                 "actions": results["actions"],
                 "applied_improvements": improvement_summary.get("applied", 0),
+                "v2_executed": int((results.get("v2_pipeline") or {}).get("executed", 0)),
                 "errors": len(results["errors"]),
             },
             success=len(results["errors"]) == 0,
@@ -1636,6 +2102,204 @@ class LearningLoop:
             latest_summary = daily_self_learning_recent[0].get("summary", {})
             if isinstance(latest_summary, dict):
                 latest_rotation = latest_summary.get("portfolio_rotation", {})
+        proposals_v2 = self.storage_v2.get_proposals_v2()
+        v2_rows = proposals_v2.get("proposals", []) if isinstance(proposals_v2.get("proposals"), list) else []
+        status_counts: Dict[str, int] = {}
+        for row in v2_rows:
+            status = str(row.get("status", "unknown"))
+            status_counts[status] = status_counts.get(status, 0) + 1
+
+        proposal_funnel = {
+            "created": len(v2_rows),
+            "pending_approval": status_counts.get("pending_approval", 0),
+            "approved": status_counts.get("approved", 0),
+            "executed": status_counts.get("executed", 0),
+            "verified": status_counts.get("verified", 0),
+            "rejected": status_counts.get("rejected", 0),
+        }
+        now_dt = datetime.now()
+
+        def _safe_ratio(num: int, den: int) -> float:
+            return round(float(num) / float(den), 4) if den > 0 else 0.0
+
+        approved_or_beyond = (
+            status_counts.get("approved", 0)
+            + status_counts.get("executed", 0)
+            + status_counts.get("verified", 0)
+        )
+        executed_or_beyond = status_counts.get("executed", 0) + status_counts.get("verified", 0)
+        proposal_funnel["conversion"] = {
+            "approval_rate": _safe_ratio(approved_or_beyond, proposal_funnel["created"]),
+            "execution_rate": _safe_ratio(executed_or_beyond, approved_or_beyond),
+            "verification_rate": _safe_ratio(proposal_funnel["verified"], executed_or_beyond),
+            "verified_from_created_rate": _safe_ratio(proposal_funnel["verified"], proposal_funnel["created"]),
+        }
+
+        def _window_funnel(hours: int) -> Dict:
+            window_seconds = max(1, int(hours)) * 3600
+            cohort: List[Dict] = []
+            for row in v2_rows:
+                created_at = self._parse_time(row.get("created_at"))
+                if not created_at:
+                    continue
+                if (now_dt - created_at).total_seconds() <= window_seconds:
+                    cohort.append(row)
+            created = len(cohort)
+            approved = 0
+            executed = 0
+            verified_window = 0
+            for row in cohort:
+                status = str(row.get("status", "")).strip().lower()
+                if status in {"approved", "executed", "verified"}:
+                    approved += 1
+                if status in {"executed", "verified"}:
+                    executed += 1
+                if status == "verified":
+                    verified_window += 1
+            return {
+                "created": created,
+                "approved": approved,
+                "executed": executed,
+                "verified": verified_window,
+                "approval_rate": _safe_ratio(approved, created),
+                "execution_rate": _safe_ratio(executed, approved),
+                "verification_rate": _safe_ratio(verified_window, executed),
+                "verified_from_created_rate": _safe_ratio(verified_window, created),
+            }
+
+        proposal_funnel["window_24h"] = _window_funnel(24)
+        proposal_funnel["window_7d"] = _window_funnel(24 * 7)
+
+        runs = self.storage_v2.get_experiment_runs(limit=500)
+        verdict_counts = {"win": 0, "loss": 0, "inconclusive": 0}
+        for run in runs:
+            verification = run.get("verification", {}) if isinstance(run.get("verification"), dict) else {}
+            verdict = str(verification.get("verdict", "")).strip().lower()
+            if verdict in verdict_counts:
+                verdict_counts[verdict] += 1
+        verified_total = sum(verdict_counts.values())
+        evidence_rows = self.storage_v2.list_outcome_evidence(limit=500)
+        pending_recheck_runs = 0
+        retry_exhausted_runs = 0
+        for run in runs:
+            verification = run.get("verification", {}) if isinstance(run.get("verification"), dict) else {}
+            if bool(verification.get("pending_recheck", False)):
+                pending_recheck_runs += 1
+            if bool(verification.get("retry_exhausted", False)):
+                retry_exhausted_runs += 1
+        trend_24h = {"win": 0, "loss": 0, "inconclusive": 0}
+        trend_7d = {"win": 0, "loss": 0, "inconclusive": 0}
+        confidence_values = []
+        delta_health_values = []
+        delta_error_values = []
+        delta_latency_values = []
+        execution_cost_values = []
+        execution_duration_values = []
+        for evd in evidence_rows:
+            if not isinstance(evd, dict):
+                continue
+            verdict = str(evd.get("verdict", "")).strip().lower()
+            ts = evd.get("ts")
+            ts_dt = None
+            if ts:
+                try:
+                    ts_dt = datetime.fromisoformat(str(ts))
+                except Exception:
+                    ts_dt = None
+            if verdict in trend_24h and ts_dt:
+                age_sec = (now_dt - ts_dt).total_seconds()
+                if age_sec <= 24 * 3600:
+                    trend_24h[verdict] += 1
+                if age_sec <= 7 * 24 * 3600:
+                    trend_7d[verdict] += 1
+            try:
+                confidence_values.append(float(evd.get("confidence", 0.0) or 0.0))
+            except (TypeError, ValueError):
+                pass
+            delta = evd.get("delta", {}) if isinstance(evd.get("delta"), dict) else {}
+            execution = evd.get("execution", {}) if isinstance(evd.get("execution"), dict) else {}
+            try:
+                delta_health_values.append(float(delta.get("health_score", 0.0) or 0.0))
+            except (TypeError, ValueError):
+                pass
+            try:
+                delta_error_values.append(float(delta.get("total_errors", 0.0) or 0.0))
+            except (TypeError, ValueError):
+                pass
+            try:
+                delta_latency_values.append(float(delta.get("avg_duration_ms", 0.0) or 0.0))
+            except (TypeError, ValueError):
+                pass
+            try:
+                execution_cost_values.append(float(execution.get("estimated_cost_usd", 0.0) or 0.0))
+            except (TypeError, ValueError):
+                pass
+            try:
+                execution_duration_values.append(float(execution.get("duration_ms", 0.0) or 0.0))
+            except (TypeError, ValueError):
+                pass
+
+        def _avg(values):
+            return round(sum(values) / len(values), 4) if values else 0.0
+
+        outcome_quality = {
+            "verified_total": verified_total,
+            "win_rate": round(verdict_counts["win"] / verified_total, 4) if verified_total else 0.0,
+            "loss_rate": round(verdict_counts["loss"] / verified_total, 4) if verified_total else 0.0,
+            "inconclusive_rate": round(verdict_counts["inconclusive"] / verified_total, 4) if verified_total else 0.0,
+            "verdict_counts": verdict_counts,
+            "avg_confidence": _avg(confidence_values),
+            "avg_health_delta": _avg(delta_health_values),
+            "avg_error_delta": _avg(delta_error_values),
+            "avg_latency_delta_ms": _avg(delta_latency_values),
+            "avg_execution_cost_usd": _avg(execution_cost_values),
+            "avg_execution_duration_ms": _avg(execution_duration_values),
+            "evidence_samples": len(evidence_rows),
+            "pending_recheck_runs": pending_recheck_runs,
+            "retry_exhausted_runs": retry_exhausted_runs,
+            "trend_24h": trend_24h,
+            "trend_7d": trend_7d,
+        }
+        events = self.storage_v2.list_learning_events(limit=1000)
+        stream_counts = {"production": 0, "non_production": 0, "unknown": 0}
+        stream_trend_24h = {"production": 0, "non_production": 0}
+        stream_trend_7d = {"production": 0, "non_production": 0}
+        source_counts: Dict[str, int] = {}
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            stream = str(event.get("stream", "")).strip().lower()
+            if stream not in {"production", "non_production"}:
+                stream = "non_production" if bool(event.get("is_non_production", False)) else "production"
+            stream_counts[stream] = stream_counts.get(stream, 0) + 1
+            source = str(event.get("source", "")).strip() or "unknown"
+            source_counts[source] = source_counts.get(source, 0) + 1
+            ts_dt = self._parse_time(event.get("ts"))
+            if ts_dt:
+                age_sec = (now_dt - ts_dt).total_seconds()
+                if age_sec <= 24 * 3600:
+                    stream_trend_24h[stream] = stream_trend_24h.get(stream, 0) + 1
+                if age_sec <= 7 * 24 * 3600:
+                    stream_trend_7d[stream] = stream_trend_7d.get(stream, 0) + 1
+
+        total_events = sum(stream_counts.values())
+        production_events = stream_counts.get("production", 0)
+        non_production_events = stream_counts.get("non_production", 0)
+        top_sources = sorted(source_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        learning_event_quality = {
+            "total_events": total_events,
+            "production_events": production_events,
+            "non_production_events": non_production_events,
+            "production_ratio": _safe_ratio(production_events, total_events),
+            "non_production_ratio": _safe_ratio(non_production_events, total_events),
+            "stream_counts": stream_counts,
+            "trend_24h": stream_trend_24h,
+            "trend_7d": stream_trend_7d,
+            "top_sources": [{"source": src, "count": count} for src, count in top_sources],
+        }
+
+        policy_state = get_learning_policy_state() if self.enable_policy_bandit else {}
+        execution_guardrail = self._execution_guardrail_snapshot()
 
         return {
             "timestamp": datetime.now().isoformat(),
@@ -1664,12 +2328,24 @@ class LearningLoop:
                 "path": str(self._daily_self_learning_path()),
             },
             "self_check": self_check_summary,
+            "proposal_funnel": proposal_funnel,
+            "outcome_quality": outcome_quality,
+            "learning_event_quality": learning_event_quality,
+            "policy_state": policy_state,
+            "execution_guardrail": execution_guardrail,
             "prompt_system": prompt_system_snapshot,
             "focus": focus_report,
             "strategy": {
                 "current_focus_area": self.current_focus_area,
                 "rotation_warn_streak": self.focus_rotation_warn_streak,
                 "latest_portfolio_rotation": latest_rotation if isinstance(latest_rotation, dict) else {},
+            },
+            "windows": {
+                "learning_opportunities": self.window_learning_opportunities,
+                "improvement_opportunities": self.window_improvement_opportunities,
+                "windowed_self_check_enabled": self.enable_windowed_self_check,
+                "synthetic_opportunities_enabled": self.enable_synthetic_opportunities,
+                "no_opportunity_iterations": self.no_opportunity_iterations,
             },
         }
 
@@ -1706,6 +2382,21 @@ class LearningLoop:
             f"- Runs Today: {report.get('daily_self_learning', {}).get('count_today', 0)}",
             f"- Last Run: {report.get('daily_self_learning', {}).get('last_run', 'N/A')}",
             f"- Current Focus Area: {report.get('strategy', {}).get('current_focus_area', 'N/A')}",
+            "",
+            "## 🧪 Proposal Funnel",
+            f"- Created: {report.get('proposal_funnel', {}).get('created', 0)}",
+            f"- Approved: {report.get('proposal_funnel', {}).get('approved', 0)}",
+            f"- Executed: {report.get('proposal_funnel', {}).get('executed', 0)}",
+            f"- Verified: {report.get('proposal_funnel', {}).get('verified', 0)}",
+            f"- Win Rate: {report.get('outcome_quality', {}).get('win_rate', 0)}",
+            f"- Inconclusive Rate: {report.get('outcome_quality', {}).get('inconclusive_rate', 0)}",
+            f"- Avg Confidence: {report.get('outcome_quality', {}).get('avg_confidence', 0)}",
+            "",
+            "## 🛡️ Execution Guardrail",
+            f"- Canary Enabled: {report.get('execution_guardrail', {}).get('canary_enabled', False)}",
+            f"- Real Apply Enabled: {report.get('execution_guardrail', {}).get('executor_real_apply_enabled', False)}",
+            f"- Normal Runs Last Hour: {report.get('execution_guardrail', {}).get('normal_mode_runs_last_hour', 0)}",
+            f"- Cooldown Remaining: {report.get('execution_guardrail', {}).get('normal_mode_cooldown_remaining_sec', 0)}s",
             "",
             "## 💾 Memory",
             f"- Entries: {report['memory']['total_entries']}",

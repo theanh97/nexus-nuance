@@ -245,6 +245,44 @@ from .experiment_tracker import (
     get_experiment_stats,
     generate_value_report,
 )
+from .contracts import (
+    LearningEvent,
+    ImprovementProposalV2,
+    ExperimentRun,
+    OutcomeEvidence,
+)
+
+# NEW: Self-learning v2 contracts/storage/pipeline
+from .storage_v2 import (
+    LearningStorageV2,
+    get_storage_v2,
+    record_learning_event,
+    list_learning_events,
+)
+
+from .proposal_engine import (
+    ProposalEngineV2,
+    get_proposal_engine_v2,
+    generate_proposals_v2,
+)
+
+from .experiment_executor import (
+    ExperimentExecutor,
+    get_experiment_executor,
+    execute_proposal,
+)
+
+from .outcome_verifier import (
+    OutcomeVerifier,
+    get_outcome_verifier,
+    verify_experiment,
+)
+
+from .learning_policy import (
+    select_learning_policy,
+    update_learning_policy,
+    get_learning_policy_state,
+)
 
 __all__ = [
     # Memory
@@ -335,6 +373,15 @@ __all__ = [
     # Auto-Discovery Engine (NEW - scans 32+ sources daily)
     "AutoDiscoveryEngine", "get_discovery_engine",
     "run_auto_discovery", "get_recent_discoveries", "get_discovery_stats",
+
+    # Self-learning v2 pipeline
+    "LearningEvent", "ImprovementProposalV2", "ExperimentRun", "OutcomeEvidence",
+    "LearningStorageV2", "get_storage_v2",
+    "record_learning_event", "list_learning_events",
+    "ProposalEngineV2", "get_proposal_engine_v2", "generate_proposals_v2",
+    "ExperimentExecutor", "get_experiment_executor", "execute_proposal",
+    "OutcomeVerifier", "get_outcome_verifier", "verify_experiment",
+    "select_learning_policy", "update_learning_policy", "get_learning_policy_state",
 ]
 
 __version__ = "1.0.0"

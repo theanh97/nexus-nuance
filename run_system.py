@@ -90,6 +90,15 @@ class AutoDevSystem:
         self.manual_override_sec = int(os.getenv("MANUAL_OVERRIDE_SEC", "90"))
         self.manual_override_until: Optional[datetime] = None
         self.manual_override_reason: str = ""
+        self.autonomy_profile = self._normalize_autonomy_profile(os.getenv("AUTONOMY_PROFILE", "balanced"))
+        self.full_auto_user_pause_max_sec = max(
+            60,
+            int(os.getenv("MONITOR_FULL_AUTO_USER_PAUSE_MAX_SEC", "240")),
+        )
+        self.full_auto_maintenance_lease_sec = max(
+            30,
+            int(os.getenv("MONITOR_FULL_AUTO_MAINTENANCE_LEASE_SEC", "180")),
+        )
         self.cost_guard_mode = str(os.getenv("DEFAULT_COST_GUARD_MODE", "balanced")).strip().lower() or "balanced"
         self.cost_guard_last_updated_at: Optional[datetime] = None
         self.auto_cost_guard_enabled = str(os.getenv("AUTO_COST_GUARD_ENABLED", "true")).strip().lower() in {
@@ -128,6 +137,26 @@ class AutoDevSystem:
                     self.supervision_principles.append(f"Không lặp lỗi user đã báo: {text[:180]}")
         except Exception:
             pass
+
+    def _normalize_autonomy_profile(self, value: Any) -> str:
+        text = str(value or "").strip().lower()
+        if text in {"safe", "balanced", "full_auto"}:
+            return text
+        return "balanced"
+
+    def _is_full_auto_profile(self) -> bool:
+        return self.autonomy_profile == "full_auto"
+
+    def _set_autonomy_profile(self, profile: Any, source: str = "runtime") -> str:
+        normalized = self._normalize_autonomy_profile(profile)
+        self.autonomy_profile = normalized
+        if normalized == "full_auto":
+            self.guardian_auto_recovery = True
+            self.manual_override_until = None
+            self.manual_override_reason = ""
+        if self.guardian:
+            self.guardian._log(f"🧠 Runtime autonomy profile -> {normalized.upper()} ({source})")
+        return normalized
 
     async def initialize(self):
         """Initialize all components"""
@@ -787,6 +816,10 @@ class AutoDevSystem:
                     continue
                 if self.orion.running:
                     self._maybe_auto_adjust_cost_guard()
+                if self._is_full_auto_profile() and not self.guardian_auto_recovery and not self._manual_override_active():
+                    self.guardian_auto_recovery = True
+                    if self.guardian:
+                        self.guardian._log("♻️ Full-auto enforced Guardian autopilot ON after lease expiry")
                 if not self.guardian_auto_recovery or not self.guardian:
                     continue
                 if not self.orion.running:
@@ -797,9 +830,20 @@ class AutoDevSystem:
                 pause_reason = str(status.get("pause_reason", "") or "").strip().lower()
                 last_progress_age = self._age_seconds(status.get("last_progress_at")) or 0
                 paused_age = self._age_seconds(status.get("paused_since")) or 0
+                user_pause_timeout_reached = (
+                    paused
+                    and pause_reason in {"user", "manual_user"}
+                    and self._is_full_auto_profile()
+                    and paused_age >= self.full_auto_user_pause_max_sec
+                )
                 if self._manual_override_active():
                     resume_after_sec = max(30, int(self.manual_override_sec))
-                    if not (paused and pause_reason == "dashboard_interrupt" and paused_age >= resume_after_sec):
+                    dashboard_interrupt_ready = (
+                        paused
+                        and pause_reason == "dashboard_interrupt"
+                        and paused_age >= resume_after_sec
+                    )
+                    if not (dashboard_interrupt_ready or user_pause_timeout_reached):
                         continue
                 last_start_age = self._age_seconds(status.get("last_cycle_started_at"))
                 last_finish_age = self._age_seconds(status.get("last_cycle_finished_at"))
@@ -814,13 +858,16 @@ class AutoDevSystem:
                     )
                 )
                 is_paused_unexpected = paused and pause_reason not in {"user", "manual_user"}
+                is_paused_user_timeout = bool(user_pause_timeout_reached)
                 is_stuck_no_progress = (not paused) and last_progress_age >= self.guardian_stuck_threshold_sec
 
-                if not (is_stuck_running or is_paused_unexpected or is_stuck_no_progress):
+                if not (is_stuck_running or is_paused_unexpected or is_stuck_no_progress or is_paused_user_timeout):
                     continue
 
                 reason = "stuck_no_progress"
-                if is_paused_unexpected:
+                if is_paused_user_timeout:
+                    reason = f"paused_user_timeout:{paused_age}s"
+                elif is_paused_unexpected:
                     reason = f"paused_unexpected:{pause_reason or 'unknown'}"
                 elif is_stuck_running:
                     reason = "stuck_running_cycle"
@@ -828,6 +875,7 @@ class AutoDevSystem:
                 await self._guardian_intervene(
                     reason=reason,
                     last_progress_age_sec=last_progress_age,
+                    paused_age_sec=paused_age,
                     orion_status=status,
                     force=False,
                 )
@@ -841,6 +889,7 @@ class AutoDevSystem:
         self,
         reason: str,
         last_progress_age_sec: int,
+        paused_age_sec: int = 0,
         orion_status: Optional[Dict[str, Any]] = None,
         force: bool = False,
     ) -> Dict[str, Any]:
@@ -866,9 +915,13 @@ class AutoDevSystem:
                 "action": "orion_stuck",
                 "reason": reason,
                 "last_progress_age_sec": int(last_progress_age_sec or 0),
+                "paused_age_sec": int(paused_age_sec or 0),
                 "orion_status": status,
                 "project_goal": (self.orion.context.project_goal if self.orion and self.orion.context else ""),
                 "principles": self.supervision_principles,
+                "autonomy_profile": self.autonomy_profile,
+                "full_auto": self._is_full_auto_profile(),
+                "full_auto_user_pause_max_sec": self.full_auto_user_pause_max_sec,
             },
         )
         decision = await self.guardian.process(message)
@@ -1031,6 +1084,10 @@ class AutoDevSystem:
             "guardian_auto_recovery": self.guardian_auto_recovery,
             "guardian_last_intervention_at": self.last_guardian_intervention_at.isoformat() if self.last_guardian_intervention_at else None,
             "guardian_principles": self.supervision_principles,
+            "autonomy_profile": self.autonomy_profile,
+            "full_auto": self._is_full_auto_profile(),
+            "full_auto_user_pause_max_sec": self.full_auto_user_pause_max_sec,
+            "full_auto_maintenance_lease_sec": self.full_auto_maintenance_lease_sec,
             "manual_override_active": self._manual_override_active(),
             "manual_override_until": self.manual_override_until.isoformat() if self.manual_override_until else None,
             "manual_override_reason": self.manual_override_reason,
@@ -1111,6 +1168,24 @@ class AutoDevSystem:
                 self.orion._log("▶️ Dashboard interrupt: resumed orchestrator")
 
         if target in {"orion", "system"}:
+            if cmd in {"autonomy_profile", "get_autonomy_profile"}:
+                return {
+                    "success": True,
+                    "target": target,
+                    "autonomy_profile": self.autonomy_profile,
+                    "full_auto": self._is_full_auto_profile(),
+                    "full_auto_user_pause_max_sec": self.full_auto_user_pause_max_sec,
+                }
+            if cmd.startswith("set_autonomy_profile"):
+                parts = command_text.split()
+                profile = parts[1] if len(parts) > 1 else str(options.get("profile", "balanced"))
+                applied = self._set_autonomy_profile(profile, source="dashboard")
+                return {
+                    "success": True,
+                    "target": target,
+                    "autonomy_profile": applied,
+                    "full_auto": applied == "full_auto",
+                }
             if cmd in {"pause", "resume", "shutdown"}:
                 self._begin_manual_override(f"{target}:{cmd}")
                 if cmd == "pause":
@@ -1273,23 +1348,39 @@ class AutoDevSystem:
                 payload = advice.to_dict() if hasattr(advice, "to_dict") else {"raw": advice}
                 return {"success": True, "target": target, "result": payload}
             if cmd in {"autopilot_on", "auto_on", "watchdog_on"}:
-                self._begin_manual_override("guardian:autopilot_on")
                 self.guardian_auto_recovery = True
+                self.manual_override_until = None
+                self.manual_override_reason = ""
                 if self.guardian:
                     self.guardian._log("✅ Guardian autopilot enabled")
                 return {"success": True, "target": target, "note": "Guardian autopilot enabled"}
             if cmd in {"autopilot_off", "auto_off", "watchdog_off"}:
-                self._begin_manual_override("guardian:autopilot_off")
+                lease_sec = (
+                    self.full_auto_maintenance_lease_sec
+                    if self._is_full_auto_profile()
+                    else self.manual_override_sec
+                )
+                self._begin_manual_override("guardian:autopilot_off", duration_sec=lease_sec)
                 self.guardian_auto_recovery = False
                 if self.guardian:
-                    self.guardian._log("⏸️ Guardian autopilot disabled")
-                return {"success": True, "target": target, "note": "Guardian autopilot disabled"}
+                    if self._is_full_auto_profile():
+                        self.guardian._log(f"⏸️ Guardian autopilot paused for maintenance lease ({lease_sec}s)")
+                    else:
+                        self.guardian._log("⏸️ Guardian autopilot disabled")
+                return {
+                    "success": True,
+                    "target": target,
+                    "note": "Guardian autopilot paused temporarily" if self._is_full_auto_profile() else "Guardian autopilot disabled",
+                    "lease_sec": lease_sec if self._is_full_auto_profile() else None,
+                }
             if cmd in {"unstick", "unstick_orion", "resume_orion", "continue", "continue_loop", "recover"}:
                 self._begin_manual_override("guardian:unstick")
+                runtime_status = self.orion._get_status()
                 recovery = await self._guardian_intervene(
                     reason="manual_guardian_recovery",
-                    last_progress_age_sec=self._age_seconds(self.orion._get_status().get("last_progress_at")) or 0,
-                    orion_status=self.orion._get_status(),
+                    last_progress_age_sec=self._age_seconds(runtime_status.get("last_progress_at")) or 0,
+                    paused_age_sec=self._age_seconds(runtime_status.get("paused_since")) or 0,
+                    orion_status=runtime_status,
                     force=True,
                 )
                 return {"success": True, "target": target, "result": recovery}

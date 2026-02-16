@@ -61,16 +61,18 @@ class UserFeedbackLearner:
 
     def _load_data(self):
         """Load existing data."""
-        for file_path, attr in [
-            (self.feedback_file, "feedback_history"),
-            (self.learnings_file, "learned_items"),
-            (self.patterns_file, "detected_patterns")
+        for file_path, attr, key in [
+            (self.feedback_file, "feedback_history", "feedback"),
+            (self.learnings_file, "learned_items", "learnings"),
+            (self.patterns_file, "detected_patterns", "patterns"),
         ]:
             if file_path.exists():
                 try:
                     with open(file_path, 'r') as f:
                         data = json.load(f)
-                        setattr(self, attr, data.get("items", []))
+                        if isinstance(data, dict):
+                            loaded = data.get(key, data.get("items", []))
+                            setattr(self, attr, loaded if isinstance(loaded, list) else [])
                 except Exception:
                     pass
 

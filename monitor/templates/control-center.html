@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Nexus Control Center</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script src="{{ url_for('static', filename='js/theme-preference.js') }}"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -29,6 +30,21 @@
             background: var(--bg-dark);
             color: var(--text-primary);
             min-height: 100vh;
+        }
+
+        body[data-theme="light"] {
+            --bg-dark: #f2f6fc;
+            --bg-card: #ffffff;
+            --bg-column: #eef3fb;
+            --border: #d8e0ef;
+            --text-primary: #1e2a44;
+            --text-secondary: #66748f;
+            --accent-blue: #2563eb;
+            --accent-green: #0f9f6e;
+            --accent-purple: #6d5efc;
+            --accent-orange: #b7791f;
+            --accent-red: #c63b4d;
+            --accent-cyan: #0b73e9;
         }
 
         /* Header */
@@ -73,6 +89,18 @@
         .header-stats {
             display: flex;
             gap: 24px;
+            align-items: center;
+        }
+
+        .theme-toggle {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--bg-column);
+            color: var(--text-primary);
+            font-size: 12px;
+            font-weight: 600;
+            padding: 8px 12px;
+            cursor: pointer;
         }
 
         .stat-item {
@@ -458,6 +486,7 @@
             <h1>Nexus Control Center</h1>
         </div>
         <div class="header-stats" id="stats">
+            <button class="theme-toggle" id="theme-toggle" type="button">Theme</button>
             <div class="stat-item">
                 <div class="stat-value" id="stat-tasks">0</div>
                 <div class="stat-label">Tasks</div>

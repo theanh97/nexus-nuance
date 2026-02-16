@@ -12,6 +12,12 @@
         :root {
             --font-sans: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
             --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+            --chat-height: 320px;
+            --chat-font-scale: 1;
+            --card-radius: 14px;
+            --card-padding: 16px;
+            --layout-width: 1400px;
+            --layout-gap: 16px;
         }
 
         body[data-theme="dark"], html[data-theme="dark"] {
@@ -23,6 +29,7 @@
             --text: #eef3ff;
             --muted: #9aabd2;
             --accent: #58b7ff;
+            --accent-border: #4aa5ea;
             --accent-soft: rgba(88, 183, 255, 0.2);
             --ok: #31c48d;
             --warn: #f5b547;
@@ -43,6 +50,7 @@
             --text: #1c2740;
             --muted: #62708f;
             --accent: #0d72e8;
+            --accent-border: #2b84eb;
             --accent-soft: rgba(13, 114, 232, 0.12);
             --ok: #16926e;
             --warn: #c27e13;
@@ -62,6 +70,7 @@
             color: var(--text);
             min-height: 100vh;
             line-height: 1.45;
+            padding-bottom: 122px;
         }
 
         .topbar {
@@ -114,11 +123,64 @@
             justify-content: flex-end;
         }
 
+        .experience-switch {
+            display: inline-flex;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            background: var(--panel);
+            padding: 2px;
+            gap: 2px;
+        }
+
+        .exp-btn {
+            border: 0;
+            border-radius: 999px;
+            background: transparent;
+            color: var(--muted);
+            font-size: 11px;
+            font-weight: 700;
+            padding: 6px 9px;
+            cursor: pointer;
+        }
+
+        .exp-btn.active {
+            color: #fff;
+            background: linear-gradient(135deg, var(--accent), #3b82f6);
+        }
+
+        .density-switch {
+            display: inline-flex;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            background: var(--panel);
+            padding: 2px;
+            gap: 2px;
+        }
+
+        .density-btn {
+            border: 0;
+            border-radius: 999px;
+            background: transparent;
+            color: var(--muted);
+            font-size: 11px;
+            font-weight: 700;
+            padding: 6px 9px;
+            cursor: pointer;
+        }
+
+        .density-btn.active {
+            color: #fff;
+            background: linear-gradient(135deg, #0f9d7f, #0e77cc);
+        }
+
         .view-nav {
             display: flex;
             gap: 8px;
             margin-right: 4px;
+            overflow-x: auto;
+            scrollbar-width: none;
         }
+        .view-nav::-webkit-scrollbar { display: none; }
 
         .view-tab {
             border: 1px solid var(--border);
@@ -163,13 +225,42 @@
             cursor: pointer;
         }
 
+        .palette-toggle {
+            border: 1px solid var(--border);
+            background: var(--panel);
+            color: var(--text);
+            border-radius: 10px;
+            padding: 7px 10px;
+            font-size: 11px;
+            font-weight: 700;
+            cursor: pointer;
+            font-family: var(--font-mono);
+        }
+
+        .zen-toggle {
+            border: 1px solid var(--border);
+            background: var(--panel);
+            color: var(--text);
+            border-radius: 10px;
+            padding: 7px 10px;
+            font-size: 11px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        .zen-toggle.active {
+            border-color: var(--accent-border);
+            background: var(--accent-soft);
+            color: var(--accent);
+        }
+
         .layout {
-            max-width: 1400px;
+            max-width: var(--layout-width);
             margin: 16px auto;
             padding: 0 16px 18px;
             display: grid;
             grid-template-columns: minmax(0, 2.2fr) minmax(320px, 1fr);
-            gap: 16px;
+            gap: var(--layout-gap);
         }
 
         .stack {
@@ -181,9 +272,16 @@
         .card {
             background: var(--panel);
             border: 1px solid var(--border);
-            border-radius: 14px;
+            border-radius: var(--card-radius);
             box-shadow: var(--shadow);
-            padding: 16px;
+            padding: var(--card-padding);
+            transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-2px);
+            border-color: var(--accent-border);
+            box-shadow: 0 18px 30px rgba(13, 30, 67, 0.2);
         }
 
         .card h2 {
@@ -272,6 +370,11 @@
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 10px;
+            align-items: stretch;
+        }
+
+        .performance-card {
+            overflow: hidden;
         }
 
         .chart-wrap {
@@ -301,6 +404,15 @@
             width: 100%;
             border-collapse: collapse;
             font-size: 12px;
+            table-layout: fixed;
+        }
+
+        .agents-table-wrap {
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            overflow: auto;
+            max-height: 360px;
+            background: var(--panel-soft);
         }
 
         .agents-table th,
@@ -313,6 +425,20 @@
         .agents-table th {
             color: var(--muted);
             font-weight: 600;
+            position: sticky;
+            top: 0;
+            z-index: 3;
+            background: var(--panel);
+        }
+
+        .agents-table tr:nth-child(even) td {
+            background: var(--panel);
+        }
+
+        .agents-table td:last-child {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
         .badge {
@@ -394,24 +520,32 @@
             border: 1px solid var(--border);
             border-radius: 12px;
             padding: 10px;
+            height: min(var(--chat-height), 72vh);
+            display: flex;
+            flex-direction: column;
+            transition: height 0.2s ease;
         }
 
         .chat-messages {
-            max-height: 260px;
             overflow: auto;
             display: flex;
             flex-direction: column;
             gap: 8px;
             padding-right: 4px;
+            flex: 1;
+            min-height: 160px;
         }
 
         .chat-msg {
             max-width: 92%;
             border-radius: 10px;
             padding: 8px 10px;
-            font-size: 12px;
+            font-size: calc(12px * var(--chat-font-scale));
             line-height: 1.45;
             border: 1px solid var(--border);
+            word-break: break-word;
+            white-space: normal;
+            animation: chatIn 0.2s ease;
         }
 
         .chat-msg.user {
@@ -429,7 +563,7 @@
 
         .chat-time {
             margin-top: 4px;
-            font-size: 10px;
+            font-size: calc(10px * var(--chat-font-scale));
             color: var(--muted);
         }
 
@@ -446,7 +580,7 @@
             background: var(--panel);
             color: var(--text);
             padding: 9px 10px;
-            font-size: 12px;
+            font-size: calc(12px * var(--chat-font-scale));
         }
 
         .chat-input-row button {
@@ -455,7 +589,7 @@
             background: var(--accent);
             color: #fff;
             font-weight: 700;
-            font-size: 12px;
+            font-size: calc(12px * var(--chat-font-scale));
             padding: 9px 11px;
             cursor: pointer;
         }
@@ -463,8 +597,150 @@
         .chat-typing {
             margin-top: 8px;
             color: var(--muted);
-            font-size: 11px;
+            font-size: calc(11px * var(--chat-font-scale));
             font-family: var(--font-mono);
+        }
+
+        .chat-toolbar {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .chat-tool-btn {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--panel);
+            color: var(--text);
+            padding: 5px 8px;
+            font-size: 11px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        .chat-tool-btn.active {
+            border-color: var(--accent);
+            background: var(--accent-soft);
+        }
+
+        .chat-suggestions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 8px;
+        }
+
+        .chat-chip {
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            background: var(--panel);
+            color: var(--text);
+            font-size: 11px;
+            font-weight: 600;
+            padding: 6px 10px;
+            cursor: pointer;
+            transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+        }
+
+        .chat-chip:hover {
+            border-color: var(--accent-border);
+            background: var(--accent-soft);
+            transform: translateY(-1px);
+        }
+
+        body[data-active-view="chat"] .layout,
+        body[data-active-view="tasks"] .layout {
+            grid-template-columns: 1fr;
+            max-width: 1120px;
+        }
+
+        body[data-experience="focus"] {
+            --card-radius: 12px;
+            --card-padding: 14px;
+            --layout-width: 1280px;
+            --layout-gap: 14px;
+        }
+
+        body[data-experience="balanced"] {
+            --card-radius: 14px;
+            --card-padding: 16px;
+            --layout-width: 1400px;
+            --layout-gap: 16px;
+        }
+
+        body[data-experience="studio"] {
+            --card-radius: 16px;
+            --card-padding: 18px;
+            --layout-width: 1520px;
+            --layout-gap: 18px;
+        }
+
+        body[data-density="compact"] {
+            --card-padding: 12px;
+            --layout-gap: 12px;
+        }
+
+        body[data-density="compact"] .view-tab,
+        body[data-density="compact"] .pill,
+        body[data-density="compact"] .theme-toggle,
+        body[data-density="compact"] .palette-toggle,
+        body[data-density="compact"] .zen-toggle {
+            padding-top: 6px;
+            padding-bottom: 6px;
+            font-size: 11px;
+        }
+
+        body[data-density="compact"] .metric-value {
+            font-size: 20px;
+        }
+
+        body[data-density="compact"] .metric {
+            padding: 10px;
+        }
+
+        body[data-density="compact"] .chat-msg {
+            padding: 7px 9px;
+        }
+
+        body[data-density="compact"] .chat-panel {
+            height: min(max(calc(var(--chat-height) - 24px), 250px), 70vh);
+        }
+
+        body[data-zen="on"] .card[data-zen="secondary"] {
+            display: none !important;
+        }
+
+        body[data-zen="on"] .card[data-zen="focus"] {
+            border-color: var(--accent-border);
+            box-shadow: 0 20px 34px rgba(13, 33, 72, 0.24);
+        }
+
+        body[data-zen="on"] .topbar {
+            border-bottom-color: var(--accent-border);
+        }
+
+        body[data-active-view="chat"] .card[data-view~="chat"] {
+            border-color: var(--accent-border);
+        }
+
+        body[data-active-view="chat"] .chat-panel {
+            height: min(max(var(--chat-height), 520px), 82vh);
+        }
+
+        body[data-active-view="chat"] .chat-messages {
+            min-height: 320px;
+        }
+
+        @keyframes chatIn {
+            from {
+                opacity: 0;
+                transform: translateY(4px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
         }
 
         .tasks-board {
@@ -538,19 +814,258 @@
         .connection {
             position: fixed;
             left: 16px;
-            bottom: 16px;
+            bottom: 92px;
             border: 1px solid var(--border);
             border-radius: 999px;
             padding: 8px 12px;
             font-size: 11px;
             background: var(--panel);
             box-shadow: var(--shadow);
+            z-index: 60;
+        }
+
+        .control-deck {
+            position: fixed;
+            left: 50%;
+            transform: translateX(-50%);
+            bottom: 14px;
+            width: min(1280px, calc(100vw - 24px));
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            background: color-mix(in srgb, var(--panel) 90%, transparent);
+            box-shadow: 0 16px 34px rgba(8, 21, 49, 0.26);
+            backdrop-filter: blur(8px);
+            padding: 8px;
+            display: grid;
+            grid-template-columns: auto auto minmax(260px, 1fr) auto;
+            gap: 8px;
+            align-items: center;
+            z-index: 70;
+        }
+
+        .deck-quick {
+            grid-column: 1 / -1;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            overflow-x: auto;
+            scrollbar-width: none;
+        }
+
+        .deck-quick::-webkit-scrollbar { display: none; }
+
+        .deck-chip {
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            background: var(--panel);
+            color: var(--muted);
+            padding: 5px 9px;
+            font-size: 10px;
+            font-weight: 700;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .deck-chip:hover {
+            border-color: var(--accent-border);
+            color: var(--accent);
+            background: var(--accent-soft);
+        }
+
+        .deck-group {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            min-width: 0;
+        }
+
+        .deck-btn {
+            border: 1px solid var(--border);
+            border-radius: 9px;
+            background: var(--panel);
+            color: var(--text);
+            padding: 7px 9px;
+            font-size: 11px;
+            line-height: 1;
+            font-weight: 700;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .deck-btn.active {
+            border-color: var(--accent-border);
+            background: var(--accent-soft);
+            color: var(--accent);
+        }
+
+        .deck-btn.primary {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #fff;
+        }
+
+        .deck-input-wrap {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            min-width: 0;
+        }
+
+        .deck-input {
+            width: 100%;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--panel);
+            color: var(--text);
+            padding: 8px 10px;
+            font-size: 12px;
+        }
+
+        .deck-input::placeholder {
+            color: var(--muted);
+        }
+
+        .deck-meta {
+            font-size: 10px;
+            color: var(--muted);
+            font-family: var(--font-mono);
+            white-space: nowrap;
+        }
+
+        .toast-stack {
+            position: fixed;
+            right: 14px;
+            bottom: 92px;
+            z-index: 80;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            pointer-events: none;
+            max-width: min(360px, calc(100vw - 24px));
+        }
+
+        .toast {
+            border: 1px solid var(--border);
+            border-left-width: 4px;
+            border-radius: 10px;
+            background: var(--panel);
+            color: var(--text);
+            padding: 8px 10px;
+            font-size: 12px;
+            box-shadow: var(--shadow);
+            opacity: 0;
+            transform: translateY(8px);
+            animation: toastIn 0.18s ease forwards;
+        }
+
+        .toast.info { border-left-color: var(--accent); }
+        .toast.ok { border-left-color: var(--ok); }
+        .toast.warn { border-left-color: var(--warn); }
+        .toast.danger { border-left-color: var(--danger); }
+
+        @keyframes toastIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .command-palette {
+            position: fixed;
+            inset: 0;
+            display: none;
+            align-items: flex-start;
+            justify-content: center;
+            padding: 72px 18px 18px;
+            z-index: 250;
+            background: rgba(6, 11, 24, 0.45);
+            backdrop-filter: blur(6px);
+        }
+
+        .command-palette.open {
+            display: flex;
+        }
+
+        .palette-card {
+            width: min(760px, 100%);
+            border: 1px solid var(--border);
+            background: var(--panel);
+            border-radius: 14px;
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+
+        .palette-input-wrap {
+            padding: 12px;
+            border-bottom: 1px solid var(--border);
+            background: var(--panel-soft);
+        }
+
+        .palette-input {
+            width: 100%;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 10px 12px;
+            background: var(--panel);
+            color: var(--text);
+            font-size: 13px;
+        }
+
+        .palette-list {
+            list-style: none;
+            max-height: 380px;
+            overflow: auto;
+            padding: 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .palette-item {
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--panel-soft);
+            padding: 10px;
+            cursor: pointer;
+        }
+
+        .palette-item.active,
+        .palette-item:hover {
+            border-color: var(--accent-border);
+            background: var(--accent-soft);
+        }
+
+        .palette-item-title {
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--text);
+        }
+
+        .palette-item-meta {
+            font-size: 10px;
+            color: var(--muted);
+            margin-top: 4px;
+            font-family: var(--font-mono);
         }
 
         @media (max-width: 1080px) {
             .layout { grid-template-columns: 1fr; }
             .charts { grid-template-columns: 1fr; }
             .tasks-board { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .control-deck {
+                grid-template-columns: 1fr;
+                gap: 7px;
+                padding: 9px;
+            }
+            .deck-group,
+            .deck-input-wrap {
+                width: 100%;
+                overflow-x: auto;
+                scrollbar-width: none;
+            }
+            .deck-group::-webkit-scrollbar,
+            .deck-input-wrap::-webkit-scrollbar { display: none; }
+            .connection { bottom: 152px; }
+            .toast-stack { bottom: 150px; right: 10px; }
+            body { padding-bottom: 180px; }
         }
 
         @media (max-width: 760px) {
@@ -559,12 +1074,31 @@
             .topbar { flex-wrap: wrap; }
             .topbar-right { width: 100%; justify-content: flex-end; }
             .view-nav { width: 100%; justify-content: flex-end; }
+            .experience-switch,
+            .density-switch { order: 3; }
             .tasks-board { grid-template-columns: 1fr; }
             .tasks-metrics { grid-template-columns: 1fr 1fr; }
+            .chat-toolbar { width: 100%; justify-content: flex-end; }
+            .chat-tool-btn { padding: 5px 7px; }
+            .card:hover { transform: none; }
+            .deck-btn { padding: 7px 8px; font-size: 10px; }
+            .deck-meta { font-size: 9px; }
+            .connection { bottom: 162px; left: 10px; right: 10px; width: auto; }
+            .toast-stack { bottom: 214px; right: 10px; left: 10px; max-width: none; }
+            body { padding-bottom: 194px; }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .card,
+            .chat-chip,
+            .chat-msg {
+                transition: none !important;
+                animation: none !important;
+            }
         }
     </style>
 </head>
-<body data-theme="light">
+<body data-theme="light" data-experience="balanced" data-density="comfortable" data-zen="off" data-active-view="workspace">
     <header class="topbar">
         <div class="brand">
             <div class="brand-mark">N</div>
@@ -583,13 +1117,24 @@
             </div>
             <div class="pill">Iteration<strong id="iteration-counter">#0000</strong></div>
             <div class="pill">Status<strong id="run-state">--</strong></div>
+            <div class="experience-switch" id="experience-switch">
+                <button class="exp-btn" type="button" data-experience="focus">Focus</button>
+                <button class="exp-btn active" type="button" data-experience="balanced">Balance</button>
+                <button class="exp-btn" type="button" data-experience="studio">Studio</button>
+            </div>
+            <div class="density-switch" id="density-switch">
+                <button class="density-btn active" type="button" data-density="comfortable">Comfort</button>
+                <button class="density-btn" type="button" data-density="compact">Compact</button>
+            </div>
+            <button id="zen-toggle" class="zen-toggle" type="button" title="Focus on core cards">Zen</button>
+            <button id="palette-toggle" class="palette-toggle" type="button" title="Open command palette">Cmd K</button>
             <button id="theme-toggle" class="theme-toggle" type="button">Theme</button>
         </div>
     </header>
 
     <main class="layout">
         <section class="stack">
-            <article class="card" data-view="workspace ops">
+            <article class="card" data-view="workspace ops" data-zen="focus">
                 <div class="summary-head">
                     <h2 id="ai-title">AI Summary</h2>
                     <span class="summary-tag" id="summary-state">syncing</span>
@@ -598,7 +1143,7 @@
                 <ul id="ai-highlights" class="summary-list"></ul>
             </article>
 
-            <article class="card" data-view="workspace ops">
+            <article class="card" data-view="workspace ops" data-zen="focus">
                 <h2>Key Metrics</h2>
                 <div class="metric-grid">
                     <div class="metric">
@@ -624,7 +1169,7 @@
                 </div>
             </article>
 
-            <article class="card" data-view="workspace ops">
+            <article class="card" data-view="workspace ops" data-zen="secondary">
                 <h2>Learning v2</h2>
                 <div class="metric-grid">
                     <div class="metric">
@@ -650,7 +1195,7 @@
                 </div>
             </article>
 
-            <article class="card" data-view="workspace ops">
+            <article class="card performance-card" data-view="workspace ops" data-zen="secondary">
                 <h2>Performance</h2>
                 <div class="charts">
                     <div class="chart-wrap">
@@ -664,21 +1209,23 @@
                 </div>
             </article>
 
-            <article class="card" data-view="workspace ops">
+            <article class="card" data-view="workspace ops" data-zen="secondary">
                 <h2>Agent Fleet</h2>
-                <table class="agents-table">
-                    <thead>
-                        <tr>
-                            <th>Agent</th>
-                            <th>Status</th>
-                            <th>Last Level</th>
-                            <th>Message</th>
-                        </tr>
-                    </thead>
-                    <tbody id="agents-body">
-                        <tr><td colspan="4" class="tiny">Loading agents...</td></tr>
-                    </tbody>
-                </table>
+                <div class="agents-table-wrap">
+                    <table class="agents-table">
+                        <thead>
+                            <tr>
+                                <th>Agent</th>
+                                <th>Status</th>
+                                <th>Last Level</th>
+                                <th>Message</th>
+                            </tr>
+                        </thead>
+                        <tbody id="agents-body">
+                            <tr><td colspan="4" class="tiny">Loading agents...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
             </article>
 
             <article class="card" data-view="workspace tasks">
@@ -696,7 +1243,7 @@
         </section>
 
         <aside class="stack">
-            <article class="card" data-view="workspace activity">
+            <article class="card" data-view="workspace activity" data-zen="focus">
                 <div class="row">
                     <h2>Feedback Loop</h2>
                     <span class="tiny" id="feedback-count">0 items</span>
@@ -704,7 +1251,7 @@
                 <ul id="feedback-list" class="feedback-list"></ul>
             </article>
 
-            <article class="card" data-view="workspace activity">
+            <article class="card" data-view="workspace activity" data-zen="secondary">
                 <div class="row">
                     <h2>Activity Feed</h2>
                     <span class="tiny">latest 24</span>
@@ -712,10 +1259,18 @@
                 <ul id="activity-list" class="activity-list"></ul>
             </article>
 
-            <article class="card" data-view="workspace chat">
+            <article class="card" data-view="workspace chat" data-zen="focus">
                 <div class="row">
                     <h2>Unified Chat</h2>
-                    <span class="tiny" id="chat-instance-label">orion-1</span>
+                    <div class="chat-toolbar">
+                        <span class="tiny" id="chat-instance-label">orion-1</span>
+                        <button class="chat-tool-btn" id="chat-font-down" type="button" title="Thu nhỏ chữ">A-</button>
+                        <button class="chat-tool-btn" id="chat-font-up" type="button" title="Phóng to chữ">A+</button>
+                        <button class="chat-tool-btn" id="chat-height-down" type="button" title="Thu nhỏ panel">-H</button>
+                        <button class="chat-tool-btn" id="chat-height-up" type="button" title="Mở rộng panel">+H</button>
+                        <button class="chat-tool-btn" id="chat-max-toggle" type="button" title="Bật/tắt full chat">Max</button>
+                        <button class="chat-tool-btn" id="chat-clear" type="button" title="Xóa hội thoại">Clear</button>
+                    </div>
                 </div>
                 <div class="chat-panel">
                     <div class="chat-messages" id="chat-messages">
@@ -726,13 +1281,20 @@
                     </div>
                     <div class="chat-typing" id="chat-typing" style="display:none">processing...</div>
                     <div class="chat-input-row">
-                        <input id="chat-input" type="text" placeholder="Nhập lệnh hoặc feedback..." />
+                        <input id="chat-input" type="text" placeholder="Nhập lệnh/feedback hoặc gõ 1, 2, 3..." />
                         <button type="button" onclick="sendChatMessage()">Send</button>
                     </div>
+                    <div class="chat-suggestions" id="chat-suggestions">
+                        <button type="button" class="chat-chip" data-prompt="còn cái gì đang chạy vậy, tóm giúp mình">Realtime summary</button>
+                        <button type="button" class="chat-chip" data-prompt="guardian gỡ kẹt nếu có flow bị stuck">Auto unstick</button>
+                        <button type="button" class="chat-chip" data-prompt="đánh giá nhanh UI/UX hiện tại và đề xuất nâng cấp ngay">UI/UX critique</button>
+                        <button type="button" class="chat-chip" data-prompt="chạy 1 vòng Orion rồi báo kết quả ngắn gọn">Run one cycle</button>
+                    </div>
+                    <div class="chat-time">Bạn có thể chat tự nhiên; `1/2/3` đổi view, `Z` bật Zen, `/` focus Control Deck.</div>
                 </div>
             </article>
 
-            <article class="card" data-view="workspace activity chat">
+            <article class="card" data-view="activity chat" data-zen="secondary">
                 <h2>Quick Actions</h2>
                 <div class="actions">
                     <button class="btn primary" onclick="triggerImprovement()">Trigger Improve</button>
@@ -747,7 +1309,39 @@
         </aside>
     </main>
 
+        <div class="control-deck" id="control-deck">
+        <div class="deck-group" id="deck-view-group">
+            <button class="deck-btn deck-view-btn active" type="button" data-deck-view="workspace">WS</button>
+            <button class="deck-btn deck-view-btn" type="button" data-deck-view="ops">Ops</button>
+            <button class="deck-btn deck-view-btn" type="button" data-deck-view="activity">Activity</button>
+            <button class="deck-btn deck-view-btn" type="button" data-deck-view="chat">Chat</button>
+            <button class="deck-btn deck-view-btn" type="button" data-deck-view="tasks">Tasks</button>
+        </div>
+        <div class="deck-group" id="deck-action-group">
+            <button class="deck-btn" id="deck-refresh" type="button">Refresh</button>
+            <button class="deck-btn" id="deck-pause" type="button">Pause</button>
+            <button class="deck-btn" id="deck-resume" type="button">Resume</button>
+            <button class="deck-btn" id="deck-zen" type="button">Zen</button>
+        </div>
+        <div class="deck-input-wrap">
+            <input id="deck-command-input" class="deck-input" type="text" placeholder="Type natural command... e.g. gỡ kẹt Orion, open tasks, compact mode" />
+            <button class="deck-btn primary" id="deck-send" type="button">Run</button>
+        </div>
+        <div class="deck-meta" id="deck-meta">view=workspace | mode=balanced | density=comfortable | zen=off</div>
+    </div>
+
+    <div class="command-palette" id="command-palette" aria-hidden="true">
+        <div class="palette-card" role="dialog" aria-modal="true" aria-label="Command palette">
+            <div class="palette-input-wrap">
+                <input id="palette-input" class="palette-input" type="text" placeholder="Type a command... e.g. chat summary, open tasks, pause system" />
+            </div>
+            <ul id="palette-list" class="palette-list"></ul>
+        </div>
+        <div class="deck-quick" id="deck-quick"></div>
+    </div>
+
     <div class="connection" id="connection-state">Connecting...</div>
+    <div class="toast-stack" id="toast-stack"></div>
 
     <script>
         const socket = io();
@@ -757,11 +1351,20 @@
         let activeView = 'workspace';
         let currentInstanceId = 'orion-1';
         const pendingChatNodes = {};
+        const pendingChatSeedReplies = {};
         let openclawMetrics = null;
         let latestSlo = null;
         let lastStatusRenderAt = 0;
         let statusRenderTimer = null;
         let pendingStatusPayload = null;
+        const CHAT_UI_STORAGE_KEY = 'autodev-chat-ui';
+        const EXPERIENCE_STORAGE_KEY = 'autodev-experience-mode';
+        const DENSITY_STORAGE_KEY = 'autodev-density-mode';
+        const ZEN_STORAGE_KEY = 'autodev-zen-mode';
+        const DECK_HISTORY_STORAGE_KEY = 'autodev-deck-history';
+        const chatUiState = { fontScale: 1, panelHeight: 320, maximized: false };
+        const paletteState = { open: false, query: '', selectedIndex: 0, items: [] };
+        const deckState = { history: [], historyIndex: -1 };
 
         const refs = {
             iterationCounter: document.getElementById('iteration-counter'),
@@ -785,16 +1388,41 @@
             learningConfidence: document.getElementById('learning-confidence'),
             learningInconclusive: document.getElementById('learning-inconclusive'),
             agentsBody: document.getElementById('agents-body'),
+            agentsTableWrap: document.querySelector('.agents-table-wrap'),
             feedbackList: document.getElementById('feedback-list'),
             feedbackCount: document.getElementById('feedback-count'),
             activityList: document.getElementById('activity-list'),
             connection: document.getElementById('connection-state'),
             viewTabs: Array.from(document.querySelectorAll('.view-tab')),
             cards: Array.from(document.querySelectorAll('[data-view]')),
+            expButtons: Array.from(document.querySelectorAll('.exp-btn')),
+            densityButtons: Array.from(document.querySelectorAll('.density-btn')),
+            zenToggle: document.getElementById('zen-toggle'),
+            deckViewButtons: Array.from(document.querySelectorAll('.deck-view-btn')),
+            deckRefresh: document.getElementById('deck-refresh'),
+            deckPause: document.getElementById('deck-pause'),
+            deckResume: document.getElementById('deck-resume'),
+            deckZen: document.getElementById('deck-zen'),
+            deckInput: document.getElementById('deck-command-input'),
+            deckSend: document.getElementById('deck-send'),
+            deckMeta: document.getElementById('deck-meta'),
+            deckQuick: document.getElementById('deck-quick'),
+            toastStack: document.getElementById('toast-stack'),
+            paletteToggle: document.getElementById('palette-toggle'),
+            commandPalette: document.getElementById('command-palette'),
+            paletteInput: document.getElementById('palette-input'),
+            paletteList: document.getElementById('palette-list'),
             chatMessages: document.getElementById('chat-messages'),
             chatInput: document.getElementById('chat-input'),
             chatTyping: document.getElementById('chat-typing'),
             chatInstanceLabel: document.getElementById('chat-instance-label'),
+            chatFontDown: document.getElementById('chat-font-down'),
+            chatFontUp: document.getElementById('chat-font-up'),
+            chatHeightDown: document.getElementById('chat-height-down'),
+            chatHeightUp: document.getElementById('chat-height-up'),
+            chatMaxToggle: document.getElementById('chat-max-toggle'),
+            chatClear: document.getElementById('chat-clear'),
+            chatChips: Array.from(document.querySelectorAll('.chat-chip')),
             tasksBoard: document.getElementById('tasks-board'),
             tasksMetrics: document.getElementById('tasks-metrics'),
         };
@@ -876,7 +1504,15 @@
                     item.style.minHeight = '280px';
                     item.style.maxHeight = '280px';
                 }
+                const canvas = item.querySelector('canvas');
+                if (canvas) {
+                    canvas.style.height = '252px';
+                    canvas.style.maxHeight = '252px';
+                }
             });
+            if (refs.agentsTableWrap) {
+                refs.agentsTableWrap.style.maxHeight = activeView === 'ops' ? '420px' : '360px';
+            }
         }
 
         function refreshChartTheme() {
@@ -923,6 +1559,7 @@
             const learning = data.learning_v2 || {};
             const funnel = learning.proposal_funnel || {};
             const quality = learning.outcome_quality || {};
+            const eventQuality = learning.learning_event_quality || {};
             const orions = data.orion_instances || [];
             const fleet = data.agent_fleet || [];
             currentInstanceId = (orions[0] && orions[0].id) ? String(orions[0].id) : currentInstanceId;
@@ -954,10 +1591,12 @@
             const executed = Number(funnel.executed || 0);
             const verified = Number(funnel.verified || 0);
             const pendingRecheck = Number(quality.pending_recheck_runs || 0);
+            const retryExhausted = Number(quality.retry_exhausted_runs || 0);
             const winRate = Math.round(Number(quality.win_rate || 0) * 1000) / 10;
             const lossRate = Math.round(Number(quality.loss_rate || 0) * 1000) / 10;
             const inconclusiveRate = Math.round(Number(quality.inconclusive_rate || 0) * 1000) / 10;
             const avgConfidence = Math.round(Number(quality.avg_confidence || 0) * 1000) / 1000;
+            const productionRatio = Math.round(Number(eventQuality.production_ratio || 0) * 1000) / 10;
             const trend24 = quality.trend_24h || {};
             const t24Win = Number(trend24.win || 0);
             const t24Inc = Number(trend24.inconclusive || 0);
@@ -965,11 +1604,11 @@
             if (refs.learningCreated) refs.learningCreated.textContent = String(created);
             if (refs.learningPending) refs.learningPending.textContent = `pending ${pending}`;
             if (refs.learningExecuted) refs.learningExecuted.textContent = String(executed);
-            if (refs.learningVerified) refs.learningVerified.textContent = `verified ${verified} | recheck ${pendingRecheck}`;
+            if (refs.learningVerified) refs.learningVerified.textContent = `verified ${verified} | recheck ${pendingRecheck} | exhausted ${retryExhausted}`;
             if (refs.learningWinRate) refs.learningWinRate.textContent = `${winRate}%`;
             if (refs.learningLossRate) refs.learningLossRate.textContent = `loss ${lossRate}%`;
             if (refs.learningConfidence) refs.learningConfidence.textContent = String(avgConfidence);
-            if (refs.learningInconclusive) refs.learningInconclusive.textContent = `inconclusive ${inconclusiveRate}% | 24h w:${t24Win} i:${t24Inc}`;
+            if (refs.learningInconclusive) refs.learningInconclusive.textContent = `inconclusive ${inconclusiveRate}% | 24h w:${t24Win} i:${t24Inc} | prod ${productionRatio}%`;
 
             iterationHistory.push(iteration);
             if (iterationHistory.length > 30) iterationHistory.shift();
@@ -989,7 +1628,10 @@
                 refs.agentsBody.innerHTML = '<tr><td colspan="4" class="tiny">No agents detected</td></tr>';
                 return;
             }
-            refs.agentsBody.innerHTML = fleet.map((agent) => {
+            const maxRows = activeView === 'ops' ? 120 : 60;
+            const visibleFleet = fleet.slice(0, maxRows);
+            const hiddenCount = Math.max(0, fleet.length - visibleFleet.length);
+            const rows = visibleFleet.map((agent) => {
                 const level = String(agent.last_level || 'info').toLowerCase();
                 const badgeClass = level === 'error' ? 'danger' : (level === 'warning' ? 'warn' : 'ok');
                 const status = agent.online ? 'Online' : 'Offline';
@@ -1001,7 +1643,11 @@
                         <td>${escapeHtml(truncate(agent.last_message || 'n/a', 92))}</td>
                     </tr>
                 `;
-            }).join('');
+            });
+            if (hiddenCount > 0) {
+                rows.push(`<tr><td colspan="4" class="tiny">+${hiddenCount} agents hidden for readability</td></tr>`);
+            }
+            refs.agentsBody.innerHTML = rows.join('');
         }
 
         function renderFeedback(items) {
@@ -1080,7 +1726,10 @@
                 const p95 = Number((latestSlo && latestSlo.routing && latestSlo.routing.p95_latency_ms) || 0);
                 const queueDepth = Number((latestSlo && latestSlo.openclaw_queue && latestSlo.openclaw_queue.total_queue_depth) || 0);
                 const queueP95 = Number((latestSlo && latestSlo.openclaw_queue && latestSlo.openclaw_queue.queue_wait_p95_ms) || 0);
-                refs.connection.textContent = `Socket connected | routing ${(successRate * 100).toFixed(0)}% | p95 ${p95}ms | oc-q ${queueDepth} | oc-qp95 ${queueP95}ms`;
+                const workersAlive = Number((latestSlo && latestSlo.control_plane && latestSlo.control_plane.alive_workers) || 0);
+                const workersRegistered = Number((latestSlo && latestSlo.control_plane && latestSlo.control_plane.registered_workers) || 0);
+                const circuits = Number((latestSlo && latestSlo.control_plane && latestSlo.control_plane.open_circuits) || 0);
+                refs.connection.textContent = `Socket connected | routing ${(successRate * 100).toFixed(0)}% | p95 ${p95}ms | oc-q ${queueDepth} | oc-qp95 ${queueP95}ms | workers ${workersAlive}/${workersRegistered} | circuits ${circuits}`;
                 updateDashboard(data);
                 loadKanbanBoard();
             } catch (err) {
@@ -1238,6 +1887,174 @@
             if (refs.chatInput) refs.chatInput.focus();
         }
 
+        function notify(message, kind, ttl) {
+            if (!refs.toastStack) return;
+            const tone = ['info', 'ok', 'warn', 'danger'].includes(String(kind)) ? String(kind) : 'info';
+            const life = Math.max(1200, Number(ttl) || 2600);
+            const node = document.createElement('div');
+            node.className = `toast ${tone}`;
+            node.textContent = String(message || '');
+            refs.toastStack.prepend(node);
+            while (refs.toastStack.children.length > 4) refs.toastStack.lastElementChild.remove();
+            window.setTimeout(() => {
+                node.style.opacity = '0';
+                node.style.transform = 'translateY(8px)';
+                window.setTimeout(() => node.remove(), 220);
+            }, life);
+        }
+
+        function saveDeckHistory() {
+            try {
+                localStorage.setItem(DECK_HISTORY_STORAGE_KEY, JSON.stringify(deckState.history.slice(0, 24)));
+            } catch (_) {}
+        }
+
+        function loadDeckHistory() {
+            try {
+                const parsed = JSON.parse(String(localStorage.getItem(DECK_HISTORY_STORAGE_KEY) || '[]'));
+                if (Array.isArray(parsed)) {
+                    deckState.history = parsed
+                        .map((item) => String(item || '').trim())
+                        .filter(Boolean)
+                        .slice(0, 24);
+                }
+            } catch (_) {}
+            deckState.historyIndex = -1;
+        }
+
+        function pushDeckHistory(cmd) {
+            const value = String(cmd || '').trim();
+            if (!value) return;
+            deckState.history = [value].concat(deckState.history.filter((item) => item !== value)).slice(0, 24);
+            deckState.historyIndex = -1;
+            saveDeckHistory();
+        }
+
+        function cycleDeckHistory(direction) {
+            if (!refs.deckInput || !deckState.history.length) return;
+            const max = deckState.history.length - 1;
+            if (direction < 0) {
+                deckState.historyIndex = Math.min(max, deckState.historyIndex + 1);
+            } else if (direction > 0) {
+                deckState.historyIndex = Math.max(-1, deckState.historyIndex - 1);
+            }
+            if (deckState.historyIndex === -1) {
+                refs.deckInput.value = '';
+                return;
+            }
+            refs.deckInput.value = String(deckState.history[deckState.historyIndex] || '');
+            refs.deckInput.setSelectionRange(refs.deckInput.value.length, refs.deckInput.value.length);
+        }
+
+        function getDeckQuickCommands(view) {
+            const v = String(view || activeView || 'workspace');
+            if (v === 'chat') {
+                return [
+                    { label: 'Summary', cmd: 'còn cái gì đang chạy vậy, tóm giúp mình' },
+                    { label: 'Unstick', cmd: 'guardian gỡ kẹt nếu có flow bị stuck' },
+                    { label: 'UI/UX', cmd: 'đánh giá UI UX hiện tại và đề xuất cải thiện' },
+                    { label: 'Run Cycle', cmd: 'chạy 1 vòng Orion rồi báo kết quả ngắn gọn' },
+                ];
+            }
+            if (v === 'ops') {
+                return [
+                    { label: 'Refresh', cmd: 'refresh' },
+                    { label: 'Pause', cmd: 'pause' },
+                    { label: 'Resume', cmd: 'resume' },
+                    { label: 'Spawn', cmd: 'spawn' },
+                ];
+            }
+            if (v === 'tasks') {
+                return [
+                    { label: 'Open Chat', cmd: 'chat' },
+                    { label: 'Focus Mode', cmd: 'focus' },
+                    { label: 'Compact', cmd: 'compact' },
+                    { label: 'Summary', cmd: 'summary' },
+                ];
+            }
+            return [
+                { label: 'Summary', cmd: 'summary' },
+                { label: 'Open Chat', cmd: 'chat' },
+                { label: 'Open Ops', cmd: 'ops' },
+                { label: 'Zen', cmd: 'zen' },
+            ];
+        }
+
+        function renderDeckQuickCommands() {
+            if (!refs.deckQuick) return;
+            const items = getDeckQuickCommands(activeView);
+            refs.deckQuick.innerHTML = items.map((item) => (
+                `<button class="deck-chip" type="button" data-deck-cmd="${escapeHtml(item.cmd)}">${escapeHtml(item.label)}</button>`
+            )).join('');
+            Array.from(refs.deckQuick.querySelectorAll('[data-deck-cmd]')).forEach((node) => {
+                node.addEventListener('click', () => runDeckCommand(String(node.dataset.deckCmd || '')));
+            });
+        }
+
+        function syncControlDeck() {
+            const currentView = String(activeView || 'workspace');
+            refs.deckViewButtons.forEach((button) => {
+                button.classList.toggle('active', button.dataset.deckView === currentView);
+            });
+            const mode = String(document.body.dataset.experience || 'balanced');
+            const density = String(document.body.dataset.density || 'comfortable');
+            const zen = String(document.body.dataset.zen || 'off');
+            if (refs.deckZen) {
+                refs.deckZen.classList.toggle('active', zen === 'on');
+                refs.deckZen.textContent = zen === 'on' ? 'Zen On' : 'Zen';
+            }
+            if (refs.deckMeta) {
+                refs.deckMeta.textContent = `view=${currentView} | mode=${mode} | density=${density} | zen=${zen}`;
+            }
+            renderDeckQuickCommands();
+        }
+
+        function sendChatFromDeck(text) {
+            const msg = String(text || '').trim();
+            if (!msg) return;
+            openChat();
+            useChatPrompt(msg);
+            window.setTimeout(() => sendChatMessage(), 40);
+        }
+
+        function runDeckCommand(raw) {
+            const cmd = String(raw || '').trim();
+            if (!cmd) return;
+            const normalized = cmd
+                .toLowerCase()
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '')
+                .replace(/đ/g, 'd');
+
+            if (/^(1|ws|workspace|home)$/.test(normalized)) return setView('workspace', true);
+            if (/^(2|ops)$/.test(normalized)) return setView('ops', true);
+            if (/^(3|activity|feed)$/.test(normalized)) return setView('activity', true);
+            if (/^(4|chat)$/.test(normalized)) return openChat();
+            if (/^(5|tasks|kanban)$/.test(normalized)) return setView('tasks', true);
+            if (/^(refresh|reload|f5|lam moi)$/.test(normalized)) return refreshAll();
+            if (/^(pause|tam dung|dung lai|hold)$/.test(normalized)) return pauseSystem();
+            if (/^(resume|continue|tiep tuc|chay tiep)$/.test(normalized)) return resumeSystem();
+            if (normalized.includes('spawn')) return spawnOrion();
+            if (normalized.includes('theme')) {
+                const toggle = document.getElementById('theme-toggle');
+                if (toggle) toggle.click();
+                return;
+            }
+            if (normalized.includes('zen on')) return setZen(true, true);
+            if (normalized.includes('zen off')) return setZen(false, true);
+            if (normalized === 'zen') return toggleZen();
+            if (normalized.includes('compact')) return setDensity('compact', true);
+            if (normalized.includes('comfort')) return setDensity('comfortable', true);
+            if (normalized.includes('focus')) return setExperience('focus', true);
+            if (normalized.includes('balanced')) return setExperience('balanced', true);
+            if (normalized.includes('studio')) return setExperience('studio', true);
+            if (normalized.includes('palette')) return openPalette('');
+            if (normalized.includes('ui ux') || normalized.includes('uiux')) return sendChatFromDeck('đánh giá UI UX hiện tại và đề xuất cải thiện');
+            if (normalized.includes('go ket') || normalized.includes('unstick')) return sendChatFromDeck('guardian gỡ kẹt nếu có flow bị stuck');
+            if (normalized.includes('summary') || normalized.includes('tom tat') || normalized.includes('dang chay')) return sendChatFromDeck('còn cái gì đang chạy vậy, tóm giúp mình');
+            return sendChatFromDeck(cmd);
+        }
+
         function parseViewFromUrl() {
             const value = String(new URLSearchParams(window.location.search).get('view') || '').toLowerCase();
             if (ALLOWED_VIEWS.includes(value)) return value;
@@ -1248,6 +2065,7 @@
         function setView(view, syncUrl) {
             const resolved = ALLOWED_VIEWS.includes(String(view)) ? String(view) : 'workspace';
             activeView = resolved;
+            document.body.dataset.activeView = resolved;
             refs.viewTabs.forEach((button) => {
                 button.classList.toggle('active', button.dataset.view === resolved);
             });
@@ -1262,12 +2080,259 @@
                 window.history.pushState({ view: resolved }, '', url);
             }
             localStorage.setItem(VIEW_STORAGE_KEY, resolved);
+            syncControlDeck();
             if (resolved === 'ops' || resolved === 'workspace') {
                 setTimeout(() => {
                     resizeChartsSafely();
                     enforceChartHeightGuard();
                 }, 30);
             }
+        }
+
+        function setExperience(mode, persist) {
+            const allowed = ['focus', 'balanced', 'studio'];
+            const resolved = allowed.includes(String(mode)) ? String(mode) : 'balanced';
+            document.body.dataset.experience = resolved;
+            refs.expButtons.forEach((button) => {
+                button.classList.toggle('active', button.dataset.experience === resolved);
+            });
+            if (persist !== false) {
+                try {
+                    localStorage.setItem(EXPERIENCE_STORAGE_KEY, resolved);
+                } catch (_) {}
+            }
+            syncControlDeck();
+        }
+
+        function loadExperience() {
+            let saved = 'balanced';
+            try {
+                const value = String(localStorage.getItem(EXPERIENCE_STORAGE_KEY) || '').toLowerCase();
+                if (['focus', 'balanced', 'studio'].includes(value)) saved = value;
+            } catch (_) {}
+            setExperience(saved, false);
+        }
+
+        function setDensity(mode, persist) {
+            const allowed = ['comfortable', 'compact'];
+            const resolved = allowed.includes(String(mode)) ? String(mode) : 'comfortable';
+            document.body.dataset.density = resolved;
+            refs.densityButtons.forEach((button) => {
+                button.classList.toggle('active', button.dataset.density === resolved);
+            });
+            if (persist !== false) {
+                try {
+                    localStorage.setItem(DENSITY_STORAGE_KEY, resolved);
+                } catch (_) {}
+            }
+            syncControlDeck();
+        }
+
+        function loadDensity() {
+            let saved = 'comfortable';
+            try {
+                const value = String(localStorage.getItem(DENSITY_STORAGE_KEY) || '').toLowerCase();
+                if (['comfortable', 'compact'].includes(value)) saved = value;
+            } catch (_) {}
+            setDensity(saved, false);
+        }
+
+        function setZen(enabled, persist) {
+            const on = Boolean(enabled);
+            document.body.dataset.zen = on ? 'on' : 'off';
+            if (refs.zenToggle) {
+                refs.zenToggle.classList.toggle('active', on);
+                refs.zenToggle.textContent = on ? 'Zen On' : 'Zen';
+            }
+            if (persist !== false) {
+                try {
+                    localStorage.setItem(ZEN_STORAGE_KEY, on ? 'on' : 'off');
+                } catch (_) {}
+            }
+            enforceChartHeightGuard();
+            syncControlDeck();
+        }
+
+        function toggleZen() {
+            const current = String(document.body.dataset.zen || 'off') === 'on';
+            setZen(!current, true);
+        }
+
+        function loadZen() {
+            let saved = 'off';
+            try {
+                const value = String(localStorage.getItem(ZEN_STORAGE_KEY) || '').toLowerCase();
+                if (value === 'on' || value === 'off') saved = value;
+            } catch (_) {}
+            setZen(saved === 'on', false);
+        }
+
+        function getPaletteActions() {
+            return [
+                { id: 'nav_workspace', title: 'Open Workspace', meta: 'view', keywords: 'workspace home dashboard', run: () => setView('workspace', true) },
+                { id: 'nav_ops', title: 'Open Ops', meta: 'view', keywords: 'ops monitor signals', run: () => setView('ops', true) },
+                { id: 'nav_activity', title: 'Open Activity', meta: 'view', keywords: 'activity events feedback', run: () => setView('activity', true) },
+                { id: 'nav_chat', title: 'Open Chat', meta: 'view', keywords: 'chat prompt message', run: () => openChat() },
+                { id: 'nav_tasks', title: 'Open Tasks', meta: 'view', keywords: 'tasks kanban backlog', run: () => setView('tasks', true) },
+                { id: 'refresh', title: 'Refresh Live Data', meta: 'action', keywords: 'refresh reload sync', run: () => refreshAll() },
+                { id: 'pause', title: 'Pause System', meta: 'action', keywords: 'pause hold stop', run: () => pauseSystem() },
+                { id: 'resume', title: 'Resume System', meta: 'action', keywords: 'resume continue start', run: () => resumeSystem() },
+                { id: 'spawn', title: 'Spawn Orion Instance', meta: 'action', keywords: 'spawn orion instance', run: () => spawnOrion() },
+                { id: 'theme', title: 'Toggle Theme', meta: 'preference', keywords: 'theme dark light', run: () => document.getElementById('theme-toggle').click() },
+                { id: 'exp_focus', title: 'Experience: Focus', meta: 'preference', keywords: 'experience focus minimal', run: () => setExperience('focus', true) },
+                { id: 'exp_balanced', title: 'Experience: Balance', meta: 'preference', keywords: 'experience balanced', run: () => setExperience('balanced', true) },
+                { id: 'exp_studio', title: 'Experience: Studio', meta: 'preference', keywords: 'experience studio premium', run: () => setExperience('studio', true) },
+                { id: 'density_comfort', title: 'Density: Comfortable', meta: 'preference', keywords: 'density comfortable spacing', run: () => setDensity('comfortable', true) },
+                { id: 'density_compact', title: 'Density: Compact', meta: 'preference', keywords: 'density compact tighter', run: () => setDensity('compact', true) },
+                { id: 'zen_on', title: 'Zen Mode: On', meta: 'preference', keywords: 'zen focus minimal clean', run: () => setZen(true, true) },
+                { id: 'zen_off', title: 'Zen Mode: Off', meta: 'preference', keywords: 'zen off full layout', run: () => setZen(false, true) },
+                { id: 'chat_summary', title: 'Chat Prompt: Realtime Summary', meta: 'prompt', keywords: 'chat summary status running', run: () => { openChat(); useChatPrompt('còn cái gì đang chạy vậy, tóm giúp mình'); } },
+                { id: 'chat_uiux', title: 'Chat Prompt: UI/UX Critique', meta: 'prompt', keywords: 'chat ui ux critique improve', run: () => { openChat(); useChatPrompt('đánh giá UI UX hiện tại và đề xuất cải thiện'); } },
+                { id: 'chat_unstick', title: 'Chat Prompt: Guardian Unstick', meta: 'prompt', keywords: 'chat guardian stuck unstick', run: () => { openChat(); useChatPrompt('guardian gỡ kẹt nếu có flow bị stuck'); } },
+            ];
+        }
+
+        function updatePaletteItems(query) {
+            const q = String(query || '').trim().toLowerCase();
+            const all = getPaletteActions();
+            if (!q) {
+                paletteState.items = all.slice(0, 10);
+            } else {
+                paletteState.items = all.filter((item) => {
+                    const hay = `${item.title} ${item.keywords} ${item.meta}`.toLowerCase();
+                    return hay.includes(q);
+                }).slice(0, 10);
+            }
+            paletteState.selectedIndex = Math.max(0, Math.min(paletteState.selectedIndex, Math.max(0, paletteState.items.length - 1)));
+        }
+
+        function renderPalette() {
+            if (!refs.paletteList) return;
+            const items = Array.isArray(paletteState.items) ? paletteState.items : [];
+            if (!items.length) {
+                refs.paletteList.innerHTML = '<li class="palette-item"><div class="palette-item-title">No command found</div><div class="palette-item-meta">Try: chat, tasks, refresh, theme</div></li>';
+                return;
+            }
+            refs.paletteList.innerHTML = items.map((item, index) => `
+                <li class="palette-item ${index === paletteState.selectedIndex ? 'active' : ''}" data-palette-index="${index}">
+                    <div class="palette-item-title">${escapeHtml(item.title)}</div>
+                    <div class="palette-item-meta">${escapeHtml(item.meta)} · ${escapeHtml(item.keywords)}</div>
+                </li>
+            `).join('');
+            Array.from(refs.paletteList.querySelectorAll('[data-palette-index]')).forEach((node) => {
+                node.addEventListener('click', () => {
+                    const idx = Number(node.dataset.paletteIndex || 0);
+                    runPaletteAction(idx);
+                });
+            });
+        }
+
+        function openPalette(initialQuery) {
+            paletteState.open = true;
+            paletteState.query = String(initialQuery || '');
+            paletteState.selectedIndex = 0;
+            updatePaletteItems(paletteState.query);
+            renderPalette();
+            if (refs.commandPalette) {
+                refs.commandPalette.classList.add('open');
+                refs.commandPalette.setAttribute('aria-hidden', 'false');
+            }
+            if (refs.paletteInput) {
+                refs.paletteInput.value = paletteState.query;
+                refs.paletteInput.focus();
+                refs.paletteInput.select();
+            }
+        }
+
+        function closePalette() {
+            paletteState.open = false;
+            if (refs.commandPalette) {
+                refs.commandPalette.classList.remove('open');
+                refs.commandPalette.setAttribute('aria-hidden', 'true');
+            }
+        }
+
+        function runPaletteAction(index) {
+            const item = (paletteState.items || [])[Number(index)];
+            if (!item || typeof item.run !== 'function') return;
+            closePalette();
+            Promise.resolve(item.run()).catch((error) => {
+                console.error('Palette action failed', error);
+            });
+        }
+
+        function clampChatUiState() {
+            chatUiState.fontScale = Math.min(1.45, Math.max(0.85, Number(chatUiState.fontScale) || 1));
+            chatUiState.panelHeight = Math.min(780, Math.max(240, Number(chatUiState.panelHeight) || 320));
+            chatUiState.maximized = Boolean(chatUiState.maximized);
+        }
+
+        function saveChatUiState() {
+            try {
+                localStorage.setItem(CHAT_UI_STORAGE_KEY, JSON.stringify(chatUiState));
+            } catch (_) {}
+        }
+
+        function applyChatUiState() {
+            clampChatUiState();
+            const root = document.documentElement;
+            root.style.setProperty('--chat-font-scale', String(chatUiState.fontScale.toFixed(2)));
+            const height = chatUiState.maximized ? 680 : chatUiState.panelHeight;
+            root.style.setProperty('--chat-height', `${Math.round(height)}px`);
+            if (refs.chatMaxToggle) refs.chatMaxToggle.classList.toggle('active', chatUiState.maximized);
+        }
+
+        function loadChatUiState() {
+            try {
+                const parsed = JSON.parse(String(localStorage.getItem(CHAT_UI_STORAGE_KEY) || '{}'));
+                if (parsed && typeof parsed === 'object') {
+                    if (typeof parsed.fontScale === 'number') chatUiState.fontScale = parsed.fontScale;
+                    if (typeof parsed.panelHeight === 'number') chatUiState.panelHeight = parsed.panelHeight;
+                    if (typeof parsed.maximized === 'boolean') chatUiState.maximized = parsed.maximized;
+                }
+            } catch (_) {}
+            applyChatUiState();
+        }
+
+        function tweakChatFont(delta) {
+            chatUiState.fontScale = Number(chatUiState.fontScale) + Number(delta);
+            clampChatUiState();
+            applyChatUiState();
+            saveChatUiState();
+        }
+
+        function tweakChatHeight(delta) {
+            chatUiState.panelHeight = Number(chatUiState.panelHeight) + Number(delta);
+            chatUiState.maximized = false;
+            clampChatUiState();
+            applyChatUiState();
+            saveChatUiState();
+        }
+
+        function toggleChatMax() {
+            chatUiState.maximized = !chatUiState.maximized;
+            applyChatUiState();
+            saveChatUiState();
+        }
+
+        function resetChatConversation() {
+            if (!refs.chatMessages) return;
+            refs.chatMessages.innerHTML = `
+                <div class="chat-msg bot">
+                    <div>Xin chào. Chat đã được gom ngay trong Live Monitor để không phải nhảy trang.</div>
+                    <div class="chat-time">now</div>
+                </div>
+            `;
+            showChatTyping(false);
+            Object.keys(pendingChatNodes).forEach((key) => delete pendingChatNodes[key]);
+            Object.keys(pendingChatSeedReplies).forEach((key) => delete pendingChatSeedReplies[key]);
+            if (refs.chatInput) refs.chatInput.focus();
+        }
+
+        function useChatPrompt(prompt) {
+            if (!refs.chatInput) return;
+            refs.chatInput.value = String(prompt || '').trim();
+            refs.chatInput.focus();
         }
 
         function chatPhaseLabel(phase) {
@@ -1286,7 +2351,8 @@
             if (!refs.chatMessages) return;
             const safeId = String(nodeId || `${role}-${Date.now()}`).replace(/[^a-zA-Z0-9:_-]/g, '_');
             const existing = refs.chatMessages.querySelector(`.chat-msg[data-chat-id="${safeId}"]`);
-            const markup = `<div>${escapeHtml(text)}</div><div class="chat-time">${new Date().toLocaleTimeString()}</div>`;
+            const safeText = escapeHtml(String(text || '')).replace(/\n/g, '<br>');
+            const markup = `<div>${safeText}</div><div class="chat-time">${new Date().toLocaleTimeString()}</div>`;
             if (existing) {
                 existing.innerHTML = markup;
                 existing.classList.toggle('user', role === 'user');
@@ -1301,8 +2367,10 @@
             refs.chatMessages.scrollTop = refs.chatMessages.scrollHeight;
         }
 
-        function showChatTyping(show) {
-            if (refs.chatTyping) refs.chatTyping.style.display = show ? 'block' : 'none';
+        function showChatTyping(show, label) {
+            if (!refs.chatTyping) return;
+            refs.chatTyping.style.display = show ? 'block' : 'none';
+            refs.chatTyping.textContent = show ? (String(label || 'processing...')) : 'processing...';
         }
 
         async function sendChatMessage() {
@@ -1312,7 +2380,7 @@
             if (!message) return;
             appendChatMessage('user', message);
             input.value = '';
-            showChatTyping(true);
+            showChatTyping(true, 'Đang phân tích yêu cầu...');
             const pendingNode = `pending-${Date.now()}`;
             appendChatMessage('bot', 'Đang xử lý...', pendingNode);
             try {
@@ -1330,10 +2398,15 @@
                 const messageId = String(payload.message_id || '').trim();
                 if (messageId) {
                     pendingChatNodes[messageId] = pendingNode;
-                    if (payload.reply) {
-                        appendChatMessage('bot', String(payload.reply), pendingNode);
+                    if (payload.reply) pendingChatSeedReplies[messageId] = String(payload.reply);
+                    window.setTimeout(() => {
+                        if (pendingChatNodes[messageId] !== pendingNode) return;
+                        const fallback = String(pendingChatSeedReplies[messageId] || '').trim();
+                        appendChatMessage('bot', fallback || 'Đã nhận yêu cầu, đang chờ stream cập nhật.', pendingNode);
                         showChatTyping(false);
-                    }
+                        delete pendingChatNodes[messageId];
+                        delete pendingChatSeedReplies[messageId];
+                    }, 2400);
                 } else if (payload.reply) {
                     appendChatMessage('bot', String(payload.reply), pendingNode);
                     showChatTyping(false);
@@ -1351,14 +2424,24 @@
             if (!nodeId) return;
             const phase = chatPhaseLabel(payload && payload.phase);
             const text = String((payload && payload.text) || '').trim();
-            if (!text) return;
             if (phase === 'final') {
-                appendChatMessage('bot', text, nodeId);
+                const fallback = String(pendingChatSeedReplies[messageId] || '').trim();
+                appendChatMessage('bot', text || fallback || 'Đã xử lý xong yêu cầu.', nodeId);
                 showChatTyping(false);
                 delete pendingChatNodes[messageId];
+                delete pendingChatSeedReplies[messageId];
                 return;
             }
-            appendChatMessage('bot', `[${phase}] ${text}`, nodeId);
+            const phaseTextMap = {
+                thinking: 'Đang suy luận...',
+                routing: 'Đang chọn agent phù hợp...',
+                processing: 'Đang thực thi...',
+                report: 'Đang tổng hợp báo cáo...',
+            };
+            showChatTyping(true, phaseTextMap[phase] || 'Đang xử lý...');
+            if (text && phase === 'report') {
+                appendChatMessage('bot', text, nodeId);
+            }
         }
 
         function truncate(str, len) {
@@ -1384,13 +2467,111 @@
         refs.viewTabs.forEach((button) => {
             button.addEventListener('click', () => setView(button.dataset.view || 'workspace', true));
         });
+        refs.deckViewButtons.forEach((button) => {
+            button.addEventListener('click', () => setView(button.dataset.deckView || 'workspace', true));
+        });
+        refs.expButtons.forEach((button) => {
+            button.addEventListener('click', () => setExperience(button.dataset.experience || 'balanced', true));
+        });
+        refs.densityButtons.forEach((button) => {
+            button.addEventListener('click', () => setDensity(button.dataset.density || 'comfortable', true));
+        });
+        if (refs.zenToggle) refs.zenToggle.addEventListener('click', () => toggleZen());
+        if (refs.deckZen) refs.deckZen.addEventListener('click', () => toggleZen());
+        if (refs.deckRefresh) refs.deckRefresh.addEventListener('click', () => refreshAll());
+        if (refs.deckPause) refs.deckPause.addEventListener('click', () => pauseSystem());
+        if (refs.deckResume) refs.deckResume.addEventListener('click', () => resumeSystem());
+        if (refs.deckSend) {
+            refs.deckSend.addEventListener('click', () => {
+                const value = refs.deckInput ? refs.deckInput.value : '';
+                runDeckCommand(value);
+                if (refs.deckInput) refs.deckInput.value = '';
+            });
+        }
+        if (refs.deckInput) {
+            refs.deckInput.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+                    runDeckCommand(refs.deckInput.value);
+                    refs.deckInput.value = '';
+                }
+            });
+        }
+        if (refs.paletteToggle) refs.paletteToggle.addEventListener('click', () => openPalette(''));
+        if (refs.commandPalette) {
+            refs.commandPalette.addEventListener('click', (event) => {
+                if (event.target === refs.commandPalette) closePalette();
+            });
+        }
+        if (refs.paletteInput) {
+            refs.paletteInput.addEventListener('input', () => {
+                paletteState.query = String(refs.paletteInput.value || '');
+                paletteState.selectedIndex = 0;
+                updatePaletteItems(paletteState.query);
+                renderPalette();
+            });
+        }
+        if (refs.chatFontDown) refs.chatFontDown.addEventListener('click', () => tweakChatFont(-0.07));
+        if (refs.chatFontUp) refs.chatFontUp.addEventListener('click', () => tweakChatFont(0.07));
+        if (refs.chatHeightDown) refs.chatHeightDown.addEventListener('click', () => tweakChatHeight(-40));
+        if (refs.chatHeightUp) refs.chatHeightUp.addEventListener('click', () => tweakChatHeight(40));
+        if (refs.chatMaxToggle) refs.chatMaxToggle.addEventListener('click', () => toggleChatMax());
+        if (refs.chatClear) refs.chatClear.addEventListener('click', () => resetChatConversation());
+        refs.chatChips.forEach((chip) => {
+            chip.addEventListener('click', () => useChatPrompt(chip.dataset.prompt || ''));
+        });
         window.addEventListener('popstate', () => setView(parseViewFromUrl(), false));
         window.addEventListener('resize', () => {
             resizeChartsSafely();
             enforceChartHeightGuard();
         });
         document.addEventListener('keydown', (event) => {
+            const isCmdK = (event.metaKey || event.ctrlKey) && String(event.key || '').toLowerCase() === 'k';
+            if (isCmdK) {
+                event.preventDefault();
+                if (paletteState.open) closePalette();
+                else openPalette('');
+                return;
+            }
+            if (paletteState.open) {
+                if (event.key === 'Escape') {
+                    event.preventDefault();
+                    closePalette();
+                    return;
+                }
+                if (event.key === 'ArrowDown') {
+                    event.preventDefault();
+                    paletteState.selectedIndex = Math.min(paletteState.selectedIndex + 1, Math.max(0, paletteState.items.length - 1));
+                    renderPalette();
+                    return;
+                }
+                if (event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    paletteState.selectedIndex = Math.max(0, paletteState.selectedIndex - 1);
+                    renderPalette();
+                    return;
+                }
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+                    runPaletteAction(paletteState.selectedIndex);
+                    return;
+                }
+            }
             if (event.target && ['INPUT', 'TEXTAREA'].includes(event.target.tagName)) return;
+            const key = String(event.key || '').toLowerCase();
+            if (key === '/' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+                event.preventDefault();
+                if (refs.deckInput) {
+                    refs.deckInput.focus();
+                    refs.deckInput.select();
+                }
+                return;
+            }
+            if (key === 'z') {
+                event.preventDefault();
+                toggleZen();
+                return;
+            }
             const map = { '1': 'workspace', '2': 'ops', '3': 'activity', '4': 'chat', '5': 'tasks' };
             const next = map[event.key];
             if (next) {
@@ -1404,6 +2585,10 @@
             });
         }
 
+        loadExperience();
+        loadDensity();
+        loadZen();
+        loadChatUiState();
         setView(parseViewFromUrl(), false);
         initCharts();
         loadStatus();

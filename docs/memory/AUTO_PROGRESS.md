@@ -1,6 +1,6 @@
 # Nexus Progress Snapshot
 
-Last updated: 2026-02-16T21:21:33.530418
+Last updated: 2026-02-17T00:20:11.893449
 
 ## Project
 - name: Nexus
@@ -11,14 +11,14 @@ Last updated: 2026-02-16T21:21:33.530418
 
 ## Orion
 - instance: orion-1 (Orion 1)
-- running: True
+- running: False
 - paused: False
 - pause_reason: 
-- iteration: 167
-- active_flows: 2
-- last_progress_at: 2026-02-16T21:21:21.868492
-- last_cycle_started_at: 2026-02-16T21:21:21.778382
-- last_cycle_finished_at: 2026-02-16T21:21:21.842749
+- iteration: None
+- active_flows: 0
+- last_progress_at: None
+- last_cycle_started_at: None
+- last_cycle_finished_at: None
 
 ## Monitor
 - autopilot_enabled: True
@@ -35,7 +35,7 @@ Last updated: 2026-02-16T21:21:33.530418
 - provider: pyautogui
 
 ## Signals (last window)
-- counts: {'error': 1, 'warning': 10, 'success': 5, 'info': 104}
+- counts: {'error': 28, 'warning': 16, 'success': 4, 'info': 72}
 - top_agent: orion
 - latest_event: Self-improvement complete: 0 applied, 0 pending
 
