@@ -1290,7 +1290,7 @@
                         <button type="button" class="chat-chip" data-prompt="đánh giá nhanh UI/UX hiện tại và đề xuất nâng cấp ngay">UI/UX critique</button>
                         <button type="button" class="chat-chip" data-prompt="chạy 1 vòng Orion rồi báo kết quả ngắn gọn">Run one cycle</button>
                     </div>
-                    <div class="chat-time">Bạn có thể chat tự nhiên; `1/2/3` đổi view, `Z` bật Zen, `/` focus Control Deck.</div>
+                    <div class="chat-time">Bạn có thể chat tự nhiên; `1/2/3` đổi view, `Z` bật Zen, `/` focus Deck, `↑/↓` duyệt history lệnh.</div>
                 </div>
             </article>
 
@@ -1357,6 +1357,7 @@
         let lastStatusRenderAt = 0;
         let statusRenderTimer = null;
         let pendingStatusPayload = null;
+        let lastLoadErrorToastAt = 0;
         const CHAT_UI_STORAGE_KEY = 'autodev-chat-ui';
         const EXPERIENCE_STORAGE_KEY = 'autodev-experience-mode';
         const DENSITY_STORAGE_KEY = 'autodev-density-mode';
@@ -1734,6 +1735,11 @@
                 loadKanbanBoard();
             } catch (err) {
                 console.error('Failed to load status', err);
+                const now = Date.now();
+                if (now - lastLoadErrorToastAt > 5000) {
+                    notify('Không lấy được trạng thái realtime', 'danger', 2400);
+                    lastLoadErrorToastAt = now;
+                }
             }
         }
 
@@ -1818,11 +1824,13 @@
 
         socket.on('connect', () => {
             refs.connection.textContent = 'Socket connected';
+            notify('Realtime connected', 'ok', 1200);
             loadStatus();
         });
 
         socket.on('disconnect', () => {
             refs.connection.textContent = 'Socket disconnected';
+            notify('Realtime disconnected', 'warn', 2200);
         });
 
         socket.on('status_update', (payload) => {
@@ -1847,6 +1855,7 @@
                     body: JSON.stringify({ command: 'pause' }),
                 });
                 refs.connection.textContent = 'System pause requested';
+                notify('Pause requested', 'warn');
             } catch (_) {}
         }
 
@@ -1858,11 +1867,13 @@
                     body: JSON.stringify({ command: 'resume' }),
                 });
                 refs.connection.textContent = 'System resume requested';
+                notify('Resume requested', 'ok');
             } catch (_) {}
         }
 
         async function triggerImprovement() {
             refs.connection.textContent = 'Triggering improvement...';
+            notify('Refreshing live state...', 'info', 1300);
             await loadStatus();
         }
 
@@ -1874,11 +1885,13 @@
                     body: JSON.stringify({ goal: 'Scale mission' }),
                 });
                 refs.connection.textContent = 'Spawn requested';
+                notify('Spawn Orion requested', 'ok');
                 setTimeout(loadStatus, 600);
             } catch (_) {}
         }
 
         function refreshAll() {
+            notify('Refreshing data...', 'info', 1200);
             loadStatus();
         }
 
@@ -2020,17 +2033,33 @@
         function runDeckCommand(raw) {
             const cmd = String(raw || '').trim();
             if (!cmd) return;
+            pushDeckHistory(cmd);
             const normalized = cmd
                 .toLowerCase()
                 .normalize('NFD')
                 .replace(/[\u0300-\u036f]/g, '')
                 .replace(/đ/g, 'd');
 
-            if (/^(1|ws|workspace|home)$/.test(normalized)) return setView('workspace', true);
-            if (/^(2|ops)$/.test(normalized)) return setView('ops', true);
-            if (/^(3|activity|feed)$/.test(normalized)) return setView('activity', true);
-            if (/^(4|chat)$/.test(normalized)) return openChat();
-            if (/^(5|tasks|kanban)$/.test(normalized)) return setView('tasks', true);
+            if (/^(1|ws|workspace|home)$/.test(normalized)) {
+                notify('Switched to Workspace', 'info', 1500);
+                return setView('workspace', true);
+            }
+            if (/^(2|ops)$/.test(normalized)) {
+                notify('Switched to Ops', 'info', 1500);
+                return setView('ops', true);
+            }
+            if (/^(3|activity|feed)$/.test(normalized)) {
+                notify('Switched to Activity', 'info', 1500);
+                return setView('activity', true);
+            }
+            if (/^(4|chat)$/.test(normalized)) {
+                notify('Switched to Chat', 'info', 1500);
+                return openChat();
+            }
+            if (/^(5|tasks|kanban)$/.test(normalized)) {
+                notify('Switched to Tasks', 'info', 1500);
+                return setView('tasks', true);
+            }
             if (/^(refresh|reload|f5|lam moi)$/.test(normalized)) return refreshAll();
             if (/^(pause|tam dung|dung lai|hold)$/.test(normalized)) return pauseSystem();
             if (/^(resume|continue|tiep tuc|chay tiep)$/.test(normalized)) return resumeSystem();
@@ -2038,20 +2067,43 @@
             if (normalized.includes('theme')) {
                 const toggle = document.getElementById('theme-toggle');
                 if (toggle) toggle.click();
+                notify('Theme toggled', 'info', 1400);
                 return;
             }
-            if (normalized.includes('zen on')) return setZen(true, true);
-            if (normalized.includes('zen off')) return setZen(false, true);
+            if (normalized.includes('zen on')) {
+                notify('Zen mode ON', 'ok', 1500);
+                return setZen(true, true);
+            }
+            if (normalized.includes('zen off')) {
+                notify('Zen mode OFF', 'info', 1500);
+                return setZen(false, true);
+            }
             if (normalized === 'zen') return toggleZen();
-            if (normalized.includes('compact')) return setDensity('compact', true);
-            if (normalized.includes('comfort')) return setDensity('comfortable', true);
-            if (normalized.includes('focus')) return setExperience('focus', true);
-            if (normalized.includes('balanced')) return setExperience('balanced', true);
-            if (normalized.includes('studio')) return setExperience('studio', true);
+            if (normalized.includes('compact')) {
+                notify('Density: Compact', 'info', 1500);
+                return setDensity('compact', true);
+            }
+            if (normalized.includes('comfort')) {
+                notify('Density: Comfortable', 'info', 1500);
+                return setDensity('comfortable', true);
+            }
+            if (normalized.includes('focus')) {
+                notify('Experience: Focus', 'info', 1500);
+                return setExperience('focus', true);
+            }
+            if (normalized.includes('balanced')) {
+                notify('Experience: Balanced', 'info', 1500);
+                return setExperience('balanced', true);
+            }
+            if (normalized.includes('studio')) {
+                notify('Experience: Studio', 'info', 1500);
+                return setExperience('studio', true);
+            }
             if (normalized.includes('palette')) return openPalette('');
             if (normalized.includes('ui ux') || normalized.includes('uiux')) return sendChatFromDeck('đánh giá UI UX hiện tại và đề xuất cải thiện');
             if (normalized.includes('go ket') || normalized.includes('unstick')) return sendChatFromDeck('guardian gỡ kẹt nếu có flow bị stuck');
             if (normalized.includes('summary') || normalized.includes('tom tat') || normalized.includes('dang chay')) return sendChatFromDeck('còn cái gì đang chạy vậy, tóm giúp mình');
+            notify(`Sent command: ${truncate(cmd, 42)}`, 'info', 1600);
             return sendChatFromDeck(cmd);
         }
 
@@ -2155,7 +2207,9 @@
 
         function toggleZen() {
             const current = String(document.body.dataset.zen || 'off') === 'on';
-            setZen(!current, true);
+            const next = !current;
+            setZen(next, true);
+            notify(next ? 'Zen mode ON' : 'Zen mode OFF', next ? 'ok' : 'info', 1400);
         }
 
         function loadZen() {
@@ -2490,6 +2544,16 @@
         }
         if (refs.deckInput) {
             refs.deckInput.addEventListener('keydown', (event) => {
+                if (event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    cycleDeckHistory(-1);
+                    return;
+                }
+                if (event.key === 'ArrowDown') {
+                    event.preventDefault();
+                    cycleDeckHistory(1);
+                    return;
+                }
                 if (event.key === 'Enter') {
                     event.preventDefault();
                     runDeckCommand(refs.deckInput.value);
@@ -2588,6 +2652,7 @@
         loadExperience();
         loadDensity();
         loadZen();
+        loadDeckHistory();
         loadChatUiState();
         setView(parseViewFromUrl(), false);
         initCharts();
