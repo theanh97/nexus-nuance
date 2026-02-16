@@ -1,0 +1,31 @@
+:root {
+  --bg: #f6f7fb;
+  --surface: #ffffff;
+  --text: #1a1f2e;
+  --muted: #5d6475;
+  --accent: #1769ff;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  background: radial-gradient(circle at top right, #dfe8ff, var(--bg) 45%);
+  color: var(--text);
+}
+.shell { max-width: 1000px; margin: 0 auto; padding: 2rem 1.25rem 3rem; }
+.hero { display: grid; gap: 0.75rem; margin-bottom: 1.5rem; }
+.badge { margin: 0; letter-spacing: 0.08em; font-weight: 700; color: var(--accent); text-transform: uppercase; }
+h1 { margin: 0; font-size: clamp(1.8rem, 4vw, 2.8rem); }
+.subtitle { margin: 0; color: var(--muted); max-width: 70ch; }
+.btn { width: fit-content; border: 0; border-radius: 10px; padding: 0.65rem 1rem; background: var(--accent); color: #fff; cursor: pointer; }
+.grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+.card { background: var(--surface); border-radius: 14px; padding: 1rem; box-shadow: 0 10px 30px rgba(11, 30, 80, 0.08); }
+.card h2 { margin-top: 0; font-size: 1.05rem; }
+.card p { margin: 0; color: var(--muted); line-height: 1.55; }
+body.dark {
+  --bg: #0f1525;
+  --surface: #192239;
+  --text: #e9eefc;
+  --muted: #b9c3db;
+  --accent: #7ea7ff;
+}

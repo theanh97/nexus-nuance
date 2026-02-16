@@ -74,3 +74,6 @@ learning_output.log
 # Nested research repo metadata
 research/sica/.git/
 research/sica/results/
+
+# SICA research (submodule)
+research/sica/

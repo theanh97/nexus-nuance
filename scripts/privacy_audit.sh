@@ -38,7 +38,7 @@ echo "[2/5] Real keys in .env (local only, must never publish)"
 if [[ -f .env ]]; then
   awk -F= '
     BEGIN { found=0 }
-    /^(GLM_API_KEY|GOOGLE_API_KEY|MINIMAX_API_KEY|CLAUDE_CODE_API_KEY|OPENAI_API_KEY|ANTHROPIC_API_KEY)=/ {
+    /^(GLM_API_KEY|GOOGLE_API_KEY|MINIMAX_API_KEY|CLAUDE_CODE_API_KEY|CLAUDE_CODE_GATEWAY_TOKEN|OPENAI_API_KEY|ANTHROPIC_API_KEY)=/ {
       v=$2
       if (v != "" && v !~ /^(your_|placeholder|<|CHANGEME)/) {
         print $1
