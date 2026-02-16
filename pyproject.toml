@@ -1,0 +1,35 @@
+[project]
+name = "auto-dev-loop"
+version = "2.0.0"
+description = "The Dream Team - Self-Learning AI Development System"
+authors = [{name = "The Dream Team"}]
+requires-python = ">=3.10"
+readme = "docs/README.md"
+
+[project.scripts]
+auto-dev = "scripts.start:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W", "I", "N"]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"

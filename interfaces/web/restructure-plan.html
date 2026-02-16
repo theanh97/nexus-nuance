@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Project Restructure Plan</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        * { font-family: 'Inter', sans-serif; }
+        body {
+            background: linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 50%, #16213e 100%);
+            min-height: 100vh;
+        }
+        .glass {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .folder { color: #fbbf24; }
+        .file { color: #60a5fa; }
+    </style>
+</head>
+<body class="text-white p-8">
+    <div class="max-w-6xl mx-auto">
+        <div class="text-center mb-8">
+            <h1 class="text-4xl font-bold mb-2">📁 PROJECT RESTRUCTURE</h1>
+            <p class="text-gray-400">Scalable architecture for growth</p>
+        </div>
+
+        <!-- Current vs New -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+            <!-- Current -->
+            <div class="glass rounded-2xl p-6 border-2 border-red-500/30">
+                <h2 class="text-xl font-bold mb-4 text-red-400">❌ CURRENT (Messy)</h2>
+                <pre class="text-xs text-gray-400 overflow-auto">
+auto-dev-loop/
+├── 📄 *.html (5 files in root!)
+├── 📄 *.py (scattered)
+├── 📁 memory/
+│   ├── 📄 *.py (code)
+│   └── 📄 *.json (data mixed!)
+├── 📁 agents/
+├── 📁 core/
+├── 📁 config/
+├── 📁 docs (in .claude!)
+└── 📁 data (scattered!)
+                </pre>
+                <div class="mt-4 space-y-2 text-sm">
+                    <div class="text-red-400">❌ Files scattered in root</div>
+                    <div class="text-red-400">❌ Code mixed with data</div>
+                    <div class="text-red-400">❌ No clear structure</div>
+                    <div class="text-red-400">❌ Hard to scale</div>
+                </div>
+            </div>
+
+            <!-- New -->
+            <div class="glass rounded-2xl p-6 border-2 border-green-500/30">
+                <h2 class="text-xl font-bold mb-4 text-green-400">✅ NEW (Scalable)</h2>
+                <pre class="text-xs text-gray-400 overflow-auto">
+auto-dev-loop/
+├── 📁 src/
+│   ├── 📁 core/        # Framework
+│   ├── 📁 agents/      # All agents
+│   ├── 📁 memory/      # Learning
+│   └── 📁 utils/       # Helpers
+├── 📁 config/          # Configuration
+├── 📁 docs/            # Documentation
+├── 📁 tests/           # Tests
+├── 📁 scripts/         # Entry points
+├── 📁 dashboards/      # HTML UIs
+├── 📁 data/            # All data
+│   ├── 📁 memory/
+│   └── 📁 logs/
+└── 📁 output/          # Generated
+                </pre>
+                <div class="mt-4 space-y-2 text-sm">
+                    <div class="text-green-400">✅ Clear separation</div>
+                    <div class="text-green-400">✅ Data separate from code</div>
+                    <div class="text-green-400">✅ Professional structure</div>
+                    <div class="text-green-400">✅ Easy to scale</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Migration Steps -->
+        <div class="glass rounded-2xl p-6 mb-8">
+            <h2 class="text-xl font-bold mb-4">📋 MIGRATION STEPS</h2>
+            <div class="space-y-4">
+                <div class="flex items-center gap-4 p-4 bg-blue-900/20 rounded-xl border border-blue-500/30">
+                    <div class="w-10 h-10 rounded-full bg-blue-500 flex items-center justify-center font-bold">1</div>
+                    <div class="flex-1">
+                        <div class="font-semibold">Create Directory Structure</div>
+                        <div class="text-sm text-gray-400">mkdir -p src/{core,agents,memory,api,utils} ...</div>
+                    </div>
+                    <div class="text-blue-400 text-sm">~1 min</div>
+                </div>
+                <div class="flex items-center gap-4 p-4 bg-green-900/20 rounded-xl border border-green-500/30">
+                    <div class="w-10 h-10 rounded-full bg-green-500 flex items-center justify-center font-bold">2</div>
+                    <div class="flex-1">
+                        <div class="font-semibold">Move Files to New Locations</div>
+                        <div class="text-sm text-gray-400">mv core/* src/core/ && mv agents/* src/agents/ ...</div>
+                    </div>
+                    <div class="text-green-400 text-sm">~2 min</div>
+                </div>
+                <div class="flex items-center gap-4 p-4 bg-purple-900/20 rounded-xl border border-purple-500/30">
+                    <div class="w-10 h-10 rounded-full bg-purple-500 flex items-center justify-center font-bold">3</div>
+                    <div class="flex-1">
+                        <div class="font-semibold">Update Import Paths</div>
+                        <div class="text-sm text-gray-400">Fix all imports in Python files</div>
+                    </div>
+                    <div class="text-purple-400 text-sm">~5 min</div>
+                </div>
+                <div class="flex items-center gap-4 p-4 bg-yellow-900/20 rounded-xl border border-yellow-500/30">
+                    <div class="w-10 h-10 rounded-full bg-yellow-500 flex items-center justify-center font-bold">4</div>
+                    <div class="flex-1">
+                        <div class="font-semibold">Create Entry Points & Test</div>
+                        <div class="text-sm text-gray-400">Create main entry script and verify</div>
+                    </div>
+                    <div class="text-yellow-400 text-sm">~2 min</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Bug Scan Results -->
+        <div class="glass rounded-2xl p-6 mb-8">
+            <h2 class="text-xl font-bold mb-4">🔍 SELF-DISCOVERY RESULTS</h2>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div class="bg-red-900/20 rounded-xl p-4 text-center border border-red-500/30">
+                    <div class="text-3xl font-bold text-red-400">0</div>
+                    <div class="text-sm text-gray-400">CRITICAL</div>
+                </div>
+                <div class="bg-orange-900/20 rounded-xl p-4 text-center border border-orange-500/30">
+                    <div class="text-3xl font-bold text-orange-400">0</div>
+                    <div class="text-sm text-gray-400">HIGH</div>
+                </div>
+                <div class="bg-yellow-900/20 rounded-xl p-4 text-center border border-yellow-500/30">
+                    <div class="text-3xl font-bold text-yellow-400">11</div>
+                    <div class="text-sm text-gray-400">MEDIUM</div>
+                </div>
+                <div class="bg-green-900/20 rounded-xl p-4 text-center border border-green-500/30">
+                    <div class="text-3xl font-bold text-green-400">42</div>
+                    <div class="text-sm text-gray-400">LOW</div>
+                </div>
+            </div>
+            <p class="text-gray-400 text-sm mt-4">
+                Total: 53 potential issues found. All MEDIUM are likely false positives (Python allows assignment in conditions).
+                LOW issues are timezone-related - not critical but should be fixed for production.
+            </p>
+        </div>
+
+        <!-- Action -->
+        <div class="text-center">
+            <button onclick="alert('Reply APPROVE to start restructure')" class="px-8 py-4 bg-gradient-to-r from-green-500 to-emerald-600 rounded-xl font-bold text-lg hover:opacity-90 transition-all">
+                🚀 APPROVE RESTRUCTURE
+            </button>
+            <p class="text-gray-400 text-sm mt-4">
+                Reply <span class="text-green-400 font-mono">APPROVE</span> to proceed with restructure
+            </p>
+        </div>
+    </div>
+</body>
+</html>

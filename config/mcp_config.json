@@ -1,0 +1,49 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@anthropic/mcp-server-filesystem",
+        "/Users/qtmobile/Desktop/Jack - Full Automation Tools/app-output"
+      ]
+    },
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@anthropic/mcp-server-playwright"
+      ],
+      "env": {
+        "HEADLESS": "false"
+      }
+    },
+    "claude-vision": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@anthropic/mcp-server-analyze-image"
+      ],
+      "env": {
+        "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}"
+      }
+    }
+  },
+  "orchestrator": {
+    "model": "glm-5",
+    "api_base": "https://api.z.ai/api/openai/v1",
+    "role": "central-controller"
+  },
+  "vision_agents": [
+    {
+      "name": "claude-opus",
+      "model": "claude-opus-4-6",
+      "specialty": "detailed-ui-analysis"
+    },
+    {
+      "name": "gemini-flash",
+      "model": "gemini-2.0-flash",
+      "specialty": "fast-feedback"
+    }
+  ]
+}

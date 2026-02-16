@@ -1,0 +1,79 @@
+# ===========================================
+# Auto Dev Loop - Configuration
+# ===========================================
+
+# Orchestrator Model (GLM 5.0)
+orchestrator:
+  model: "glm-5"
+  api_base: "https://api.z.ai/api/openai/v1"
+  api_key_env: "GLM_API_KEY"
+  role: "central controller"
+  max_iterations: 100
+  timeout: 300
+
+# Optional provider config (shared env style with Claude Code)
+external_providers:
+  minimax:
+    model_env: "MINIMAX_MODEL"
+    api_key_env: "MINIMAX_API_KEY"
+    anthropic_base_url_env: "MINIMAX_ANTHROPIC_BASE_URL"
+  claude_code_profile:
+    provider_env: "CLAUDE_CODE_PROVIDER"
+    model_env: "CLAUDE_CODE_MODEL"
+    api_key_env: "CLAUDE_CODE_API_KEY"
+    base_url_env: "CLAUDE_CODE_BASE_URL"
+
+# Vision Models for UI/UX Analysis
+vision_agents:
+  claude:
+    model: "claude-opus-4-6"
+    api_key_env: "ANTHROPIC_API_KEY"
+    priority: 1
+    specialty: "UI/UX detailed analysis"
+
+  gemini:
+    model: "gemini-2.0-flash"
+    api_key_env: "GOOGLE_API_KEY"
+    priority: 2
+    specialty: "fast visual feedback"
+
+  glm_vision:
+    model: "glm-4.6v"
+    api_base: "https://api.z.ai/api/openai/v1"
+    api_key_env: "GLM_API_KEY"
+    priority: 3
+    specialty: "screen understanding"
+
+# Browser Control
+browser:
+  engine: "playwright"
+  headless: false
+  viewport:
+    width: 1920
+    height: 1080
+  screenshot_format: "png"
+  screenshot_path: "./screenshots"
+
+# App Development
+app:
+  output_dir: "./app-output"
+  frameworks:
+    - "react"
+    - "vue"
+    - "vanilla"
+  default_framework: "react"
+
+# Loop Configuration
+loop:
+  max_iterations: 50
+  improvement_threshold: 0.85
+  feedback_models:
+    - "claude"
+    - "gemini"
+  auto_deploy: false
+
+# Logging
+logging:
+  level: "INFO"
+  path: "./logs"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

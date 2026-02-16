@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Dream Team - Self-Learning AI</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=SF+Pro+Display:wght@300;400;500;600;700;800&family=SF+Pro+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        * {
+            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', sans-serif;
+        }
+
+        :root {
+            --bg-primary: #000000;
+            --bg-secondary: #0a0a0a;
+            --bg-tertiary: #141414;
+            --accent: #6366f1;
+            --accent-glow: rgba(99, 102, 241, 0.4);
+            --success: #22c55e;
+            --warning: #eab308;
+            --danger: #ef4444;
+            --text-primary: #ffffff;
+            --text-secondary: #a1a1aa;
+            --text-tertiary: #52525b;
+        }
+
+        body {
+            background: var(--bg-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* Animated background */
+        .bg-magic {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
+            background:
+                radial-gradient(ellipse at 20% 20%, rgba(99, 102, 241, 0.15) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 80%, rgba(168, 85, 247, 0.1) 0%, transparent 50%),
+                radial-gradient(ellipse at 50% 50%, rgba(34, 197, 94, 0.05) 0%, transparent 70%);
+        }
+
+        .bg-magic::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: url("data:image/svg+xml,%3Csvg viewBox='0 0 400 400' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+            opacity: 0.03;
+        }
+
+        /* Glass morphism */
+        .glass {
+            background: rgba(255, 255, 255, 0.03);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .glass-dark {
+            background: rgba(0, 0, 0, 0.4);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        /* Gradient text */
+        .gradient-text {
+            background: linear-gradient(135deg, #fff 0%, #a1a1aa 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .gradient-accent {
+            background: linear-gradient(135deg, #6366f1 0%, #a855f7 50%, #ec4899 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        /* Glow effects */
+        .glow {
+            box-shadow: 0 0 60px var(--accent-glow);
+        }
+
+        .glow-sm {
+            box-shadow: 0 0 30px var(--accent-glow);
+        }
+
+        /* Animations */
+        @keyframes float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-10px); }
+        }
+
+        @keyframes pulse-glow {
+            0%, 100% { box-shadow: 0 0 20px var(--accent-glow); }
+            50% { box-shadow: 0 0 40px var(--accent-glow), 0 0 60px var(--accent-glow); }
+        }
+
+        @keyframes shimmer {
+            0% { background-position: -200% 0; }
+            100% { background-position: 200% 0; }
+        }
+
+        @keyframes spin-slow {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        @keyframes fade-in-up {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes slide-in {
+            from {
+                opacity: 0;
+                transform: translateX(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+
+        @keyframes scale-in {
+            from {
+                opacity: 0;
+                transform: scale(0.9);
+            }
+            to {
+                opacity: 1;
+                transform: scale(1);
+            }
+        }
+
+        @keyframes border-glow {
+            0%, 100% { border-color: rgba(99, 102, 241, 0.3); }
+            50% { border-color: rgba(99, 102, 241, 0.6); }
+        }
+
+        .animate-float { animation: float 6s ease-in-out infinite; }
+        .animate-pulse-glow { animation: pulse-glow 3s ease-in-out infinite; }
+        .animate-shimmer {
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
+            background-size: 200% 100%;
+            animation: shimmer 2s infinite;
+        }
+        .animate-spin-slow { animation: spin-slow 20s linear infinite; }
+        .animate-fade-in { animation: fade-in-up 0.6s ease-out forwards; }
+        .animate-slide-in { animation: slide-in 0.5s ease-out forwards; }
+        .animate-scale-in { animation: scale-in 0.4s ease-out forwards; }
+        .animate-border-glow { animation: border-glow 3s ease-in-out infinite; }
+
+        /* Delays for staggered animations */
+        .delay-100 { animation-delay: 0.1s; }
+        .delay-200 { animation-delay: 0.2s; }
+        .delay-300 { animation-delay: 0.3s; }
+        .delay-400 { animation-delay: 0.4s; }
+        .delay-500 { animation-delay: 0.5s; }
+
+        /* Agent cards */
+        .agent-card {
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .agent-card:hover {
+            transform: translateY(-8px) scale(1.02);
+            box-shadow: 0 20px 40px rgba(0,0,0,0.3), 0 0 30px var(--accent-glow);
+        }
+
+        /* Progress ring */
+        .progress-ring {
+            transform: rotate(-90deg);
+        }
+
+        .progress-ring circle {
+            transition: stroke-dashoffset 1s ease-out;
+        }
+
+        /* Status indicator */
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            position: relative;
+        }
+
+        .status-dot::after {
+            content: '';
+            position: absolute;
+            top: -4px;
+            left: -4px;
+            right: -4px;
+            bottom: -4px;
+            border-radius: 50%;
+            background: inherit;
+            opacity: 0.4;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); opacity: 0.4; }
+            50% { transform: scale(1.5); opacity: 0; }
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: rgba(255,255,255,0.02);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255,255,255,0.1);
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255,255,255,0.2);
+        }
+
+        /* Code block */
+        .code-block {
+            font-family: 'SF Pro Mono', 'Fira Code', monospace;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        /* Metric card */
+        .metric-card {
+            position: relative;
+            overflow: hidden;
+        }
+
+        .metric-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, var(--accent), #a855f7, #ec4899);
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .metric-card:hover::before {
+            opacity: 1;
+        }
+
+        /* Button styles */
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent) 0%, #a855f7 100%);
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px var(--accent-glow);
+        }
+
+        .btn-primary:active {
+            transform: translateY(0);
+        }
+
+        /* Activity feed */
+        .activity-item {
+            position: relative;
+            padding-left: 24px;
+        }
+
+        .activity-item::before {
+            content: '';
+            position: absolute;
+            left: 6px;
+            top: 24px;
+            bottom: -12px;
+            width: 1px;
+            background: rgba(255,255,255,0.1);
+        }
+
+        .activity-item:last-child::before {
+            display: none;
+        }
+
+        .activity-dot {
+            position: absolute;
+            left: 0;
+            top: 6px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            border: 2px solid var(--bg-primary);
+        }
+    </style>
+</head>
+<body class="text-white antialiased">
+    <!-- Magic Background -->
+    <div class="bg-magic"></div>
+
+    <!-- Navigation -->
+    <nav class="fixed top-0 left-0 right-0 z-50 glass-dark">
+        <div class="max-w-7xl mx-auto px-6 py-4">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center animate-pulse-glow">
+                        <span class="text-xl">⚡</span>
+                    </div>
+                    <div>
+                        <h1 class="text-lg font-semibold">The Dream Team</h1>
+                        <p class="text-xs text-zinc-500">Self-Learning AI System</p>
+                    </div>
+                </div>
+
+                <div class="flex items-center gap-6">
+                    <div class="hidden md:flex items-center gap-2 px-4 py-2 rounded-full bg-zinc-900/50 border border-zinc-800">
+                        <div class="status-dot bg-emerald-500"></div>
+                        <span class="text-sm text-zinc-400">System Active</span>
+                    </div>
+
+                    <div class="flex items-center gap-2 text-sm text-zinc-400">
+                        <span class="font-mono" id="current-time">00:00:00</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="pt-24 pb-12 px-6">
+        <div class="max-w-7xl mx-auto">
+
+            <!-- Hero Section -->
+            <section class="mb-16 animate-fade-in">
+                <div class="text-center mb-12">
+                    <div class="inline-flex items-center gap-2 px-4 py-2 rounded-full glass text-sm text-zinc-400 mb-6">
+                        <span class="animate-spin-slow">🌟</span>
+                        <span>Learning iteration #<span id="iteration-count">1,247</span></span>
+                    </div>
+
+                    <h1 class="text-5xl md:text-7xl font-bold gradient-text mb-4 tracking-tight">
+                        THE DREAM TEAM
+                    </h1>
+
+                    <p class="text-xl md:text-2xl text-zinc-400 font-light max-w-2xl mx-auto">
+                        Self-learning, self-improving AI development system
+                        <span class="gradient-accent font-medium">24/7 autonomous operation</span>
+                    </p>
+                </div>
+
+                <!-- Health Score -->
+                <div class="flex justify-center mb-12">
+                    <div class="relative">
+                        <svg class="progress-ring w-48 h-48" viewBox="0 0 100 100">
+                            <circle
+                                cx="50" cy="50" r="45"
+                                fill="none"
+                                stroke="rgba(255,255,255,0.05)"
+                                stroke-width="8"
+                            />
+                            <circle
+                                id="health-circle"
+                                cx="50" cy="50" r="45"
+                                fill="none"
+                                stroke="url(#healthGradient)"
+                                stroke-width="8"
+                                stroke-linecap="round"
+                                stroke-dasharray="283"
+                                stroke-dashoffset="28"
+                            />
+                            <defs>
+                                <linearGradient id="healthGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                                    <stop offset="0%" stop-color="#22c55e" />
+                                    <stop offset="100%" stop-color="#10b981" />
+                                </linearGradient>
+                            </defs>
+                        </svg>
+                        <div class="absolute inset-0 flex flex-col items-center justify-center">
+                            <span class="text-5xl font-bold" id="health-score">92</span>
+                            <span class="text-sm text-zinc-500 uppercase tracking-wider">Health</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Metrics Grid -->
+            <section class="mb-16 grid grid-cols-2 md:grid-cols-4 gap-4 animate-fade-in delay-200">
+                <div class="metric-card glass rounded-2xl p-6">
+                    <div class="text-3xl font-bold gradient-accent mb-1" id="metric-knowledge">2,847</div>
+                    <div class="text-sm text-zinc-500">Knowledge Items</div>
+                    <div class="mt-3 flex items-center gap-1 text-emerald-500 text-xs">
+                        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M5.293 9.707a1 1 0 010-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 01-1.414 1.414L11 7.414V15a1 1 0 11-2 0V7.414L6.707 9.707a1 1 0 01-1.414 0z" clip-rule="evenodd" />
+                        </svg>
+                        <span>+124 today</span>
+                    </div>
+                </div>
+
+                <div class="metric-card glass rounded-2xl p-6">
+                    <div class="text-3xl font-bold text-emerald-400 mb-1" id="metric-patterns">156</div>
+                    <div class="text-sm text-zinc-500">Patterns Discovered</div>
+                    <div class="mt-3 flex items-center gap-1 text-emerald-500 text-xs">
+                        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M5.293 9.707a1 1 0 010-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 01-1.414 1.414L11 7.414V15a1 1 0 11-2 0V7.414L6.707 9.707a1 1 0 01-1.414 0z" clip-rule="evenodd" />
+                        </svg>
+                        <span>+12 today</span>
+                    </div>
+                </div>
+
+                <div class="metric-card glass rounded-2xl p-6">
+                    <div class="text-3xl font-bold text-amber-400 mb-1" id="metric-lessons">89</div>
+                    <div class="text-sm text-zinc-500">Lessons Learned</div>
+                    <div class="mt-3 flex items-center gap-1 text-amber-500 text-xs">
+                        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" />
+                        </svg>
+                        <span>3 critical</span>
+                    </div>
+                </div>
+
+                <div class="metric-card glass rounded-2xl p-6">
+                    <div class="text-3xl font-bold text-purple-400 mb-1" id="metric-issues">0</div>
+                    <div class="text-sm text-zinc-500">Open Issues</div>
+                    <div class="mt-3 flex items-center gap-1 text-emerald-500 text-xs">
+                        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
+                        </svg>
+                        <span>All resolved</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Agents Section -->
+            <section class="mb-16 animate-fade-in delay-300">
+                <div class="flex items-center justify-between mb-8">
+                    <h2 class="text-2xl font-bold">The Dream Team</h2>
+                    <span class="text-sm text-zinc-500">6 agents active</span>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    <!-- ORION -->
+                    <div class="agent-card glass rounded-2xl p-6 border border-indigo-500/20 animate-border-glow">
+                        <div class="flex items-start justify-between mb-4">
+                            <div class="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-2xl">
+                                🌟
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <div class="status-dot bg-emerald-500"></div>
+                                <span class="text-xs text-zinc-500">Active</span>
+                            </div>
+                        </div>
+                        <h3 class="text-lg font-semibold mb-1">ORION</h3>
+                        <p class="text-sm text-zinc-500 mb-4">Supreme Project Manager</p>
+                        <div class="flex items-center gap-4 text-xs text-zinc-400">
+                            <span>Model: GLM-5</span>
+                            <span>•</span>
+                            <span>Tasks: 1,247</span>
+                        </div>
+                    </div>
+
+                    <!-- PIXEL -->
+                    <div class="agent-card glass rounded-2xl p-6 border border-pink-500/20">
+                        <div class="flex items-start justify-between mb-4">
+                            <div class="w-14 h-14 rounded-2xl bg-gradient-to-br from-pink-500 to-rose-600 flex items-center justify-center text-2xl">
+                                🎨
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <div class="status-dot bg-emerald-500"></div>
+                                <span class="text-xs text-zinc-500">Active</span>
+                            </div>
+                        </div>
+                        <h3 class="text-lg font-semibold mb-1">PIXEL</h3>
+                        <p class="text-sm text-zinc-500 mb-4">UI/UX Visionary</p>
+                        <div class="flex items-center gap-4 text-xs text-zinc-400">
+                            <span>Model: GLM-4.6V</span>
+                            <span>•</span>
+                            <span>Reviews: 892</span>
+                        </div>
+                    </div>
+
+                    <!-- NOVA -->
+                    <div class="agent-card glass rounded-2xl p-6 border border-cyan-500/20">
+                        <div class="flex items-start justify-between mb-4">
+                            <div class="w-14 h-14 rounded-2xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-2xl">
+                                💻
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <div class="status-dot bg-emerald-500"></div>
+                                <span class="text-xs text-zinc-500">Active</span>
+                            </div>
+                        </div>
+                        <h3 class="text-lg font-semibold mb-1">NOVA</h3>
+                        <p class="text-sm text-zinc-500 mb-4">Code Architect</p>
+                        <div class="flex items-center gap-4 text-xs text-zinc-400">
+                            <span>Model: GLM-5</span>
+                            <span>•</span>
+                            <span>Commits: 2,156</span>
+                        </div>
+                    </div>
+
+                    <!-- CIPHER -->
+                    <div class="agent-card glass rounded-2xl p-6 border border-red-500/20">
+                        <div class="flex items-start justify-between mb-4">
+                            <div class="w-14 h-14 rounded-2xl bg-gradient-to-br from-red-500 to-orange-600 flex items-center justify-center text-2xl">
+                                🔐
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <div class="status-dot bg-emerald-500"></div>
+                                <span class="text-xs text-zinc-500">Active</span>
+                            </div>
+                        </div>
+                        <h3 class="text-lg font-semibold mb-1">CIPHER</h3>
+                        <p class="text-sm text-zinc-500 mb-4">Security Master</p>
+                        <div class="flex items-center gap-4 text-xs text-zinc-400">
+                            <span>Model: GLM-5</span>
+                            <span>•</span>
+                            <span>Audits: 456</span>
+                        </div>
+                    </div>
+
+                    <!-- ECHO -->
+                    <div class="agent-card glass rounded-2xl p-6 border border-emerald-500/20">
+                        <div class="flex items-start justify-between mb-4">
+                            <div class="w-14 h-14 rounded-2xl bg-gradient-to-br from-emerald-500 to-green-600 flex items-center justify-center text-2xl">
+                                🧪
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <div class="status-dot bg-emerald-500"></div>
+                                <span class="text-xs text-zinc-500">Active</span>
+                            </div>
+                        </div>
+                        <h3 class="text-lg font-semibold mb-1">ECHO</h3>
+                        <p class="text-sm text-zinc-500 mb-4">QA Engineer</p>
+                        <div class="flex items-center gap-4 text-xs text-zinc-400">
+                            <span>Model: GLM-5</span>
+                            <span>•</span>
+                            <span>Tests: 3,892</span>
+                        </div>
+                    </div>
+
+                    <!-- FLUX -->
+                    <div class="agent-card glass rounded-2xl p-6 border border-amber-500/20">
+                        <div class="flex items-start justify-between mb-4">
+                            <div class="w-14 h-14 rounded-2xl bg-gradient-to-br from-amber-500 to-yellow-600 flex items-center justify-center text-2xl">
+                                🚀
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <div class="status-dot bg-emerald-500"></div>
+                                <span class="text-xs text-zinc-500">Active</span>
+                            </div>
+                        </div>
+                        <h3 class="text-lg font-semibold mb-1">FLUX</h3>
+                        <p class="text-sm text-zinc-500 mb-4">DevOps Engineer</p>
+                        <div class="flex items-center gap-4 text-xs text-zinc-400">
+                            <span>Model: GLM-5</span>
+                            <span>•</span>
+                            <span>Deploys: 789</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Learning Activity -->
+            <section class="mb-16 animate-fade-in delay-400">
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <!-- Activity Feed -->
+                    <div class="glass rounded-2xl p-6">
+                        <div class="flex items-center justify-between mb-6">
+                            <h2 class="text-lg font-semibold">Learning Activity</h2>
+                            <span class="text-xs text-zinc-500">Last 24 hours</span>
+                        </div>
+
+                        <div class="space-y-4">
+                            <div class="activity-item">
+                                <div class="activity-dot bg-indigo-500"></div>
+                                <div class="glass rounded-xl p-4">
+                                    <div class="flex items-center justify-between mb-2">
+                                        <span class="text-sm font-medium">ORION analyzed project status</span>
+                                        <span class="text-xs text-zinc-500">2m ago</span>
+                                    </div>
+                                    <p class="text-xs text-zinc-400">Identified 3 optimization opportunities in code generation flow</p>
+                                </div>
+                            </div>
+
+                            <div class="activity-item">
+                                <div class="activity-dot bg-cyan-500"></div>
+                                <div class="glass rounded-xl p-4">
+                                    <div class="flex items-center justify-between mb-2">
+                                        <span class="text-sm font-medium">NOVA generated new patterns</span>
+                                        <span class="text-xs text-zinc-500">15m ago</span>
+                                    </div>
+                                    <p class="text-xs text-zinc-400">Discovered efficient React component structure pattern</p>
+                                </div>
+                            </div>
+
+                            <div class="activity-item">
+                                <div class="activity-dot bg-pink-500"></div>
+                                <div class="glass rounded-xl p-4">
+                                    <div class="flex items-center justify-between mb-2">
+                                        <span class="text-sm font-medium">PIXEL reviewed UI designs</span>
+                                        <span class="text-xs text-zinc-500">1h ago</span>
+                                    </div>
+                                    <p class="text-xs text-zinc-400">Score: 9.2/10 - Suggested micro-animation improvements</p>
+                                </div>
+                            </div>
+
+                            <div class="activity-item">
+                                <div class="activity-dot bg-emerald-500"></div>
+                                <div class="glass rounded-xl p-4">
+                                    <div class="flex items-center justify-between mb-2">
+                                        <span class="text-sm font-medium">System completed knowledge scan</span>
+                                        <span class="text-xs text-zinc-500">2h ago</span>
+                                    </div>
+                                    <p class="text-xs text-zinc-400">Processed 47 sources, filtered 12 high-value items</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Knowledge Sources -->
+                    <div class="glass rounded-2xl p-6">
+                        <div class="flex items-center justify-between mb-6">
+                            <h2 class="text-lg font-semibold">Knowledge Sources</h2>
+                            <span class="text-xs px-2 py-1 rounded-full bg-emerald-500/20 text-emerald-400">Scanning</span>
+                        </div>
+
+                        <div class="space-y-3">
+                            <div class="flex items-center justify-between p-3 rounded-xl bg-zinc-900/50">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center text-sm">AI</div>
+                                    <div>
+                                        <div class="text-sm font-medium">OpenAI Blog</div>
+                                        <div class="text-xs text-zinc-500">AI/ML Research</div>
+                                    </div>
+                                </div>
+                                <span class="text-xs text-emerald-400">Updated 1h ago</span>
+                            </div>
+
+                            <div class="flex items-center justify-between p-3 rounded-xl bg-zinc-900/50">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-orange-500 to-amber-500 flex items-center justify-center text-sm">⚡</div>
+                                    <div>
+                                        <div class="text-sm font-medium">Anthropic Blog</div>
+                                        <div class="text-xs text-zinc-500">AI/ML Research</div>
+                                    </div>
+                                </div>
+                                <span class="text-xs text-emerald-400">Updated 2h ago</span>
+                            </div>
+
+                            <div class="flex items-center justify-between p-3 rounded-xl bg-zinc-900/50">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-green-500 to-emerald-500 flex items-center justify-center text-sm">📚</div>
+                                    <div>
+                                        <div class="text-sm font-medium">Papers With Code</div>
+                                        <div class="text-xs text-zinc-500">Research Papers</div>
+                                    </div>
+                                </div>
+                                <span class="text-xs text-emerald-400">Updated 3h ago</span>
+                            </div>
+
+                            <div class="flex items-center justify-between p-3 rounded-xl bg-zinc-900/50">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center text-sm">🛠️</div>
+                                    <div>
+                                        <div class="text-sm font-medium">LangChain Docs</div>
+                                        <div class="text-xs text-zinc-500">Tools & Frameworks</div>
+                                    </div>
+                                </div>
+                                <span class="text-xs text-emerald-400">Updated 4h ago</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Sacred Philosophy -->
+            <section class="animate-fade-in delay-500">
+                <div class="glass rounded-2xl p-8 text-center glow">
+                    <div class="max-w-2xl mx-auto">
+                        <h2 class="text-2xl font-bold mb-4 gradient-accent">SACRED PHILOSOPHY</h2>
+                        <p class="text-xl text-zinc-300 mb-6 italic">
+                            "KHÔNG CHỈ TỐT. KHÔNG CHỈ XUẤT SẮC. PHẢI LÀ ĐỈNH CAO."
+                        </p>
+                        <div class="grid grid-cols-3 gap-6 text-sm">
+                            <div>
+                                <div class="text-2xl mb-2">✨</div>
+                                <div class="font-medium mb-1">TRẢI NGHIỆM ĐỈNH CAO</div>
+                                <div class="text-zinc-500 text-xs">Vượt Steve Jobs, Jony Ive</div>
+                            </div>
+                            <div>
+                                <div class="text-2xl mb-2">🎨</div>
+                                <div class="font-medium mb-1">TƯỢNG HÓA MẠNH MẼ</div>
+                                <div class="text-zinc-500 text-xs">Visualize with power</div>
+                            </div>
+                            <div>
+                                <div class="text-2xl mb-2">🚀</div>
+                                <div class="font-medium mb-1">WORLD-CLASS</div>
+                                <div class="text-zinc-500 text-xs">Top 0.1% engineers</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="py-6 text-center text-zinc-500 text-sm">
+        <p>The Dream Team • Self-Learning AI System • <span id="footer-time">2026</span></p>
+    </footer>
+
+    <script>
+        // Update time
+        function updateTime() {
+            const now = new Date();
+            document.getElementById('current-time').textContent = now.toLocaleTimeString('en-US', { hour12: false });
+            document.getElementById('footer-time').textContent = now.getFullYear();
+        }
+        updateTime();
+        setInterval(updateTime, 1000);
+
+        // Animate health score
+        function animateHealthScore() {
+            const circle = document.getElementById('health-circle');
+            const score = document.getElementById('health-score');
+            const targetScore = 92;
+            const circumference = 283;
+            const offset = circumference - (targetScore / 100) * circumference;
+
+            circle.style.strokeDashoffset = offset;
+
+            let current = 0;
+            const interval = setInterval(() => {
+                current += 2;
+                if (current >= targetScore) {
+                    current = targetScore;
+                    clearInterval(interval);
+                }
+                score.textContent = current;
+            }, 20);
+        }
+
+        // Animate metrics
+        function animateMetrics() {
+            const metrics = [
+                { id: 'metric-knowledge', target: 2847 },
+                { id: 'metric-patterns', target: 156 },
+                { id: 'metric-lessons', target: 89 },
+                { id: 'metric-issues', target: 0 }
+            ];
+
+            metrics.forEach(({ id, target }) => {
+                const el = document.getElementById(id);
+                let current = 0;
+                const step = Math.ceil(target / 50);
+                const interval = setInterval(() => {
+                    current += step;
+                    if (current >= target) {
+                        current = target;
+                        clearInterval(interval);
+                    }
+                    el.textContent = current.toLocaleString();
+                }, 30);
+            });
+        }
+
+        // Start animations after page load
+        setTimeout(() => {
+            animateHealthScore();
+            animateMetrics();
+        }, 500);
+
+        // Simulate real-time updates
+        function simulateActivity() {
+            const iterationEl = document.getElementById('iteration-count');
+            let iteration = parseInt(iterationEl.textContent.replace(/,/g, ''));
+
+            setInterval(() => {
+                iteration++;
+                iterationEl.textContent = iteration.toLocaleString();
+            }, 10000);
+        }
+
+        simulateActivity();
+    </script>
+</body>
+</html>

@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Nexus Live Monitor</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0a0a0f;
+            color: #fff;
+            font-family: 'Courier New', monospace;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: linear-gradient(135deg, #1a1a2e, #0a0a0f);
+            border-radius: 12px;
+            border: 1px solid #333;
+        }
+        .header h1 {
+            font-size: 28px;
+            background: linear-gradient(90deg, #00d4ff, #7b2ff7);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .iteration {
+            font-size: 48px;
+            font-weight: bold;
+            color: #00d4ff;
+            margin: 10px 0;
+        }
+        .status { color: #3fb950; }
+
+        .agents-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 16px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .agent-card {
+            background: #16161e;
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid #2a2a3a;
+            transition: all 0.3s;
+        }
+        .agent-card.active {
+            border-color: #00d4ff;
+            box-shadow: 0 0 20px rgba(0, 212, 255, 0.2);
+            animation: pulse-border 2s infinite;
+        }
+        @keyframes pulse-border {
+            0%, 100% { box-shadow: 0 0 20px rgba(0, 212, 255, 0.2); }
+            50% { box-shadow: 0 0 30px rgba(0, 212, 255, 0.4); }
+        }
+        .agent-name {
+            font-size: 18px;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+        .agent-icon { font-size: 24px; }
+        .agent-status {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #666;
+        }
+        .agent-status.online { background: #3fb950; animation: blink 1s infinite; }
+        .agent-status.offline { background: #f85149; }
+        @keyframes blink { 50% { opacity: 0.5; } }
+
+        .agent-task {
+            color: #888;
+            font-size: 14px;
+            margin-bottom: 10px;
+            padding: 8px;
+            background: #1a1a2e;
+            border-radius: 6px;
+        }
+        .agent-timestamp {
+            font-size: 11px;
+            color: #555;
+        }
+
+        .flow-section {
+            max-width: 800px;
+            margin: 30px auto;
+            padding: 20px;
+            background: #16161e;
+            border-radius: 12px;
+            border: 1px solid #2a2a3a;
+        }
+        .flow-title {
+            font-size: 16px;
+            color: #888;
+            margin-bottom: 15px;
+        }
+        .flow-item {
+            padding: 10px;
+            margin: 5px 0;
+            background: #1a1a2e;
+            border-radius: 6px;
+            font-size: 13px;
+            color: #00d4ff;
+        }
+
+        .connection {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 8px 16px;
+            background: #16161e;
+            border-radius: 20px;
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .conn-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #3fb950;
+        }
+        .conn-dot.offline { background: #f85149; }
+    </style>
+</head>
+<body>
+    <div class="connection">
+        <div class="conn-dot" id="conn"></div>
+        <span id="conn-text">Connecting...</span>
+    </div>
+
+    <div class="header">
+        <h1>🤖 NEXUS LIVE MONITOR</h1>
+        <div class="iteration" id="iteration">#0</div>
+        <div class="status">● SYSTEM RUNNING</div>
+    </div>
+
+    <div class="agents-grid" id="agents">
+        <!-- Agents will be rendered here -->
+    </div>
+
+    <div class="flow-section">
+        <div class="flow-title">📡 ACTIVE FLOWS</div>
+        <div id="flows"></div>
+    </div>
+
+    <script>
+        const agentsConfig = {
+            'orion': { icon: '🎯', name: 'ORION', role: 'Orchestrator' },
+            'nova': { icon: '💻', name: 'NOVA', role: 'Code Generation' },
+            'pixel': { icon: '🎨', name: 'PIXEL', role: 'UI/UX Analysis' },
+            'echo': { icon: '🧪', name: 'ECHO', role: 'Testing' },
+            'cipher': { icon: '🔐', name: 'CIPHER', role: 'Security' },
+            'flux': { icon: '🚀', name: 'FLUX', role: 'Deployment' },
+            'guardian': { icon: '🛡️', name: 'GUARDIAN', role: 'Supervisor' }
+        };
+
+        const socket = io();
+
+        socket.on('connect', () => {
+            document.getElementById('conn').classList.remove('offline');
+            document.getElementById('conn-text').textContent = 'LIVE';
+        });
+
+        socket.on('disconnect', () => {
+            document.getElementById('conn').classList.add('offline');
+            document.getElementById('conn-text').textContent = 'OFFLINE';
+        });
+
+        socket.on('status_update', (data) => {
+            updateDashboard(data);
+        });
+
+        socket.on('agent_log', (payload) => {
+            loadStatus();
+        });
+
+        async function loadStatus() {
+            try {
+                const resp = await fetch('/api/status');
+                const data = await resp.json();
+                updateDashboard(data);
+            } catch(e) { console.error(e); }
+        }
+
+        function updateDashboard(data) {
+            // Update iteration
+            const orion = data.orion_instances?.[0] || {};
+            document.getElementById('iteration').textContent = '#' + orion.iteration;
+
+            // Update agents
+            const fleet = data.agent_fleet || [];
+            const agentsDiv = document.getElementById('agents');
+            agentsDiv.innerHTML = fleet.map(a => {
+                const cfg = agentsConfig[a.name] || { icon: '❓', name: a.name.toUpperCase(), role: 'Unknown' };
+                const isOnline = a.online;
+                const msg = a.last_message || 'Waiting...';
+                return `
+                    <div class="agent-card ${isOnline ? 'active' : ''}">
+                        <div class="agent-name">
+                            <span class="agent-icon">${cfg.icon}</span>
+                            <span>${cfg.name}</span>
+                            <div class="agent-status ${isOnline ? 'online' : 'offline'}"></div>
+                        </div>
+                        <div style="color: #666; font-size: 12px; margin-bottom: 8px;">${cfg.role}</div>
+                        <div class="agent-task">${escapeHtml(msg)}</div>
+                        <div class="agent-timestamp">${a.last_seen || ''}</div>
+                    </div>
+                `;
+            }).join('');
+
+            // Update flows
+            const flows = data.runtime?.active_flows || [];
+            const flowsDiv = document.getElementById('flows');
+            flowsDiv.innerHTML = flows.map(f =>
+                `<div class="flow-item">${f.detail || f}</div>`
+            ).join('') || '<div style="color:#555">No active flows</div>';
+        }
+
+        function escapeHtml(t) {
+            if (!t) return '';
+            return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        }
+
+        // Load every 3 seconds
+        loadStatus();
+        setInterval(loadStatus, 3000);
+    </script>
+</body>
+</html>
