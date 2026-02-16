@@ -53,15 +53,6 @@ find_litellm_cmd() {
   echo ""
 }
 
-require_env() {
-  local key="$1"
-  local value="${!key:-}"
-  if [ -z "$value" ]; then
-    echo "Error: Missing required env var: $key"
-    exit 1
-  fi
-}
-
 is_truthy() {
   case "${1:-}" in
     1|true|yes|on|TRUE|YES|ON) return 0 ;;
