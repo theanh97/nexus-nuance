@@ -160,6 +160,19 @@ make start
 make status
 ```
 
+### 24/7 Supervisor Mode
+
+```bash
+# Start resilient loop (auto-restart on crash, stale-lock cleanup)
+DASHBOARD_HOST=127.0.0.1 DASHBOARD_PORT=5050 ./scripts/run_24x7.sh
+
+# Health check
+curl -fsS http://127.0.0.1:5050/api/status | head
+
+# Stop supervisor loop gracefully
+touch data/state/autodev_runtime.stop
+```
+
 ---
 
 ## OpenClaw Setup (Computer Control)

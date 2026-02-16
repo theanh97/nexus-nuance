@@ -1602,8 +1602,15 @@ async def main():
     parser = argparse.ArgumentParser(description="Auto Dev Loop - Complete System")
     parser.add_argument("--goal", "-g", type=str, default=None, help="Project goal")
     parser.add_argument("--demo", action="store_true", help="Run demo (1 iteration)")
-    parser.add_argument("--host", type=str, default="localhost", help="Dashboard host")
-    parser.add_argument("--port", type=int, default=5000, help="Dashboard port")
+    default_host = str(os.getenv("DASHBOARD_HOST", "localhost")).strip() or "localhost"
+    try:
+        default_port = int(os.getenv("DASHBOARD_PORT", "5000"))
+    except Exception:
+        default_port = 5000
+    default_port = max(1, min(65535, default_port))
+
+    parser.add_argument("--host", type=str, default=default_host, help="Dashboard host")
+    parser.add_argument("--port", type=int, default=default_port, help="Dashboard port")
 
     args = parser.parse_args()
 
