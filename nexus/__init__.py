@@ -47,7 +47,7 @@ class NEXUS:
     4. Autonomous learning and adaptation
     """
 
-    VERSION = "2.0.0"
+    VERSION = "2.0.2"
     CODENAME = "Evolution"
 
     def __init__(self, project_root: str = None):

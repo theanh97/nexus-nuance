@@ -45,6 +45,7 @@ Last updated: 2026-02-16
 - `CLAUDE_CODE_GATEWAY_HOST` / `CLAUDE_CODE_GATEWAY_PORT` / `CLAUDE_CODE_GATEWAY_TOKEN`: cau hinh LiteLLM local gateway.
 - `CODAXER_API_KEY` / `CODAXER_BASE_URL`: profile fallback khi muon chuyen qua Codaxer ma khong doi script.
 - `CODAXER_MODEL_SONNET` / `CODAXER_MODEL_OPUS` / `CODAXER_MODEL_HAIKU`: model map fallback cho Codaxer.
+- `CODAXER_MODELS`: danh sach model ho tro (space-separated, e.g., "gpt-5.1-codex gpt-5.3-codex").
 
 ## Cach doi model MiniMax nhanh
 
@@ -80,8 +81,9 @@ Last updated: 2026-02-16
 1. Set fallback trong `.env`:
    - `CODAXER_API_KEY=<your_codaxer_key>`
    - `CODAXER_BASE_URL=http://<codaxer-host>:<port>/v1`
+   - `CODAXER_MODELS="gpt-5.1-codex-max gpt-5 gpt-5.1-codex ..."`
 2. Set `CLAUDE_CODE_PROVIDER=codaxer` de uu tien profile Codaxer.
-3. Neu can, dat model map:
+3. Neu can, dat model map (fallback khi `CODAXER_MODELS` trong):
    - `CODAXER_MODEL_SONNET=...`
    - `CODAXER_MODEL_OPUS=...`
    - `CODAXER_MODEL_HAIKU=...`

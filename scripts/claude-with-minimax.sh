@@ -9,6 +9,7 @@ CLAUDE_DIR="$ROOT_DIR/.claude"
 
 mkdir -p "$STATE_DIR" "$LOG_DIR" "$CLAUDE_DIR"
 
+# Source environment variables
 if [ -f "$ENV_FILE" ]; then
   set -a
   # shellcheck disable=SC1090
@@ -178,9 +179,12 @@ run_direct_anthropic() {
   export ANTHROPIC_API_KEY="${CLAUDE_CODE_API_KEY:-${MINIMAX_API_KEY:-${ANTHROPIC_API_KEY:-}}}"
   export ANTHROPIC_BASE_URL="${CLAUDE_CODE_BASE_URL:-${MINIMAX_ANTHROPIC_BASE_URL:-https://api.minimax.io/anthropic}}"
   export ANTHROPIC_MODEL="${CLAUDE_CODE_MODEL:-${MINIMAX_MODEL:-MiniMax-M2.5}}"
+  
+  # Avoid auth conflict by using only one token type
   export ANTHROPIC_AUTH_TOKEN="$ANTHROPIC_API_KEY"
+  unset ANTHROPIC_API_KEY
 
-  if [ -z "${ANTHROPIC_API_KEY}" ]; then
+  if [ -z "${ANTHROPIC_AUTH_TOKEN}" ]; then
     echo "Error: Missing API key."
     echo "Set CLAUDE_CODE_API_KEY (or MINIMAX_API_KEY) in .env."
     exit 1
@@ -205,89 +209,64 @@ run_openai_compatible() {
   local config_path="$CLAUDE_DIR/litellm-openai-compatible.yaml"
   local compat_api_key
   local compat_base_url
-  local sonnet_model
-  local opus_model
-  local haiku_model
   local model_list_yaml=""
-  
-  echo "PROVIDER is: |${PROVIDER:-}|"
-  echo "CODAXER_MODELS is: |${CODAXER_MODELS:-}|"
 
-  if [ "${PROVIDER:-}" = "codaxer" ]; then
-    echo "Entering codaxer block"
+  # Define the core mappings for Claude UI
+  local s_model="${CODAXER_MODEL_SONNET:-gpt-5.1-codex}"
+  local o_model="${CODAXER_MODEL_OPUS:-gpt-5.3-codex}"
+  local h_model="${CODAXER_MODEL_HAIKU:-gpt-5.1-codex-mini}"
+
+  if [ "${PROVIDER:-}" = "codaxer" ] || [ -n "${CODAXER_API_KEY:-}" ]; then
     compat_api_key="${CODAXER_API_KEY:-${CLAUDE_CODE_API_KEY:-}}"
     compat_base_url="${CODAXER_BASE_URL:-${CLAUDE_CODE_BASE_URL:-}}"
-    if [ -n "${CODAXER_MODELS:-}" ]; then
-      echo "CODAXER_MODELS is not empty"
-      # Remove quotes from the model list for correct parsing
-      local models_list="${CODAXER_MODELS//\"/}"
-      for model_name in $models_list; do
-        model_list_yaml+=$(cat <<EOF
-  - model_name: "$model_name"
-    litellm_params:
-      model: "openai/$model_name"
-      api_base: "${compat_base_url}"
-      api_key: "os.environ/CODEX_COMPAT_API_KEY"
-EOF
-)
-      done
-    else
-      sonnet_model="${CODAXER_MODEL_SONNET:-${CODAXER_MODEL:-${CLAUDE_CODE_MODEL_SONNET:-${CLAUDE_CODE_MODEL:-gpt-5.1-codex}}}}"
-      opus_model="${CODAXER_MODEL_OPUS:-${CLAUDE_CODE_MODEL_OPUS:-gpt-5.1-codex-max}}"
-      haiku_model="${CODAXER_MODEL_HAIKU:-${CLAUDE_CODE_MODEL_HAIKU:-gpt-5.1-codex-mini}}"
-      model_list_yaml=$(cat <<EOF
-  - model_name: "sonnet"
-    litellm_params:
-      model: "openai/${sonnet_model}"
-      api_base: "${compat_base_url}"
-      api_key: "os.environ/CODEX_COMPAT_API_KEY"
-
-  - model_name: "opus"
-    litellm_params:
-      model: "openai/${opus_model}"
-      api_base: "${compat_base_url}"
-      api_key: "os.environ/CODEX_COMPAT_API_KEY"
-
-  - model_name: "haiku"
-    litellm_params:
-      model: "openai/${haiku_model}"
-      api_base: "${compat_base_url}"
-      api_key: "os.environ/CODEX_COMPAT_API_KEY"
-EOF
-)
-    fi
   else
     compat_api_key="${CLAUDE_CODE_API_KEY:-${CODAXER_API_KEY:-}}"
-    compat_base_url="${CLAUDE_CODE_BASE_URL:-${CODAXER_BASE_URL:-}}"
-    sonnet_model="${CLAUDE_CODE_MODEL_SONNET:-${CLAUDE_CODE_MODEL:-${CODAXER_MODEL_SONNET:-${CODAXER_MODEL:-gpt-5.1-codex}}}}"
-    opus_model="${CLAUDE_CODE_MODEL_OPUS:-${CODAXER_MODEL_OPUS:-gpt-5.1-codex-max}}"
-    haiku_model="${CLAUDE_CODE_MODEL_HAIKU:-${CLAUDE_CODE_MODEL_HAIKU:-gpt-5.1-codex-mini}}"
-    model_list_yaml=$(cat <<EOF
-  - model_name: "sonnet"
-    litellm_params:
-      model: "openai/${sonnet_model}"
-      api_base: "${compat_base_url}"
-      api_key: "os.environ/CODEX_COMPAT_API_KEY"
-
-  - model_name: "opus"
-    litellm_params:
-      model: "openai/${opus_model}"
-      api_base: "${compat_base_url}"
-      api_key: "os.environ/CODEX_COMPAT_API_KEY"
-
-  - model_name: "haiku"
-    litellm_params:
-      model: "openai/${haiku_model}"
-      api_base: "${compat_base_url}"
-      api_key: "os.environ/CODEX_COMPAT_API_KEY"
-EOF
-)
+    compat_base_url="${CODAXER_BASE_URL:-${CLAUDE_CODE_BASE_URL:-}}"
   fi
 
   if [ -z "$compat_api_key" ] || [ -z "$compat_base_url" ]; then
     echo "Error: Missing OpenAI-compatible profile."
     echo "Set CLAUDE_CODE_API_KEY + CLAUDE_CODE_BASE_URL, or CODAXER_API_KEY + CODAXER_BASE_URL."
     exit 1
+  fi
+
+  # Start building config with explicit mappings for Claude Code UI
+  model_list_yaml=$(cat <<EOF
+  - model_name: "sonnet"
+    litellm_params:
+      model: "openai/${s_model}"
+      api_base: "${compat_base_url}"
+      api_key: "os.environ/CODEX_COMPAT_API_KEY"
+  - model_name: "opus"
+    litellm_params:
+      model: "openai/${o_model}"
+      api_base: "${compat_base_url}"
+      api_key: "os.environ/CODEX_COMPAT_API_KEY"
+  - model_name: "haiku"
+    litellm_params:
+      model: "openai/${h_model}"
+      api_base: "${compat_base_url}"
+      api_key: "os.environ/CODEX_COMPAT_API_KEY"
+EOF
+)
+
+  # Add extra Codex models as searchable models
+  if [ -n "${CODAXER_MODELS:-}" ]; then
+    local clean_models="${CODAXER_MODELS//\"/}"
+    for m in $clean_models; do
+      # Avoid duplicate definitions if m is already one of the defaults
+      if [ "$m" != "$s_model" ] && [ "$m" != "$o_model" ] && [ "$m" != "$h_model" ]; then
+        model_list_yaml+=$(cat <<EOF
+
+  - model_name: "$m"
+    litellm_params:
+      model: "openai/$m"
+      api_base: "${compat_base_url}"
+      api_key: "os.environ/CODEX_COMPAT_API_KEY"
+EOF
+)
+      fi
+    done
   fi
 
   export CODEX_COMPAT_API_KEY="$compat_api_key"
@@ -305,23 +284,27 @@ EOF
   start_litellm_gateway "$config_path"
 
   export ANTHROPIC_BASE_URL="http://$host:$port"
-  export ANTHROPIC_API_KEY="$gateway_token"
+  # Use AUTH_TOKEN and unset API_KEY to avoid Claude Code CLI conflict warning
   export ANTHROPIC_AUTH_TOKEN="$gateway_token"
+  if [ -n "${ANTHROPIC_API_KEY:-}" ]; then unset ANTHROPIC_API_KEY; fi
+  
   export ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-sonnet}"
-  export ANTHROPIC_DEFAULT_SONNET_MODEL="${ANTHROPIC_DEFAULT_SONNET_MODEL:-sonnet}"
-  export ANTHROPIC_DEFAULT_OPUS_MODEL="${ANTHROPIC_DEFAULT_OPUS_MODEL:-opus}"
-  export ANTHROPIC_DEFAULT_HAIKU_MODEL="${ANTHROPIC_DEFAULT_HAIKU_MODEL:-haiku}"
+  export ANTHROPIC_DEFAULT_SONNET_MODEL="sonnet"
+  export ANTHROPIC_DEFAULT_OPUS_MODEL="opus"
+  export ANTHROPIC_DEFAULT_HAIKU_MODEL="haiku"
   export CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS="${CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS:-1}"
 
-  echo "Using OpenAI-compatible backend via local LiteLLM gateway:"
+  echo "------------------------------------------------"
+  echo "🛠  CODEX MODE ACTIVE (via LiteLLM Gateway)"
   echo "  Gateway: $ANTHROPIC_BASE_URL"
-  if [ -n "${CODAXER_MODELS:-}" ] && [ "${PROVIDER:-}" = "codaxer" ]; then
-    echo "  Models: ${CODAXER_MODELS}"
-  else
-    echo "  Sonnet:  ${sonnet_model}"
-    echo "  Opus:    ${opus_model}"
-    echo "  Haiku:   ${haiku_model}"
-  fi
+  echo ""
+  echo "  CLAUDE UI MENU MAPPING:"
+  echo "  ❯ 1 & 5. Sonnet  maps to -> $s_model"
+  echo "  ❯ 2 & 3. Opus    maps to -> $o_model"
+  echo "  ❯ 4.     Haiku   maps to -> $h_model"
+  echo ""
+  echo "  Current active model: $ANTHROPIC_MODEL"
+  echo "------------------------------------------------"
 
   if [ "$SETUP_ONLY" -eq 1 ]; then
     echo "Setup only mode enabled. Gateway/profile prepared."
@@ -331,21 +314,21 @@ EOF
   exec claude "$@"
 }
 
-
 PROVIDER="$(normalize_provider "${CLAUDE_CODE_PROVIDER:-minimax}")"
+
+# Auto-detect if base URL supports Anthropic format
 if [ "$PROVIDER" = "auto" ]; then
   AUTO_API_KEY="${CLAUDE_CODE_API_KEY:-${CODAXER_API_KEY:-}}"
   AUTO_BASE_URL="${CLAUDE_CODE_BASE_URL:-${CODAXER_BASE_URL:-}}"
-  if [ -z "$AUTO_API_KEY" ] || [ -z "$AUTO_BASE_URL" ]; then
-    echo "Error: auto provider needs CLAUDE_CODE_* or CODAXER_* base URL + API key."
-    exit 1
-  fi
-
-  if supports_anthropic_messages "$AUTO_BASE_URL" "$AUTO_API_KEY"; then
-    export CLAUDE_CODE_BASE_URL="$ANTHROPIC_DETECTED_BASE_URL"
-    PROVIDER="anthropic_compatible"
+  if [ -n "$AUTO_API_KEY" ] && [ -n "$AUTO_BASE_URL" ]; then
+    if supports_anthropic_messages "$AUTO_BASE_URL" "$AUTO_API_KEY"; then
+      export CLAUDE_CODE_BASE_URL="$ANTHROPIC_DETECTED_BASE_URL"
+      PROVIDER="anthropic_compatible"
+    else
+      PROVIDER="openai_compatible"
+    fi
   else
-    PROVIDER="openai_compatible"
+    PROVIDER="minimax"
   fi
 fi
 
@@ -362,7 +345,6 @@ case "$PROVIDER" in
     ;;
   *)
     echo "Error: Unsupported CLAUDE_CODE_PROVIDER=$PROVIDER"
-    echo "Use one of: minimax, anthropic_compatible, openai_compatible, codaxer, auto"
     exit 1
     ;;
 esac

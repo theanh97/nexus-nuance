@@ -63,7 +63,7 @@ app-output/generated/
 .claude/
 logs/
 data/
-memory/
+data/memory/
 output/
 projects/
 app-output/

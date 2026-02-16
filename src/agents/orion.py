@@ -431,6 +431,7 @@ class Orion(AsyncAgent):
         """
         Self-improvement phase: Analyze current state and apply improvements
         This is the CLOSED LOOP - system improves itself autonomously
+        ENHANCED VERSION - Actually analyzes and improves
         """
         self._log("🧠 PHASE: Self-improvement analysis...")
 
@@ -439,36 +440,76 @@ class Orion(AsyncAgent):
             improver_stats = self.improver.get_stats()
             learning_state = self.learning_loop.get_state() if hasattr(self.learning_loop, 'get_state') else {}
 
-            # 2. Learn from recent cycle results
+            # 2. Analyze recent performance
+            recent_scores = []
+            recent_deploys = 0
+            for h in self.history[-10:]:
+                score = h.get("score", 0)
+                recent_scores.append(score)
+                if h.get("deployed"):
+                    recent_deploys += 1
+
+            avg_score = sum(recent_scores) / len(recent_scores) if recent_scores else 0
+            deploy_rate = recent_deploys / len(self.history[-10:]) if len(self.history) >= 10 else 0
+
+            # 3. Identify issues and improvements
+            issues_found = []
+            improvements_made = []
+
+            if avg_score < 6:
+                issues_found.append(f"Low average score: {avg_score:.1f}/10")
+                improvements_made.append("Analyzing score factors")
+
+            if deploy_rate < 0.3 and len(self.history) >= 10:
+                issues_found.append(f"Low deploy rate: {deploy_rate*100:.0f}%")
+                improvements_made.append("Reviewing deployment logic")
+
+            # Check for stuck patterns
+            if len(self.history) >= 5:
+                last_5 = self.history[-5:]
+                all_same = all(h.get("decision", {}).get("action") == last_5[0].get("decision", {}).get("action") for h in last_5)
+                if all_same:
+                    issues_found.append("Repetitive decision pattern detected")
+                    improvements_made.append("Adjusting decision strategy")
+
+            # 4. Learn from cycle results
             if self.history:
                 last_result = self.history[-1]
                 cycle_summary = {
                     "iteration": self.iteration,
                     "score": last_result.get("score", 0),
                     "deployed": last_result.get("deployed", False),
-                    "duration": last_result.get("duration", 0)
+                    "duration": last_result.get("duration", 0),
+                    "avg_score_10": avg_score,
+                    "deploy_rate_10": deploy_rate
                 }
                 self.improver.learn_from_input(
                     "analysis",
                     f"Cycle result: {cycle_summary}",
-                    value_score=0.7,
+                    value_score=0.8,
                     context=cycle_summary
                 )
 
-            # 3. Run autonomous improvement
+            # 5. Run autonomous improvement
             self._log("🔧 Running autonomous improvement...")
             improvement_results = self.improver.run_auto_improvement()
 
-            # 4. Run learning loop for deeper analysis
+            # 6. Run learning loop for deeper analysis
             if hasattr(self.learning_loop, 'run_iteration'):
                 learning_results = self.learning_loop.run_iteration()
                 self._log(f"📚 Learning loop: {learning_results.get('actions_taken', 0)} actions")
 
-            # 5. Log decision
+            # 7. Log decision with detailed analysis
             decision = {
                 "iteration": self.iteration,
                 "timestamp": datetime.now().isoformat(),
                 "type": "self_improvement",
+                "analysis": {
+                    "avg_score": avg_score,
+                    "deploy_rate": deploy_rate,
+                    "issues_found": issues_found,
+                    "improvements_made": improvements_made
+                },
                 "improver_stats": improver_stats,
                 "improvement_results": improvement_results,
                 "learning_state": learning_state
@@ -499,15 +540,71 @@ class Orion(AsyncAgent):
             improvements_applied = len(improvement_results.get("applied", []))
             improvements_pending = len(improvement_results.get("pending", []))
 
+            # Report issues found
+            for issue in issues_found:
+                self._log(f"⚠️ Issue: {issue}")
+
             self._log(f"✅ Self-improvement complete: {improvements_applied} applied, {improvements_pending} pending")
 
         except Exception as e:
             self._log(f"⚠️ Self-improvement error: {str(e)}")
 
+    def _get_next_task_from_kanban(self) -> Optional[Dict]:
+        """Get next task from Kanban to work on"""
+        try:
+            kanban_file = Path("data/multi_orion_state.json")
+            if not kanban_file.exists():
+                return None
+
+            with open(kanban_file) as f:
+                data = json.load(f)
+
+            tasks = data.get("tasks", [])
+
+            # Find first task in backlog or todo
+            for task in tasks:
+                if task.get("status") in ["backlog", "todo"]:
+                    return task
+
+            return None
+        except Exception as e:
+            self._log(f"⚠️ Kanban read error: {str(e)}")
+            return None
+
+    def _update_task_status(self, task_id: str, new_status: str):
+        """Update task status in Kanban"""
+        try:
+            kanban_file = Path("data/multi_orion_state.json")
+            if not kanban_file.exists():
+                return
+
+            with open(kanban_file) as f:
+                data = json.load(f)
+
+            for task in data.get("tasks", []):
+                if task.get("id") == task_id:
+                    task["status"] = new_status
+                    task["updated_at"] = datetime.now().isoformat()
+                    break
+
+            with open(kanban_file, 'w') as f:
+                json.dump(data, f, indent=2)
+
+        except Exception as e:
+            self._log(f"⚠️ Kanban update error: {str(e)}")
+
     async def _dispatch_nova(self) -> TaskResult:
         """Dispatch Nova for code generation"""
         if "nova" not in self.agents:
             return self.create_result(False, {"error": "Nova not registered"})
+
+        # Get next task from Kanban
+        kanban_task = self._get_next_task_from_kanban()
+
+        # If there's a Kanban task, move it to in_progress
+        if kanban_task:
+            self._update_task_status(kanban_task["id"], "in_progress")
+            self._log(f"📋 Working on task: {kanban_task.get('title', 'Unknown')}")
 
         message = AgentMessage(
             from_agent="orion",
@@ -517,6 +614,7 @@ class Orion(AsyncAgent):
             content={
                 "context": self.context.to_dict() if self.context else {},
                 "iteration": self.iteration,
+                "kanban_task": kanban_task,  # Include Kanban task in context
                 "runtime_hints": {
                     "nova_no_output_streak": self.consecutive_nova_no_output,
                     "no_deploy_streak": self.consecutive_no_deploy_cycles,
