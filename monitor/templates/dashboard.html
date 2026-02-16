@@ -6449,13 +6449,53 @@
             loadOpsDigest();
         }
 
-        function openOpenClaw() {
+        const openclawStatus = {
+            url: 'http://127.0.0.1:18789/',
+            status: 'unknown',
+            error: null,
+        };
+
+        const renderOpenClawStatus = (payload) => {
+            const statusElement = document.getElementById('computer-control-chip');
+            if (!statusElement) return;
+
+            if (payload.health_ok) {
+                statusElement.textContent = 'OpenClaw: READY';
+                statusElement.classList.remove('chip-warning');
+                statusElement.classList.add('chip-success');
+            } else {
+                statusElement.textContent = 'OpenClaw: TOKEN MISSING';
+                statusElement.classList.remove('chip-success');
+                statusElement.classList.add('chip-warning');
+            }
+        };
+
+        const refreshOpenClawStatus = () => {
             fetch('/api/openclaw/dashboard')
                 .then((response) => response.json())
                 .then((data) => {
+                    openclawStatus.url = data?.url || openclawStatus.url;
+                    openclawStatus.status = data?.success ? 'ready' : 'missing';
+                    openclawStatus.error = data?.error;
+                    renderOpenClawStatus(data);
+                    if (!data?.success) {
+                        showToast('warning', data?.error || 'OpenClaw gateway chưa sẵn sàng.');
+                    }
+                })
+                .catch((error) => {
+                    console.error('Failed to fetch OpenClaw status:', error);
+                    showToast('error', 'Không thể kiểm tra OpenClaw.');
+                });
+        };
+
+        function openOpenClaw() {
+            refreshOpenClawStatus();
+            fetch('/api/openclaw/dashboard?refresh=1')
+                .then((response) => response.json())
+                .then((data) => {
                     const url = data?.url || 'http://127.0.0.1:18789/';
-                    if (!data?.token_present) {
-                        showToast('warning', 'OpenClaw chưa có gateway token. Sẽ mở dashboard mặc định.');
+                    if (!data?.success) {
+                        showToast('warning', data?.error || 'OpenClaw chưa sẵn sàng. Xem logs.');
                     }
                     window.open(url, '_blank', 'noopener');
                 })

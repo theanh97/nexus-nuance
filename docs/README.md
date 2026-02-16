@@ -265,8 +265,8 @@ DEFAULT_SINGLE_MODEL=minimax/MiniMax-M2.5
 | `GET /api/status` | System status |
 | `POST /api/chat/ask` | Send command |
 | `GET /api/computer-control/status` | OpenClaw status |
-| `POST /api/openclaw/browser` | Browser control |
-| `POST /api/openclaw/flow/dashboard` | Auto dashboard flow |
+| `POST /api/openclaw/browser` | Browser control (returns structured error_code + token_info health data) |
+| `POST /api/openclaw/flow/dashboard` | Auto dashboard flow (short-circuits on token/health failure and reports step-by-step steps) |
 | `GET /api/events/digest` | Event digest |
 
 ---

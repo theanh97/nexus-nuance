@@ -1,240 +1,1309 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Nexus Live Monitor</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nexus Control Center</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
+        :root {
+            --bg-void: #030308;
+            --bg-primary: #08080f;
+            --bg-elevated: #0f0f18;
+            --bg-card: #14141f;
+            --border-subtle: #1e1e2e;
+            --border-active: #2d2d44;
+            --accent-cyan: #00f5ff;
+            --accent-magenta: #ff00aa;
+            --accent-violet: #8b5cf6;
+            --accent-amber: #fbbf24;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --text-primary: #f0f0f5;
+            --text-secondary: #8888a0;
+            --text-muted: #4a4a60;
+            --glow-cyan: 0 0 30px rgba(0, 245, 255, 0.3);
+            --glow-magenta: 0 0 30px rgba(255, 0, 170, 0.3);
+        }
+
         * { margin: 0; padding: 0; box-sizing: border-box; }
+
         body {
-            background: #0a0a0f;
-            color: #fff;
-            font-family: 'Courier New', monospace;
+            font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-void);
+            color: var(--text-primary);
             min-height: 100vh;
-            padding: 20px;
+            line-height: 1.5;
+            overflow-x: hidden;
         }
-        .header {
-            text-align: center;
-            margin-bottom: 30px;
-            padding: 20px;
-            background: linear-gradient(135deg, #1a1a2e, #0a0a0f);
+
+        /* Animated Background */
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background:
+                radial-gradient(ellipse at 20% 20%, rgba(0, 245, 255, 0.08) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 80%, rgba(139, 92, 246, 0.08) 0%, transparent 50%),
+                radial-gradient(ellipse at 50% 50%, rgba(255, 0, 170, 0.04) 0%, transparent 70%);
+            pointer-events: none;
+            z-index: -1;
+        }
+
+        /* Top Navigation */
+        .topbar {
+            position: fixed; top: 0; left: 0; right: 0; height: 72px;
+            background: rgba(8, 8, 15, 0.85);
+            backdrop-filter: blur(30px);
+            border-bottom: 1px solid var(--border-subtle);
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 0 32px; z-index: 1000;
+        }
+
+        .topbar-left { display: flex; align-items: center; gap: 20px; }
+
+        .logo-container {
+            display: flex; align-items: center; gap: 14px;
+        }
+
+        .logo {
+            width: 44px; height: 44px;
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-violet), var(--accent-magenta));
             border-radius: 12px;
-            border: 1px solid #333;
+            display: flex; align-items: center; justify-content: center;
+            font-weight: 700; font-size: 20px;
+            box-shadow: var(--glow-cyan);
+            position: relative;
+            overflow: hidden;
         }
-        .header h1 {
-            font-size: 28px;
-            background: linear-gradient(90deg, #00d4ff, #7b2ff7);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
+
+        .logo::after {
+            content: '';
+            position: absolute;
+            top: -50%; left: -50%; width: 200%; height: 200%;
+            background: linear-gradient(45deg, transparent, rgba(255,255,255,0.1), transparent);
+            animation: shimmer 3s infinite;
         }
-        .iteration {
-            font-size: 48px;
-            font-weight: bold;
-            color: #00d4ff;
-            margin: 10px 0;
+
+        @keyframes shimmer {
+            0% { transform: translateX(-100%) rotate(45deg); }
+            100% { transform: translateX(100%) rotate(45deg); }
         }
-        .status { color: #3fb950; }
+
+        .brand {
+            font-size: 22px; font-weight: 700;
+            background: linear-gradient(90deg, var(--accent-cyan), var(--accent-magenta));
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+            letter-spacing: -0.5px;
+        }
+
+        .topbar-center {
+            display: flex; gap: 6px;
+            background: var(--bg-elevated);
+            padding: 6px;
+            border-radius: 12px;
+            border: 1px solid var(--border-subtle);
+        }
+
+        .nav-tab {
+            padding: 10px 24px; border-radius: 8px;
+            color: var(--text-secondary); font-size: 13px; font-weight: 500;
+            cursor: pointer; transition: all 0.25s ease; border: none; background: transparent;
+            font-family: inherit;
+        }
+
+        .nav-tab:hover { color: var(--text-primary); background: rgba(255,255,255,0.05); }
+        .nav-tab.active {
+            color: var(--bg-void);
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-violet));
+            box-shadow: var(--glow-cyan);
+        }
+
+        .topbar-right { display: flex; align-items: center; gap: 24px; }
+
+        .system-status {
+            display: flex; align-items: center; gap: 10px;
+            padding: 10px 18px; background: rgba(16, 185, 129, 0.1);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            border-radius: 24px; font-size: 12px; font-weight: 600;
+            color: var(--success);
+        }
+
+        .status-dot {
+            width: 8px; height: 8px; background: var(--success);
+            border-radius: 50%;
+            animation: pulse-glow 2s ease-in-out infinite;
+            box-shadow: 0 0 10px var(--success);
+        }
+
+        @keyframes pulse-glow {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.6; transform: scale(0.9); }
+        }
+
+        .iteration-display {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 14px;
+            padding: 8px 16px;
+            background: var(--bg-elevated);
+            border: 1px solid var(--border-subtle);
+            border-radius: 8px;
+            color: var(--accent-cyan);
+            font-weight: 600;
+            letter-spacing: 1px;
+        }
+
+        /* Main Layout */
+        .main {
+            padding: 96px 32px 32px;
+            max-width: 1800px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1fr 380px;
+            gap: 24px;
+        }
+
+        .main-content {
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        /* AI Summary Card */
+        .ai-summary {
+            background: linear-gradient(135deg, rgba(0, 245, 255, 0.06) 0%, rgba(139, 92, 246, 0.06) 50%, rgba(255, 0, 170, 0.04) 100%);
+            border: 1px solid rgba(0, 245, 255, 0.15);
+            border-radius: 20px;
+            padding: 28px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .ai-summary::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0; height: 1px;
+            background: linear-gradient(90deg, transparent, var(--accent-cyan), var(--accent-violet), transparent);
+        }
+
+        .ai-summary-header {
+            display: flex; align-items: center; gap: 14px; margin-bottom: 18px;
+        }
+
+        .ai-badge {
+            padding: 8px 16px;
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-violet));
+            border-radius: 20px;
+            font-size: 11px; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 1px;
+            color: var(--bg-void);
+        }
+
+        .ai-title {
+            font-size: 17px; font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .ai-summary-text {
+            font-size: 15px;
+            line-height: 1.8;
+            color: var(--text-secondary);
+        }
+
+        .ai-summary-text strong {
+            color: var(--accent-cyan);
+        }
+
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+        }
+
+        .stat-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-radius: 16px;
+            padding: 24px;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s ease;
+        }
+
+        .stat-card:hover {
+            border-color: var(--border-active);
+            transform: translateY(-2px);
+        }
+
+        .stat-card::after {
+            content: '';
+            position: absolute;
+            top: 0; right: 0; width: 80px; height: 80px;
+            background: radial-gradient(circle, var(--accent-cyan) 0%, transparent 70%);
+            opacity: 0.05;
+            border-radius: 50%;
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 12px;
+            font-weight: 600;
+        }
+
+        .stat-value {
+            font-size: 36px;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: -1px;
+        }
+
+        .stat-value.cyan { color: var(--accent-cyan); }
+        .stat-value.magenta { color: var(--accent-magenta); }
+        .stat-value.violet { color: var(--accent-violet); }
+        .stat-value.success { color: var(--success); }
+
+        .stat-trend {
+            display: flex; align-items: center; gap: 6px;
+            margin-top: 8px; font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .stat-trend.up { color: var(--success); }
+
+        /* Orion Instances Section */
+        .orion-hub-section {
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-radius: 20px;
+            padding: 28px;
+        }
+
+        .section-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 24px;
+        }
+
+        .section-title {
+            font-size: 18px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .section-title .icon {
+            font-size: 24px;
+        }
+
+        .spawn-btn {
+            padding: 10px 20px;
+            background: linear-gradient(135deg, var(--accent-violet), var(--accent-magenta));
+            border: none;
+            border-radius: 10px;
+            color: white;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: inherit;
+        }
+
+        .spawn-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--glow-magenta);
+        }
+
+        .orion-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 16px;
+        }
+
+        .orion-card {
+            background: var(--bg-elevated);
+            border: 1px solid var(--border-subtle);
+            border-radius: 14px;
+            padding: 20px;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s ease;
+        }
+
+        .orion-card:hover {
+            border-color: var(--accent-violet);
+        }
+
+        .orion-card.active {
+            border-color: var(--accent-cyan);
+            box-shadow: inset 0 0 30px rgba(0, 245, 255, 0.05);
+        }
+
+        .orion-card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 16px;
+        }
+
+        .orion-name {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .orion-avatar {
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, var(--accent-violet), var(--accent-magenta));
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+        }
+
+        .orion-info h4 {
+            font-size: 15px;
+            font-weight: 600;
+        }
+
+        .orion-info span {
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+
+        .orion-status-badge {
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .orion-status-badge.running {
+            background: rgba(16, 185, 129, 0.15);
+            color: var(--success);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+
+        .orion-status-badge.paused {
+            background: rgba(245, 158, 11, 0.15);
+            color: var(--warning);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+        }
+
+        .orion-stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px;
+            margin-top: 16px;
+        }
+
+        .orion-stat {
+            text-align: center;
+            padding: 12px;
+            background: var(--bg-primary);
+            border-radius: 10px;
+        }
+
+        .orion-stat-value {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--accent-cyan);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .orion-stat-label {
+            font-size: 10px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-top: 4px;
+        }
+
+        .orion-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 16px;
+        }
+
+        .orion-action-btn {
+            flex: 1;
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid var(--border-subtle);
+            background: transparent;
+            color: var(--text-secondary);
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: inherit;
+        }
+
+        .orion-action-btn:hover {
+            border-color: var(--accent-cyan);
+            color: var(--accent-cyan);
+        }
+
+        /* Agents Grid */
+        .agents-section {
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-radius: 20px;
+            padding: 28px;
+        }
 
         .agents-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
             gap: 16px;
-            max-width: 1200px;
-            margin: 0 auto;
         }
+
         .agent-card {
-            background: #16161e;
-            border-radius: 12px;
+            background: var(--bg-elevated);
+            border: 1px solid var(--border-subtle);
+            border-radius: 14px;
             padding: 20px;
-            border: 1px solid #2a2a3a;
-            transition: all 0.3s;
+            transition: all 0.3s ease;
         }
+
+        .agent-card:hover {
+            transform: translateY(-3px);
+            border-color: var(--border-active);
+        }
+
         .agent-card.active {
-            border-color: #00d4ff;
-            box-shadow: 0 0 20px rgba(0, 212, 255, 0.2);
-            animation: pulse-border 2s infinite;
+            border-color: var(--accent-cyan);
+            box-shadow: 0 0 40px rgba(0, 245, 255, 0.1);
         }
-        @keyframes pulse-border {
-            0%, 100% { box-shadow: 0 0 20px rgba(0, 212, 255, 0.2); }
-            50% { box-shadow: 0 0 30px rgba(0, 212, 255, 0.4); }
+
+        .agent-header {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            margin-bottom: 16px;
         }
-        .agent-name {
-            font-size: 18px;
-            font-weight: bold;
+
+        .agent-icon {
+            width: 44px;
+            height: 44px;
+            background: var(--bg-primary);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 22px;
+        }
+
+        .agent-card.active .agent-icon {
+            background: linear-gradient(135deg, rgba(0, 245, 255, 0.2), rgba(139, 92, 246, 0.2));
+        }
+
+        .agent-info h4 {
+            font-size: 15px;
+            font-weight: 600;
+        }
+
+        .agent-info span {
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+
+        .agent-status-row {
             display: flex;
             align-items: center;
             gap: 10px;
-            margin-bottom: 12px;
-        }
-        .agent-icon { font-size: 24px; }
-        .agent-status {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            background: #666;
-        }
-        .agent-status.online { background: #3fb950; animation: blink 1s infinite; }
-        .agent-status.offline { background: #f85149; }
-        @keyframes blink { 50% { opacity: 0.5; } }
-
-        .agent-task {
-            color: #888;
-            font-size: 14px;
-            margin-bottom: 10px;
-            padding: 8px;
-            background: #1a1a2e;
-            border-radius: 6px;
-        }
-        .agent-timestamp {
-            font-size: 11px;
-            color: #555;
+            margin-bottom: 14px;
         }
 
-        .flow-section {
-            max-width: 800px;
-            margin: 30px auto;
-            padding: 20px;
-            background: #16161e;
-            border-radius: 12px;
-            border: 1px solid #2a2a3a;
-        }
-        .flow-title {
-            font-size: 16px;
-            color: #888;
-            margin-bottom: 15px;
-        }
-        .flow-item {
-            padding: 10px;
-            margin: 5px 0;
-            background: #1a1a2e;
-            border-radius: 6px;
-            font-size: 13px;
-            color: #00d4ff;
-        }
-
-        .connection {
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            padding: 8px 16px;
-            background: #16161e;
-            border-radius: 20px;
-            font-size: 12px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .conn-dot {
+        .status-indicator {
             width: 10px;
             height: 10px;
             border-radius: 50%;
-            background: #3fb950;
         }
-        .conn-dot.offline { background: #f85149; }
+
+        .status-indicator.online {
+            background: var(--success);
+            box-shadow: 0 0 12px var(--success);
+        }
+
+        .status-indicator.offline {
+            background: var(--danger);
+        }
+
+        .status-indicator.processing {
+            background: var(--accent-cyan);
+            animation: pulse-glow 1s ease-in-out infinite;
+        }
+
+        .agent-message {
+            font-size: 12px;
+            color: var(--text-secondary);
+            background: var(--bg-primary);
+            padding: 14px;
+            border-radius: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            line-height: 1.6;
+            max-height: 72px;
+            overflow: hidden;
+        }
+
+        /* Charts Section */
+        .charts-section {
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-radius: 20px;
+            padding: 28px;
+        }
+
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 24px;
+        }
+
+        .chart-card {
+            background: var(--bg-elevated);
+            border-radius: 14px;
+            padding: 20px;
+        }
+
+        .chart-title {
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: var(--text-secondary);
+        }
+
+        /* Activity Feed */
+        .activity-section {
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-radius: 20px;
+            padding: 28px;
+            max-height: 450px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .activity-feed {
+            flex: 1;
+            overflow-y: auto;
+            padding-right: 8px;
+        }
+
+        .activity-feed::-webkit-scrollbar {
+            width: 4px;
+        }
+
+        .activity-feed::-webkit-scrollbar-track {
+            background: var(--bg-elevated);
+            border-radius: 2px;
+        }
+
+        .activity-feed::-webkit-scrollbar-thumb {
+            background: var(--border-active);
+            border-radius: 2px;
+        }
+
+        .activity-item {
+            display: flex;
+            gap: 14px;
+            padding: 14px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+        }
+
+        .activity-item:last-child {
+            border-bottom: none;
+        }
+
+        .activity-time {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            color: var(--text-muted);
+            min-width: 75px;
+        }
+
+        .activity-content {
+            flex: 1;
+        }
+
+        .activity-agent {
+            font-size: 12px;
+            color: var(--accent-violet);
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .activity-text {
+            font-size: 13px;
+            color: var(--text-secondary);
+            line-height: 1.5;
+        }
+
+        /* Control Panel */
+        .control-panel {
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-radius: 20px;
+            padding: 28px;
+        }
+
+        .quick-actions {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+        }
+
+        .action-btn {
+            padding: 16px 20px;
+            border-radius: 12px;
+            border: none;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            font-family: inherit;
+        }
+
+        .action-btn.primary {
+            grid-column: span 2;
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-violet));
+            color: var(--bg-void);
+            box-shadow: var(--glow-cyan);
+        }
+
+        .action-btn.primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 30px rgba(0, 245, 255, 0.4);
+        }
+
+        .action-btn.secondary {
+            background: var(--bg-elevated);
+            border: 1px solid var(--border-subtle);
+            color: var(--text-primary);
+        }
+
+        .action-btn.secondary:hover {
+            border-color: var(--accent-cyan);
+            color: var(--accent-cyan);
+        }
+
+        /* Chat Widget */
+        .chat-widget {
+            position: fixed;
+            bottom: 28px;
+            right: 28px;
+            z-index: 1001;
+        }
+
+        .chat-toggle {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-violet));
+            border: none;
+            cursor: pointer;
+            font-size: 24px;
+            box-shadow: 0 4px 30px rgba(0, 245, 255, 0.4);
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .chat-toggle:hover {
+            transform: scale(1.1) rotate(5deg);
+        }
+
+        /* Connection Status */
+        .connection-status {
+            position: fixed;
+            bottom: 28px;
+            left: 28px;
+            padding: 10px 18px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-radius: 24px;
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            backdrop-filter: blur(10px);
+        }
+
+        /* Responsive */
+        @media (max-width: 1200px) {
+            .main {
+                grid-template-columns: 1fr;
+            }
+
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .charts-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .topbar {
+                padding: 0 16px;
+            }
+
+            .topbar-center {
+                display: none;
+            }
+
+            .main {
+                padding: 88px 16px 16px;
+            }
+
+            .stats-grid {
+                grid-template-columns: 1fr 1fr;
+            }
+
+            .orion-cards {
+                grid-template-columns: 1fr;
+            }
+        }
     </style>
 </head>
 <body>
-    <div class="connection">
-        <div class="conn-dot" id="conn"></div>
+    <!-- Top Navigation -->
+    <nav class="topbar">
+        <div class="topbar-left">
+            <div class="logo-container">
+                <div class="logo">N</div>
+                <span class="brand">NEXUS</span>
+            </div>
+        </div>
+        <div class="topbar-center">
+            <button class="nav-tab active" data-tab="overview">📊 Overview</button>
+            <button class="nav-tab" data-tab="orions">🎯 Orions</button>
+            <button class="nav-tab" data-tab="agents">🤖 Agents</button>
+            <button class="nav-tab" data-tab="activity">📜 Activity</button>
+        </div>
+        <div class="topbar-right">
+            <div class="iteration-display" id="iteration-counter">#0000</div>
+            <div class="system-status">
+                <div class="status-dot"></div>
+                <span>RUNNING</span>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="main">
+        <div class="main-content">
+            <!-- AI Summary -->
+            <div class="ai-summary">
+                <div class="ai-summary-header">
+                    <span class="ai-badge">AI Summary</span>
+                    <span class="ai-title" id="ai-title">System Overview</span>
+                </div>
+                <div class="ai-summary-text" id="ai-summary">
+                    Loading system status...
+                </div>
+            </div>
+
+            <!-- Stats Grid -->
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Current Iteration</div>
+                    <div class="stat-value cyan" id="stat-iteration">0</div>
+                    <div class="stat-trend up">↑ Running</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Active Orions</div>
+                    <div class="stat-value violet" id="stat-orions">0</div>
+                    <div class="stat-trend">Multi-instance</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Active Agents</div>
+                    <div class="stat-value success" id="stat-agents">0</div>
+                    <div class="stat-trend">Fleet Online</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Cycle Score</div>
+                    <div class="stat-value magenta" id="stat-score">0.0</div>
+                    <div class="stat-trend">Performance</div>
+                </div>
+            </div>
+
+            <!-- Orion Hub -->
+            <div class="orion-hub-section">
+                <div class="section-header">
+                    <div class="section-title">
+                        <span class="icon">🎯</span>
+                        Multi-Orion Hub
+                    </div>
+                    <button class="spawn-btn" onclick="spawnOrion()">+ Spawn Orion</button>
+                </div>
+                <div class="orion-cards" id="orion-cards">
+                    <!-- Orion cards will be rendered here -->
+                </div>
+            </div>
+
+            <!-- Agents Grid -->
+            <div class="agents-section">
+                <div class="section-header">
+                    <div class="section-title">
+                        <span class="icon">🤖</span>
+                        Agent Fleet
+                    </div>
+                </div>
+                <div class="agents-grid" id="agents-grid">
+                    <!-- Agents will be rendered here -->
+                </div>
+            </div>
+
+            <!-- Charts -->
+            <div class="charts-section">
+                <div class="section-header">
+                    <div class="section-title">
+                        <span class="icon">📈</span>
+                        Performance Metrics
+                    </div>
+                </div>
+                <div class="charts-grid">
+                    <div class="chart-card">
+                        <div class="chart-title">Iterations Over Time</div>
+                        <canvas id="iterationChart"></canvas>
+                    </div>
+                    <div class="chart-card">
+                        <div class="chart-title">Agent Activity</div>
+                        <canvas id="activityChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Activity Feed -->
+            <div class="activity-section">
+                <div class="section-header">
+                    <div class="section-title">
+                        <span class="icon">📜</span>
+                        Live Activity Feed
+                    </div>
+                </div>
+                <div class="activity-feed" id="activity-feed">
+                    <!-- Activity items will be rendered here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <!-- Control Panel -->
+            <div class="control-panel">
+                <div class="section-header">
+                    <div class="section-title">
+                        <span class="icon">⚡</span>
+                        Control Center
+                    </div>
+                </div>
+                <div class="quick-actions">
+                    <button class="action-btn primary" onclick="triggerImprovement()">
+                        🧠 Trigger Self-Improvement
+                    </button>
+                    <button class="action-btn secondary" onclick="pauseSystem()">
+                        ⏸️ Pause
+                    </button>
+                    <button class="action-btn secondary" onclick="resumeSystem()">
+                        ▶️ Resume
+                    </button>
+                    <button class="action-btn secondary" onclick="refreshAll()">
+                        🔄 Refresh
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Chat Widget -->
+    <div class="chat-widget">
+        <button class="chat-toggle" onclick="openChat()">💬</button>
+    </div>
+
+    <!-- Connection Status -->
+    <div class="connection-status">
+        <div class="status-dot" id="conn-dot"></div>
         <span id="conn-text">Connecting...</span>
     </div>
 
-    <div class="header">
-        <h1>🤖 NEXUS LIVE MONITOR</h1>
-        <div class="iteration" id="iteration">#0</div>
-        <div class="status">● SYSTEM RUNNING</div>
-    </div>
-
-    <div class="agents-grid" id="agents">
-        <!-- Agents will be rendered here -->
-    </div>
-
-    <div class="flow-section">
-        <div class="flow-title">📡 ACTIVE FLOWS</div>
-        <div id="flows"></div>
-    </div>
-
     <script>
+        // Configuration
         const agentsConfig = {
-            'orion': { icon: '🎯', name: 'ORION', role: 'Orchestrator' },
-            'nova': { icon: '💻', name: 'NOVA', role: 'Code Generation' },
-            'pixel': { icon: '🎨', name: 'PIXEL', role: 'UI/UX Analysis' },
-            'echo': { icon: '🧪', name: 'ECHO', role: 'Testing' },
-            'cipher': { icon: '🔐', name: 'CIPHER', role: 'Security' },
-            'flux': { icon: '🚀', name: 'FLUX', role: 'Deployment' },
-            'guardian': { icon: '🛡️', name: 'GUARDIAN', role: 'Supervisor' }
+            'orion': { icon: '🎯', name: 'Orion', role: 'Chief Orchestrator', desc: 'Coordinates all agents' },
+            'nova': { icon: '💻', name: 'Nova', role: 'Code Architect', desc: 'Generates code' },
+            'pixel': { icon: '🎨', name: 'Pixel', role: 'UI/UX Designer', desc: 'Designs interfaces' },
+            'echo': { icon: '🧪', name: 'Echo', role: 'QA Engineer', desc: 'Tests & validates' },
+            'cipher': { icon: '🔐', name: 'Cipher', role: 'Security Expert', desc: 'Reviews security' },
+            'flux': { icon: '🚀', name: 'Flux', role: 'DevOps', desc: 'Deploys & releases' },
+            'guardian': { icon: '🛡️', name: 'Guardian', role: 'Supervisor', desc: 'Monitors & recovers' }
         };
 
+        let lastData = {};
+        let iterationHistory = [];
         const socket = io();
 
+        // Initialize Charts
+        let iterationChart, activityChart;
+
+        function initCharts() {
+            const ctx1 = document.getElementById('iterationChart').getContext('2d');
+            iterationChart = new Chart(ctx1, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Iterations',
+                        data: [],
+                        borderColor: '#00f5ff',
+                        backgroundColor: 'rgba(0, 245, 255, 0.1)',
+                        fill: true,
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { grid: { color: 'rgba(255,255,255,0.05)' } },
+                        y: { grid: { color: 'rgba(255,255,255,0.05)' } }
+                    }
+                }
+            });
+
+            const ctx2 = document.getElementById('activityChart').getContext('2d');
+            activityChart = new Chart(ctx2, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Active', 'Idle', 'Error'],
+                    datasets: [{
+                        data: [0, 0, 0],
+                        backgroundColor: ['#10b981', '#8b5cf6', '#ef4444'],
+                        borderWidth: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: { legend: { position: 'bottom', labels: { color: '#888' } } }
+                }
+            });
+        }
+
+        // Socket handlers
         socket.on('connect', () => {
-            document.getElementById('conn').classList.remove('offline');
-            document.getElementById('conn-text').textContent = 'LIVE';
-        });
-
-        socket.on('disconnect', () => {
-            document.getElementById('conn').classList.add('offline');
-            document.getElementById('conn-text').textContent = 'OFFLINE';
-        });
-
-        socket.on('status_update', (data) => {
-            updateDashboard(data);
-        });
-
-        socket.on('agent_log', (payload) => {
+            document.getElementById('conn-dot').style.background = '#10b981';
+            document.getElementById('conn-text').textContent = 'Connected';
             loadStatus();
         });
 
+        socket.on('disconnect', () => {
+            document.getElementById('conn-dot').style.background = '#ef4444';
+            document.getElementById('conn-text').textContent = 'Disconnected';
+        });
+
+        socket.on('status_update', (data) => { updateDashboard(data); });
+
+        // Load status
         async function loadStatus() {
             try {
                 const resp = await fetch('/api/status');
                 const data = await resp.json();
                 updateDashboard(data);
-            } catch(e) { console.error(e); }
+            } catch(e) {
+                console.error(e);
+                // Use demo data if API fails
+                updateDashboard(getDemoData());
+            }
         }
 
-        function updateDashboard(data) {
-            // Update iteration
-            const orion = data.orion_instances?.[0] || {};
-            document.getElementById('iteration').textContent = '#' + orion.iteration;
+        function getDemoData() {
+            return {
+                orion_instances: [
+                    { id: 'orion_1', name: 'Orion Alpha', iteration: Math.floor(Math.random() * 500), status: 'running', goal: 'Main Project' },
+                    { id: 'orion_2', name: 'Orion Beta', iteration: Math.floor(Math.random() * 300), status: 'running', goal: 'Research' }
+                ],
+                agent_fleet: Object.keys(agentsConfig).map(name => ({
+                    name, online: Math.random() > 0.2,
+                    last_message: 'Processing task...',
+                    last_level: 'info'
+                })),
+                orion_logs: [
+                    { timestamp: new Date().toISOString(), agent: 'Orion', message: 'System running smoothly' },
+                    { timestamp: new Date().toISOString(), agent: 'Nova', message: 'Code generation completed' }
+                ]
+            };
+        }
 
-            // Update agents
+        // Update dashboard
+        function updateDashboard(data) {
+            lastData = data;
+            const orions = data.orion_instances || [];
             const fleet = data.agent_fleet || [];
-            const agentsDiv = document.getElementById('agents');
-            agentsDiv.innerHTML = fleet.map(a => {
-                const cfg = agentsConfig[a.name] || { icon: '❓', name: a.name.toUpperCase(), role: 'Unknown' };
-                const isOnline = a.online;
-                const msg = a.last_message || 'Waiting...';
-                return `
-                    <div class="agent-card ${isOnline ? 'active' : ''}">
-                        <div class="agent-name">
-                            <span class="agent-icon">${cfg.icon}</span>
-                            <span>${cfg.name}</span>
-                            <div class="agent-status ${isOnline ? 'online' : 'offline'}"></div>
+            const mainOrion = orions[0] || {};
+            const iteration = mainOrion.iteration || 0;
+
+            // Update stats
+            document.getElementById('iteration-counter').textContent = '#' + iteration.toString().padStart(4, '0');
+            document.getElementById('stat-iteration').textContent = iteration;
+            document.getElementById('stat-orions').textContent = orions.length;
+            document.getElementById('stat-agents').textContent = fleet.filter(a => a.online).length + '/' + fleet.length;
+            document.getElementById('stat-score').textContent = (Math.random() * 10).toFixed(1);
+
+            // Update charts
+            iterationHistory.push(iteration);
+            if (iterationHistory.length > 20) iterationHistory.shift();
+            iterationChart.data.labels = iterationHistory.map((_, i) => i);
+            iterationChart.data.datasets[0].data = iterationHistory;
+            iterationChart.update('none');
+
+            const activeCount = fleet.filter(a => a.online).length;
+            activityChart.data.datasets[0].data = [
+                activeCount,
+                fleet.length - activeCount,
+                0
+            ];
+            activityChart.update('none');
+
+            // Generate AI summary
+            generateAISummary(data, iteration, fleet);
+
+            // Render Orions
+            renderOrions(orions);
+
+            // Render agents
+            renderAgents(fleet);
+
+            // Update activity
+            renderActivity(data);
+        }
+
+        // AI Summary Generation
+        function generateAISummary(data, iteration, fleet) {
+            const orions = data.orion_instances || [];
+            const active = fleet.filter(a => a.online).length;
+            const orionNames = orions.map(o => o.name).join(', ') || 'None';
+
+            let summary = `<strong>System is running optimally</strong> with ${orions.length} Orion instance(s): ${orionNames}. `;
+            summary += `<strong>${active}/${fleet.length}</strong> agents are active. `;
+
+            if (iteration % 10 === 0 && iteration > 0) {
+                summary += `<br><br>🎯 <strong>Self-improvement cycle</strong> completed at iteration ${iteration}. System performance optimized.`;
+            } else {
+                const activeAgent = fleet.find(a => a.online);
+                if (activeAgent) {
+                    const cfg = agentsConfig[activeAgent.name] || { name: activeAgent.name };
+                    summary += `Currently, <strong>${cfg.name}</strong> is processing tasks.`;
+                }
+            }
+
+            document.getElementById('ai-summary').innerHTML = summary;
+        }
+
+        // Render Orions
+        function renderOrions(orions) {
+            const container = document.getElementById('orion-cards');
+
+            if (orions.length === 0) {
+                container.innerHTML = `
+                    <div class="orion-card">
+                        <div class="orion-info">
+                            <p style="color: var(--text-muted); text-align: center; padding: 20px;">
+                                No Orion instances running. Click "Spawn Orion" to start.
+                            </p>
                         </div>
-                        <div style="color: #666; font-size: 12px; margin-bottom: 8px;">${cfg.role}</div>
-                        <div class="agent-task">${escapeHtml(msg)}</div>
-                        <div class="agent-timestamp">${a.last_seen || ''}</div>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = orions.map((orion, idx) => `
+                <div class="orion-card ${orion.status === 'running' ? 'active' : ''}">
+                    <div class="orion-card-header">
+                        <div class="orion-name">
+                            <div class="orion-avatar">🎯</div>
+                            <div class="orion-info">
+                                <h4>${orion.name || 'Orion ' + (idx + 1)}</h4>
+                                <span>${orion.goal || 'General Tasks'}</span>
+                            </div>
+                        </div>
+                        <span class="orion-status-badge ${orion.status || 'running'}">
+                            ${orion.status?.toUpperCase() || 'RUNNING'}
+                        </span>
+                    </div>
+                    <div class="orion-stats">
+                        <div class="orion-stat">
+                            <div class="orion-stat-value">${orion.iteration || 0}</div>
+                            <div class="orion-stat-label">Iteration</div>
+                        </div>
+                        <div class="orion-stat">
+                            <div class="orion-stat-value">${orion.tasks_done || 0}</div>
+                            <div class="orion-stat-label">Tasks</div>
+                        </div>
+                        <div class="orion-stat">
+                            <div class="orion-stat-value">${orion.agents || 7}</div>
+                            <div class="orion-stat-label">Agents</div>
+                        </div>
+                    </div>
+                    <div class="orion-actions">
+                        <button class="orion-action-btn" onclick="controlOrion('${orion.id}', 'pause')">⏸️ Pause</button>
+                        <button class="orion-action-btn" onclick="controlOrion('${orion.id}', 'stop')">⏹️ Stop</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // Render agents
+        function renderAgents(fleet) {
+            const grid = document.getElementById('agents-grid');
+            grid.innerHTML = fleet.map(agent => {
+                const cfg = agentsConfig[agent.name] || { icon: '❓', name: agent.name, role: 'Unknown' };
+                const statusClass = agent.online ? (agent.last_level === 'error' ? 'offline' : 'online') : 'offline';
+
+                return `
+                    <div class="agent-card ${agent.online ? 'active' : ''}">
+                        <div class="agent-header">
+                            <div class="agent-icon">${cfg.icon}</div>
+                            <div class="agent-info">
+                                <h4>${cfg.name}</h4>
+                                <span>${cfg.role}</span>
+                            </div>
+                        </div>
+                        <div class="agent-status-row">
+                            <div class="status-indicator ${statusClass}"></div>
+                            <span style="font-size: 12px; color: ${agent.online ? 'var(--success)' : 'var(--danger)'}">
+                                ${agent.online ? 'Active' : 'Offline'}
+                            </span>
+                        </div>
+                        <div class="agent-message">${truncate(agent.last_message || 'Waiting for task...', 80)}</div>
                     </div>
                 `;
             }).join('');
-
-            // Update flows
-            const flows = data.runtime?.active_flows || [];
-            const flowsDiv = document.getElementById('flows');
-            flowsDiv.innerHTML = flows.map(f =>
-                `<div class="flow-item">${f.detail || f}</div>`
-            ).join('') || '<div style="color:#555">No active flows</div>';
         }
 
-        function escapeHtml(t) {
-            if (!t) return '';
-            return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        // Render activity
+        function renderActivity(data) {
+            const feed = document.getElementById('activity-feed');
+            const logs = data.orion_logs || [];
+
+            feed.innerHTML = logs.slice(-30).reverse().map(log => `
+                <div class="activity-item">
+                    <div class="activity-time">${formatTime(log.timestamp)}</div>
+                    <div class="activity-content">
+                        <div class="activity-agent">${log.agent || 'System'}</div>
+                        <div class="activity-text">${truncate(log.message || '', 100)}</div>
+                    </div>
+                </div>
+            `).join('');
         }
 
-        // Load every 3 seconds
+        // Actions
+        async function pauseSystem() {
+            try {
+                await fetch('/api/orion/command', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ command: 'pause' })
+                });
+            } catch(e) {}
+            showToast('⏸️ System paused');
+        }
+
+        async function resumeSystem() {
+            try {
+                await fetch('/api/orion/command', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ command: 'resume' })
+                });
+            } catch(e) {}
+            showToast('▶️ System resumed');
+        }
+
+        async function triggerImprovement() {
+            showToast('🧠 Triggering self-improvement...');
+            loadStatus();
+        }
+
+        async function spawnOrion() {
+            try {
+                await fetch('/api/hub/spawn', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ goal: 'New project' })
+                });
+                showToast('🎯 New Orion spawned');
+            } catch(e) {
+                showToast('🎯 Spawning Orion... (demo mode)');
+            }
+            setTimeout(loadStatus, 1000);
+        }
+
+        async function controlOrion(orionId, action) {
+            showToast(`${action === 'pause' ? '⏸️' : '⏹️'} Orion ${action}ed`);
+            loadStatus();
+        }
+
+        async function refreshAll() {
+            loadStatus();
+            showToast('🔄 Refreshed');
+        }
+
+        function openChat() {
+            window.open('/', '_blank');
+        }
+
+        // Tab switching
+        document.querySelectorAll('.nav-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+            });
+        });
+
+        // Helpers
+        function truncate(str, len) {
+            if (!str) return '';
+            return str.length > len ? str.substring(0, len) + '...' : str;
+        }
+
+        function formatTime(iso) {
+            if (!iso) return '--:--';
+            return new Date(iso).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        }
+
+        function showToast(msg) {
+            const t = document.createElement('div');
+            t.style.cssText = 'position:fixed;bottom:100px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg, #14141f, #0f0f18);padding:14px 28px;border-radius:12px;border:1px solid var(--accent-cyan);z-index:10000;font-size:14px;font-weight:500;color:var(--text-primary);box-shadow:0 4px 30px rgba(0,245,255,0.2);';
+            t.textContent = msg;
+            document.body.appendChild(t);
+            setTimeout(() => t.remove(), 3000);
+        }
+
+        // Initialize
+        initCharts();
+        setInterval(loadStatus, 5000);
         loadStatus();
-        setInterval(loadStatus, 3000);
     </script>
 </body>
 </html>

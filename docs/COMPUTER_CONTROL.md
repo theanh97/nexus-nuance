@@ -14,9 +14,9 @@ Updated: 2026-02-15
 - Toggle: `POST /api/computer-control/toggle`
 - Event digest (lọc nhiễu): `GET /api/events/digest`
 - OpenClaw browser (headless):
-  - `POST /api/openclaw/browser` (start/status/open/snapshot/click/type/press/hard_refresh)
-  - `POST /api/openclaw/flow/dashboard` (auto open + hard refresh + approve/deny + chat)
-  - `POST /api/openclaw/extension/attach` (auto install + attach extension)
+  - `POST /api/openclaw/browser` (start/status/open/snapshot/click/type/press/hard_refresh) — returns structured `error_code` fields and includes `token_info` health metadata.
+  - `POST /api/openclaw/flow/dashboard` (auto open + hard refresh + approve/deny + chat) — short-circuits on token/health failure and returns step-by-step status metadata.
+  - `POST /api/openclaw/extension/attach` (auto install + attach extension) — rate-limited via `OPENCLAW_AUTO_ATTACH_COOLDOWN_SEC`, exposes `method` and `cooldown_until` when throttled.
 
 ## Action hỗ trợ
 

@@ -1,51 +1,40 @@
-# Provider Quick Settings (GLM + Claude Code profiles)
+# Provider Quick Settings (MiniMax & Codex)
 
 Last updated: 2026-02-16
 
 ## Muc tieu
 
-- Giu luong GLM nhu cu.
-- Ho tro Claude Code qua profile Anthropic-compatible hoac OpenAI-compatible.
-- Tap trung vao cac diem can sua nhanh khi doi key/model/base URL.
+- Su dung song song nhieu backend cho Claude Code.
+- Tanh viec phai sua `.env` lien tuc khi doi backend.
 
 ## Lenh su dung hang ngay
 
-- Claude Code qua profile trong `.env`: `mm`
-- Setup profile va gateway (khong mo Claude): `mm --setup-only`
-- Kiem tra CLI MiniMax profile: `mm --version`
-- Chay loop hien tai cua project: `python3 scripts/main_loop.py --app "A beautiful weather dashboard with 7-day forecast" --max-iterations 20 --target-score 8.0`
+### 1. Dung MiniMax 2.5 (Backend goc)
+- Lệnh: `./mm`
+- Đặc điểm: Chạy trực tiếp qua API MiniMax Anthropic-compatible.
 
-## Co che dang dung
+### 2. Dung Codex GPT-5 (Backend moi)
+- Lệnh: `./mc` (MiniMax Codex)
+- Đặc điểm: Chạy qua LiteLLM gateway, hỗ trợ gpt-5.3, gpt-5.1-max, spark...
+- Setup lần đầu (hoặc khi đổi key): `./mc --setup-only`
 
-- `glm`: giu nguyen co che GLM ban dang dung.
-- `mm`: goi Claude Code CLI, map env theo `CLAUDE_CODE_PROVIDER`.
-- Script map env: `scripts/claude-with-minimax.sh`
-- Neu provider la `openai_compatible`, script tu dong dung LiteLLM local gateway cho Claude Code.
+## Co che hoat dong
 
-## Noi can sua khi thay doi cau hinh
-
-- Bien moi truong chinh: `.env`
-- Mau bien moi truong cho team: `.env.example`
-- Mapping provider trong config: `config/settings.yaml`
-- Wrapper chay Claude profile: `scripts/claude-with-minimax.sh`
-- Shortcut shell `mm`: `~/.zshrc`
+- Cả 2 lệnh đều dùng chung script logic tại `scripts/claude-with-minimax.sh`.
+- Lệnh `./mm` ép biến `CLAUDE_CODE_PROVIDER=minimax`.
+- Lệnh `./mc` ép biến `CLAUDE_CODE_PROVIDER=codaxer`.
 
 ## Bien moi truong quan trong
 
-- `GLM_API_KEY`: key cho luong GLM hien tai.
-- `GLM_API_BASE`: base URL GLM (khuyen nghi: `https://api.z.ai/api/openai/v1`).
-- `MINIMAX_API_KEY`: key MiniMax.
-- `MINIMAX_MODEL`: model MiniMax (hien tai: `MiniMax-M2.5`).
-- `MINIMAX_ANTHROPIC_BASE_URL`: gateway Anthropic-compatible (hien tai: `https://api.minimax.io/anthropic`).
-- `CLAUDE_CODE_PROVIDER`: `minimax`, `anthropic_compatible`, `openai_compatible`, `codaxer`, hoac `auto`.
-- `CLAUDE_CODE_API_KEY`: key profile cho `mm`.
-- `CLAUDE_CODE_BASE_URL`: base URL profile cho `mm`.
-- `CLAUDE_CODE_MODEL`: model chinh profile.
-- `CLAUDE_CODE_MODEL_SONNET` / `CLAUDE_CODE_MODEL_OPUS` / `CLAUDE_CODE_MODEL_HAIKU`: map model khi provider la `openai_compatible`.
-- `CLAUDE_CODE_GATEWAY_HOST` / `CLAUDE_CODE_GATEWAY_PORT` / `CLAUDE_CODE_GATEWAY_TOKEN`: cau hinh LiteLLM local gateway.
-- `CODAXER_API_KEY` / `CODAXER_BASE_URL`: profile fallback khi muon chuyen qua Codaxer ma khong doi script.
-- `CODAXER_MODEL_SONNET` / `CODAXER_MODEL_OPUS` / `CODAXER_MODEL_HAIKU`: model map fallback cho Codaxer.
-- `CODAXER_MODELS`: danh sach model ho tro (space-separated, e.g., "gpt-5.1-codex gpt-5.3-codex").
+### Cho MiniMax (`./mm`)
+- `MINIMAX_API_KEY`: Key của MiniMax.
+- `MINIMAX_MODEL`: Model mặc định (MiniMax-M2.5).
+
+### Cho Codex (`./mc`)
+- `CODAXER_API_KEY`: Key mới nhất của Codex.
+- `CODAXER_BASE_URL`: Endpoint của Codex.
+- `CODAXER_MODELS`: Danh sách model khả dụng.
+- Ánh xạ tầng: `CODAXER_MODEL_SONNET`, `CODAXER_MODEL_OPUS`, `CODAXER_MODEL_HAIKU`.
 
 ## Cach doi model MiniMax nhanh
 

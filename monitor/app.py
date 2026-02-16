@@ -14,8 +14,9 @@ import shutil
 import subprocess
 import time
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Dict, Any, List, Optional, Set, Tuple
 import logging
 import threading
@@ -75,6 +76,30 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# OpenClaw token cache state
+_TOKEN_CACHE_TTL_SEC = 60
+_TOKEN_CACHE_LOCK = threading.Lock()
+@dataclass
+class _OpenClawTokenInfo:
+    token: Optional[str]
+    checked_at: Optional[datetime]
+    source: str
+    health_ok: bool
+    health_error: Optional[str]
+    last_error: Optional[str]
+
+_token_cache: Optional[_OpenClawTokenInfo] = None
+
+@dataclass
+class _OpenClawAttachState:
+    last_attempt: Optional[datetime] = None
+    last_error: Optional[str] = None
+    cooldown_until: Optional[datetime] = None
+    method: Optional[str] = None
+
+_attach_state = _OpenClawAttachState()
+_ATTACH_STATE_LOCK = threading.Lock()
+
 try:
     import pyautogui  # type: ignore
     pyautogui.FAILSAFE = True
@@ -128,6 +153,9 @@ OPENCLAW_CHROME_APP = os.getenv("OPENCLAW_CHROME_APP", "Google Chrome")
 OPENCLAW_LAUNCH_WITH_EXTENSION = _env_bool("OPENCLAW_LAUNCH_WITH_EXTENSION", True)
 OPENCLAW_FORCE_NEW_CHROME_INSTANCE = _env_bool("OPENCLAW_FORCE_NEW_CHROME_INSTANCE", True)
 OPENCLAW_CHROME_BOUNDS = os.getenv("OPENCLAW_CHROME_BOUNDS", "0,24,1440,900")
+OPENCLAW_CLI_MAX_RETRIES = max(1, int(os.getenv("OPENCLAW_CLI_MAX_RETRIES", "2")))
+OPENCLAW_CLI_RETRY_DELAY_SEC = float(os.getenv("OPENCLAW_CLI_RETRY_DELAY_SEC", "0.4"))
+OPENCLAW_AUTO_ATTACH_COOLDOWN_SEC = max(5, float(os.getenv("OPENCLAW_AUTO_ATTACH_COOLDOWN_SEC", "30")))
 MONITOR_PROGRESS_SNAPSHOT_ENABLED = _env_bool("MONITOR_PROGRESS_SNAPSHOT_ENABLED", True)
 MONITOR_PROGRESS_SNAPSHOT_INTERVAL_SEC = max(30, int(os.getenv("MONITOR_PROGRESS_SNAPSHOT_INTERVAL_SEC", "120")))
 MONITOR_PROGRESS_SNAPSHOT_PATH = Path(
@@ -1602,22 +1630,74 @@ def _ensure_runtime_heartbeat_started() -> None:
         _runtime_heartbeat_thread.start()
 
 
-def _get_openclaw_token() -> Optional[str]:
-    env_token = os.getenv("OPENCLAW_GATEWAY_TOKEN", "").strip()
-    if env_token:
-        return env_token
+def _check_openclaw_gateway_health(token: str) -> Dict[str, Any]:
     try:
-        config_path = Path.home() / ".openclaw" / "openclaw.json"
-        if not config_path.exists():
-            return None
-        with open(config_path, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-        gateway = payload.get("gateway") if isinstance(payload, dict) else {}
-        auth = gateway.get("auth") if isinstance(gateway, dict) else {}
-        token = auth.get("token") if isinstance(auth, dict) else None
-        return str(token).strip() if token else None
-    except Exception:
-        return None
+        result = _run_openclaw_cli(["gateway", "status", "--token", token])
+        if result.get("success"):
+            return {"health_ok": True, "error": None}
+        return {"health_ok": False, "error": result.get("stderr") or result.get("error")}
+    except Exception as exc:
+        return {"health_ok": False, "error": str(exc)}
+
+
+def _collect_token_info(force_refresh: bool = False) -> _OpenClawTokenInfo:
+    global _token_cache
+    with _TOKEN_CACHE_LOCK:
+        now = datetime.now()
+        if (
+            _token_cache
+            and _token_cache.checked_at
+            and (now - _token_cache.checked_at).total_seconds() < _TOKEN_CACHE_TTL_SEC
+            and not force_refresh
+        ):
+            return _token_cache
+
+    env_token = os.getenv("OPENCLAW_GATEWAY_TOKEN", "").strip()
+    source = "env" if env_token else "file"
+    token: Optional[str]
+    error: Optional[str] = None
+
+    if env_token:
+        token = env_token
+    else:
+        token = None
+        try:
+            config_path = Path.home() / ".openclaw" / "openclaw.json"
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as handle:
+                    payload = json.load(handle)
+                gateway = payload.get("gateway") if isinstance(payload, dict) else {}
+                auth = gateway.get("auth") if isinstance(gateway, dict) else {}
+                raw_token = auth.get("token") if isinstance(auth, dict) else None
+                token = str(raw_token).strip() if raw_token else None
+        except Exception as exc:
+            error = str(exc)
+
+    health_ok = False
+    health_error: Optional[str] = None
+    if token:
+        health = _check_openclaw_gateway_health(token)
+        health_ok = bool(health.get("health_ok"))
+        health_error = health.get("error")
+    else:
+        health_error = error or "Token not found"
+
+    info = _OpenClawTokenInfo(
+        token=token,
+        checked_at=datetime.now(),
+        source=source,
+        health_ok=health_ok,
+        health_error=health_error,
+        last_error=error,
+    )
+
+    with _TOKEN_CACHE_LOCK:
+        _token_cache = info
+    return info
+
+
+def _get_openclaw_token() -> Optional[str]:
+    return _collect_token_info().token
 
 
 def _parse_json_loose(text: str) -> Optional[Any]:
@@ -1638,44 +1718,78 @@ def _parse_json_loose(text: str) -> Optional[Any]:
     return None
 
 
-def _run_openclaw_cli(args: List[str], timeout_ms: int = OPENCLAW_BROWSER_TIMEOUT_MS) -> Dict[str, Any]:
-    cmd = ["openclaw", *args]
-    try:
-        completed = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=max(1, int(timeout_ms / 1000)),
-            check=False,
-        )
-        stdout = (completed.stdout or "").strip()
-        stderr = (completed.stderr or "").strip()
-        payload = {
-            "success": completed.returncode == 0,
-            "returncode": completed.returncode,
-            "stdout": stdout,
-            "stderr": stderr,
-            "command": " ".join(cmd),
+def _run_openclaw_cli(args: List[str], timeout_ms: int = OPENCLAW_BROWSER_TIMEOUT_MS, retries: int = OPENCLAW_CLI_MAX_RETRIES) -> Dict[str, Any]:
+    attempt = 0
+    last_error: Optional[str] = None
+    while attempt < retries:
+        attempt += 1
+        cmd = ["openclaw", *args]
+        logger.debug("Running openclaw command", extra={"cmd": cmd, "attempt": attempt})
+        try:
+            completed = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=max(1, int(timeout_ms / 1000)),
+                check=False,
+            )
+            stdout = (completed.stdout or "").strip()
+            stderr = (completed.stderr or "").strip()
+            payload = {
+                "success": completed.returncode == 0,
+                "returncode": completed.returncode,
+                "stdout": stdout,
+                "stderr": stderr,
+                "command": " ".join(cmd),
+                "attempt": attempt,
+            }
+            parsed = _parse_json_loose(stdout)
+            if parsed is not None:
+                payload["json"] = parsed
+            if payload["success"] or attempt >= retries:
+                payload["retries"] = attempt
+                return payload
+            last_error = stderr or payload.get("error")
+        except subprocess.TimeoutExpired:
+            last_error = "openclaw command timeout"
+        except Exception as exc:
+            last_error = str(exc)
+        time.sleep(min(OPENCLAW_CLI_RETRY_DELAY_SEC * attempt, 1.5))
+    logger.warning("OpenClaw CLI failed", extra={"cmd": args, "error": last_error})
+    return {"success": False, "error": last_error or "openclaw command failed"}
+
+
+def _openclaw_browser_cmd(
+    args: List[str],
+    expect_json: bool = True,
+    timeout_ms: int = OPENCLAW_BROWSER_TIMEOUT_MS,
+    require_token: bool = True,
+) -> Dict[str, Any]:
+    token_info = _collect_token_info()
+    if require_token and not token_info.token:
+        return {
+            "success": False,
+            "error_code": "TOKEN_MISSING",
+            "error": "OpenClaw gateway token is unavailable",
+            "token_info": {
+                "source": token_info.source,
+                "checked_at": token_info.checked_at.isoformat() if token_info.checked_at else None,
+                "last_error": token_info.last_error,
+            },
         }
-        parsed = _parse_json_loose(stdout)
-        if parsed is not None:
-            payload["json"] = parsed
-        return payload
-    except subprocess.TimeoutExpired:
-        return {"success": False, "error": "openclaw command timeout"}
-    except Exception as exc:
-        return {"success": False, "error": str(exc)}
-
-
-def _openclaw_browser_cmd(args: List[str], expect_json: bool = True, timeout_ms: int = OPENCLAW_BROWSER_TIMEOUT_MS) -> Dict[str, Any]:
-    token = _get_openclaw_token()
     cmd = ["browser"]
-    if token:
-        cmd += ["--token", token]
+    if token_info.token:
+        cmd += ["--token", token_info.token]
     if expect_json:
         cmd += ["--json"]
     cmd += args
-    return _run_openclaw_cli(cmd, timeout_ms=timeout_ms)
+    result = _run_openclaw_cli(cmd, timeout_ms=timeout_ms)
+    result["token_info"] = {
+        "health_ok": token_info.health_ok,
+        "health_error": token_info.health_error,
+        "checked_at": token_info.checked_at.isoformat() if token_info.checked_at else None,
+    }
+    return result
 
 
 def _openclaw_extension_path() -> Optional[Path]:
@@ -1851,11 +1965,22 @@ def _ensure_chrome_tab(url: str) -> Dict[str, Any]:
         return {"success": False, "error": str(exc)}
 
 
-def _openclaw_attempt_attach() -> Dict[str, Any]:
+def _openclaw_attempt_attach(force: bool = False) -> Dict[str, Any]:
     steps: List[Dict[str, Any]] = []
 
     if not pyautogui:
         return {"success": False, "error": "pyautogui not available"}
+
+    with _ATTACH_STATE_LOCK:
+        now = datetime.now()
+        if not force and _attach_state.cooldown_until and now < _attach_state.cooldown_until:
+            cooldown = (_attach_state.cooldown_until - now).total_seconds()
+            return {
+                "success": False,
+                "error": "Attach throttled",
+                "cooldown_until": _attach_state.cooldown_until.isoformat(),
+                "last_error": _attach_state.last_error,
+            }
 
     extension_path = _openclaw_extension_path()
     if not extension_path:
@@ -1871,6 +1996,9 @@ def _openclaw_attempt_attach() -> Dict[str, Any]:
             extension_path = _openclaw_extension_path()
 
     if not extension_path:
+        with _ATTACH_STATE_LOCK:
+            _attach_state.last_error = "Extension path unavailable"
+            _attach_state.cooldown_until = datetime.now() + timedelta(seconds=OPENCLAW_AUTO_ATTACH_COOLDOWN_SEC)
         return {"success": False, "error": "Extension path unavailable", "steps": steps}
 
     if OPENCLAW_LAUNCH_WITH_EXTENSION:
@@ -1890,12 +2018,14 @@ def _openclaw_attempt_attach() -> Dict[str, Any]:
     steps.append({"action": "icon_path", "result": {"path": str(icon_path) if icon_path else ""}})
 
     attached = False
-    for _ in range(OPENCLAW_AUTO_ATTACH_RETRIES):
+    method_used = None
+    for attempt_idx in range(OPENCLAW_AUTO_ATTACH_RETRIES):
         click_result = {"success": False}
         if OPENCLAW_AUTO_ATTACH_ICON_MATCH:
             click_result = _click_extension_icon(icon_path)
             steps.append({"action": "click_extension_icon", "result": click_result})
         if click_result.get("success"):
+            method_used = "icon"
             attached = True
             time.sleep(OPENCLAW_AUTO_ATTACH_DELAY_SEC)
             start = _openclaw_browser_cmd(["start"])
@@ -1908,13 +2038,25 @@ def _openclaw_attempt_attach() -> Dict[str, Any]:
                 break
             attached = False
         if not attached and OPENCLAW_AUTO_ATTACH_HEURISTIC:
+            method_used = "menu"
             menu_attempt = _attempt_attach_via_menu()
             steps.extend(menu_attempt.get("steps", []))
             if menu_attempt.get("success"):
                 attached = True
                 break
 
-    return {"success": attached, "steps": steps}
+    with _ATTACH_STATE_LOCK:
+        if attached:
+            _attach_state.last_error = None
+            _attach_state.cooldown_until = None
+            _attach_state.method = method_used
+        else:
+            _attach_state.last_error = "attach failed"
+            _attach_state.cooldown_until = datetime.now() + timedelta(seconds=OPENCLAW_AUTO_ATTACH_COOLDOWN_SEC)
+            _attach_state.method = method_used
+        _attach_state.last_attempt = datetime.now()
+
+    return {"success": attached, "method": method_used, "steps": steps}
 
 
 def _flatten_openclaw_nodes(payload: Any) -> List[Dict[str, Any]]:
@@ -2070,17 +2212,74 @@ def _find_openclaw_textbox(payload: Any, patterns: List[str], allow_fallback: bo
     return candidates[0] if (allow_fallback and candidates) else None
 
 
+def _record_flow_step(action: str, result: Dict[str, Any], fatal: bool = True, detail: Optional[str] = None) -> Dict[str, Any]:
+    step: Dict[str, Any] = {
+        "action": action,
+        "success": bool(result.get("success")),
+        "result": result,
+    }
+    if detail:
+        step["detail"] = detail
+    for key in ("error", "stderr", "error_code"):
+        value = result.get(key)
+        if value:
+            step[key] = value
+    if key := result.get("token_info"):
+        step["token_info"] = key
+    return step
+
+
+def _create_token_status(info: _OpenClawTokenInfo) -> Dict[str, Any]:
+    return {
+        "token_present": bool(info.token),
+        "health_ok": info.health_ok,
+        "health_error": info.health_error,
+        "source": info.source,
+        "checked_at": info.checked_at.isoformat() if info.checked_at else None,
+    }
+
+
 def _openclaw_dashboard_flow(chat_text: str = "", approve: bool = True, deny: bool = False) -> Dict[str, Any]:
     steps: List[Dict[str, Any]] = []
+    token_info = _collect_token_info()
+    token_status = _create_token_status(token_info)
+    if not token_info.token:
+        steps.append({
+            "action": "token_check",
+            "success": False,
+            "error": token_info.last_error or "OpenClaw gateway token missing",
+            "token_status": token_status,
+        })
+        return {"success": False, "steps": steps, "token_status": token_status}
+    if not token_info.health_ok:
+        steps.append({
+            "action": "token_health",
+            "success": False,
+            "error": token_info.health_error or "Gateway health check failed",
+            "token_status": token_status,
+        })
+        return {"success": False, "steps": steps, "token_status": token_status}
+
+    def run_step(action: str, command: List[str], **kwargs) -> Dict[str, Any]:
+        result = _openclaw_browser_cmd(command, **kwargs)
+        step = _record_flow_step(action, result)
+        steps.append(step)
+        return step
 
     if OPENCLAW_BROWSER_AUTO_START:
-        steps.append({"action": "start", "result": _openclaw_browser_cmd(["start"])})
+        start_step = run_step("start", ["start"])
+        if not start_step["success"]:
+            return {"success": False, "steps": steps, "token_status": token_status}
 
-    steps.append({"action": "open", "result": _openclaw_browser_cmd(["open", OPENCLAW_DASHBOARD_URL])})
+    open_step = run_step("open", ["open", OPENCLAW_DASHBOARD_URL])
+    if not open_step["success"]:
+        return {"success": False, "steps": steps, "token_status": token_status}
+
     time.sleep(1.2)
     key = "Meta+Shift+R" if sys.platform == "darwin" else "Control+Shift+R"
-    steps.append({"action": "hard_refresh", "result": _openclaw_browser_cmd(["press", key], expect_json=False)})
-    time.sleep(1.2)
+    refresh_step = run_step("hard_refresh", ["press", key], expect_json=False)
+    if not refresh_step["success"]:
+        return {"success": False, "steps": steps, "token_status": token_status}
 
     normalized_text = ""
     if chat_text:
@@ -2092,54 +2291,72 @@ def _openclaw_dashboard_flow(chat_text: str = "", approve: bool = True, deny: bo
         if any(token in normalized_text for token in ("tu choi", "deny", "reject", "esc")):
             deny = True
 
-    snapshot = _openclaw_browser_cmd(["snapshot", "--format", "ai", "--labels", "--limit", "220"])
-    steps.append({"action": "snapshot", "result": snapshot})
-    snapshot_payload = snapshot.get("json") or {}
+    snapshot = run_step("snapshot", ["snapshot", "--format", "ai", "--labels", "--limit", "220"])
+    if not snapshot["success"] or not snapshot.get("result", {}).get("json"):
+        return {"success": False, "steps": steps, "token_status": token_status}
+    snapshot_payload = snapshot["result"].get("json") or {}
 
     approve_patterns = ["duyệt prompt", "approve prompt", "approve", "approve (y+enter)", "y+enter"]
     deny_patterns = ["từ chối prompt", "deny prompt", "deny", "reject", "deny (esc)", "esc"]
     if approve:
         ref = _find_openclaw_ref_by_role_and_text(snapshot_payload, ["button"], approve_patterns)
         if ref:
-            steps.append({"action": "click_approve", "result": _openclaw_browser_cmd(["click", str(ref)])})
-            time.sleep(0.6)
+            click_approve = run_step("click_approve", ["click", str(ref)])
+            if not click_approve["success"]:
+                return {"success": False, "steps": steps, "token_status": token_status}
+        else:
+            steps.append({"action": "click_approve", "success": False, "error": "Approve button not found"})
 
     if deny:
-        # re-snapshot after approve to avoid clicking stale buttons
         if approve:
-            snapshot_after = _openclaw_browser_cmd(["snapshot", "--format", "ai", "--labels", "--limit", "220"])
-            steps.append({"action": "snapshot_after_approve", "result": snapshot_after})
-            snapshot_payload = snapshot_after.get("json") or snapshot_payload
+            snapshot_after = run_step("snapshot_after_approve", ["snapshot", "--format", "ai", "--labels", "--limit", "220"])
+            if not snapshot_after["success"] or not snapshot_after.get("result", {}).get("json"):
+                return {"success": False, "steps": steps, "token_status": token_status}
+            snapshot_payload = snapshot_after["result"].get("json") or snapshot_payload
         ref = _find_openclaw_ref_by_role_and_text(snapshot_payload, ["button"], deny_patterns)
         if ref:
-            steps.append({"action": "click_deny", "result": _openclaw_browser_cmd(["click", str(ref)])})
-            time.sleep(0.6)
+            click_deny = run_step("click_deny", ["click", str(ref)])
+            if not click_deny["success"]:
+                return {"success": False, "steps": steps, "token_status": token_status}
+        else:
+            steps.append({"action": "click_deny", "success": False, "error": "Deny button not found"})
 
     if normalized_text and any(token in normalized_text for token in ("trang thai", "tom tat", "status")):
         status_ref = _find_openclaw_ref_by_role_and_text(snapshot_payload, ["button"], ["status", "trạng thái"])
         if status_ref:
-            steps.append({"action": "click_status", "result": _openclaw_browser_cmd(["click", str(status_ref)])})
-            time.sleep(0.6)
+            click_status = run_step("click_status", ["click", str(status_ref)])
+            if not click_status["success"]:
+                return {"success": False, "steps": steps, "token_status": token_status}
 
     if chat_text:
         command_candidates = {"status", "pause", "resume", "run_cycle", "shutdown"}
         maybe_command = chat_text.strip().lower()
         if maybe_command in command_candidates:
-            chat_snapshot = _openclaw_browser_cmd(["snapshot", "--format", "ai", "--labels", "--limit", "240"])
-            steps.append({"action": "snapshot_chat", "result": chat_snapshot})
-            chat_payload = chat_snapshot.get("json") or {}
+            chat_snapshot = run_step("snapshot_chat", ["snapshot", "--format", "ai", "--labels", "--limit", "240"])
+            if not chat_snapshot["success"] or not chat_snapshot.get("result", {}).get("json"):
+                return {"success": False, "steps": steps, "token_status": token_status}
+            chat_payload = chat_snapshot["result"].get("json") or {}
             ref = _find_openclaw_textbox(chat_payload, OPENCLAW_FLOW_CHAT_PLACEHOLDERS, allow_fallback=False)
             if ref:
-                steps.append({"action": "type_command", "result": _openclaw_browser_cmd(["type", str(ref), maybe_command])})
+                type_step = run_step("type_command", ["type", str(ref), maybe_command])
+                if not type_step["success"]:
+                    return {"success": False, "steps": steps, "token_status": token_status}
                 send_ref = _find_openclaw_ref_by_role_and_text(chat_payload, ["button"], ["gửi lệnh", "send"])
                 if send_ref:
-                    steps.append({"action": "send_command", "result": _openclaw_browser_cmd(["click", str(send_ref)])})
+                    send_step = run_step("send_command", ["click", str(send_ref)])
                 else:
-                    steps.append({"action": "send_command", "result": _openclaw_browser_cmd(["press", "Enter"], expect_json=False)})
+                    send_step = run_step("send_command", ["press", "Enter"], expect_json=False)
+                if not send_step["success"]:
+                    return {"success": False, "steps": steps, "token_status": token_status}
             else:
-                steps.append({"action": "type_command", "result": {"success": False, "error": "Command input not found"}})
+                steps.append({"action": "type_command", "success": False, "error": "Command input not found"})
 
-    return {"success": True, "steps": steps}
+    return {
+        "success": True,
+        "steps": steps,
+        "token_status": token_status,
+        "note": "Flow completed",
+    }
 
 
 def _emit_chat_phase(message_id: str, phase: str, text: str, report: Optional[Dict[str, Any]] = None) -> None:
@@ -2608,23 +2825,30 @@ def get_progress_snapshot():
 
 @app.route('/api/openclaw/dashboard')
 def get_openclaw_dashboard():
-    """Return OpenClaw dashboard URL with token if available."""
-    token = _get_openclaw_token()
+    """Return OpenClaw dashboard URL and token metadata."""
+    refresh = _to_bool(request.args.get("refresh"))
+    info = _collect_token_info(force_refresh=refresh)
     base_url = "http://127.0.0.1:18789/"
-    if token:
-        return jsonify({
-            "success": True,
-            "url": f"{base_url}#token={token}",
-            "token_present": True,
-            "timestamp": datetime.now().isoformat(),
-        })
-    return jsonify({
-        "success": False,
+        payload = {
         "url": base_url,
-        "token_present": False,
-        "error": "OpenClaw gateway token missing",
         "timestamp": datetime.now().isoformat(),
-    }), 200
+        "token_present": bool(info.token),
+        "token_source": info.source,
+        "health_ok": info.health_ok,
+        "health_error": info.health_error,
+        "token_checked_at": info.checked_at.isoformat() if info.checked_at else None,
+        "token_last_error": info.last_error,
+    }
+    if info.token:
+        payload["url"] = f"{base_url}#token={info.token}"
+        payload["success"] = True
+    else:
+        payload["success"] = False
+        payload["error"] = info.last_error or "OpenClaw gateway token missing"
+    status_code = 200 if info.token and info.health_ok else 503
+    if info.health_error:
+        payload["health_error_hint"] = "Ensure the gateway is running and the token is valid."
+    return jsonify(payload), status_code
 
 
 @app.route('/api/openclaw/browser', methods=['POST'])
@@ -2637,7 +2861,8 @@ def openclaw_browser_command():
     if action == "start":
         result = _openclaw_browser_cmd(["start"])
         attach = None
-        if not result.get("success") and OPENCLAW_AUTO_ATTACH_ENABLED:
+        error_code = result.get("error_code") or ""
+        if not result.get("success") and OPENCLAW_AUTO_ATTACH_ENABLED and error_code != "TOKEN_MISSING":
             stderr = str(result.get("stderr", "")).lower()
             if "no tab is connected" in stderr or "extension" in stderr or "relay" in stderr:
                 attach = _openclaw_attempt_attach()

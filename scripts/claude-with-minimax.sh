@@ -176,9 +176,16 @@ start_litellm_gateway() {
 }
 
 run_direct_anthropic() {
-  export ANTHROPIC_API_KEY="${CLAUDE_CODE_API_KEY:-${MINIMAX_API_KEY:-${ANTHROPIC_API_KEY:-}}}"
-  export ANTHROPIC_BASE_URL="${CLAUDE_CODE_BASE_URL:-${MINIMAX_ANTHROPIC_BASE_URL:-https://api.minimax.io/anthropic}}"
-  export ANTHROPIC_MODEL="${CLAUDE_CODE_MODEL:-${MINIMAX_MODEL:-MiniMax-M2.5}}"
+  # Prioritize MINIMAX_* variables when provider is minimax
+  if [ "$PROVIDER" = "minimax" ]; then
+    export ANTHROPIC_API_KEY="${MINIMAX_API_KEY:-${CLAUDE_CODE_API_KEY:-${ANTHROPIC_API_KEY:-}}}"
+    export ANTHROPIC_BASE_URL="${MINIMAX_ANTHROPIC_BASE_URL:-${CLAUDE_CODE_BASE_URL:-https://api.minimax.io/anthropic}}"
+    export ANTHROPIC_MODEL="${MINIMAX_MODEL:-${CLAUDE_CODE_MODEL:-MiniMax-M2.5}}"
+  else
+    export ANTHROPIC_API_KEY="${CLAUDE_CODE_API_KEY:-${MINIMAX_API_KEY:-${ANTHROPIC_API_KEY:-}}}"
+    export ANTHROPIC_BASE_URL="${CLAUDE_CODE_BASE_URL:-${MINIMAX_ANTHROPIC_BASE_URL:-https://api.minimax.io/anthropic}}"
+    export ANTHROPIC_MODEL="${CLAUDE_CODE_MODEL:-${MINIMAX_MODEL:-MiniMax-M2.5}}"
+  fi
   
   # Avoid auth conflict by using only one token type
   export ANTHROPIC_AUTH_TOKEN="$ANTHROPIC_API_KEY"
@@ -314,7 +321,7 @@ EOF
   exec claude "$@"
 }
 
-PROVIDER="$(normalize_provider "${CLAUDE_CODE_PROVIDER:-minimax}")"
+PROVIDER="$(normalize_provider "${CLAUDE_CODE_PROVIDER_OVERRIDE:-${CLAUDE_CODE_PROVIDER:-minimax}}")"
 
 # Auto-detect if base URL supports Anthropic format
 if [ "$PROVIDER" = "auto" ]; then
