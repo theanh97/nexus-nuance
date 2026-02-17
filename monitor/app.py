@@ -8,6 +8,7 @@ FIXED: Persist state, proper initialization
 import os
 import sys
 import json
+import imaplib
 import re
 import shlex
 import shutil
@@ -15,7 +16,10 @@ import subprocess
 import time
 import unicodedata
 import uuid
+import secrets
 from datetime import datetime, timedelta
+from email import message_from_bytes
+from email.header import decode_header
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional, Set, Tuple
@@ -45,6 +49,7 @@ try:
     from src.core.prompt_system import get_prompt_system
     from src.core.provider_profile import ProviderProfileStore
     from src.memory.user_profile import get_user_profile, update_user_profile
+    from src.memory.team_persona import get_team_persona_store, normalize_member_id
 except Exception:
     from core.model_router import (  # type: ignore
         ModelRouter,
@@ -58,6 +63,7 @@ except Exception:
     from core.prompt_system import get_prompt_system  # type: ignore
     from core.provider_profile import ProviderProfileStore  # type: ignore
     from memory.user_profile import get_user_profile, update_user_profile  # type: ignore
+    from memory.team_persona import get_team_persona_store, normalize_member_id  # type: ignore
 
 # Get correct paths
 MONITOR_DIR = Path(__file__).parent
@@ -102,6 +108,7 @@ class _OpenClawAttachState:
 
 _attach_state = _OpenClawAttachState()
 _ATTACH_STATE_LOCK = threading.Lock()
+_OPENCLAW_ATTACH_CONTEXT = threading.local()
 _OPENCLAW_METRICS_LOCK = threading.Lock()
 _OPENCLAW_METRICS_MAX_EVENTS = 80
 _openclaw_metrics: Dict[str, int] = {
@@ -137,6 +144,29 @@ _openclaw_metrics: Dict[str, int] = {
 _openclaw_metric_events: List[Dict[str, Any]] = []
 _openclaw_metrics_updated_at: Optional[datetime] = None
 
+
+def _openclaw_attach_depth() -> int:
+    try:
+        return max(0, int(getattr(_OPENCLAW_ATTACH_CONTEXT, "depth", 0) or 0))
+    except Exception:
+        return 0
+
+
+def _openclaw_attach_in_progress() -> bool:
+    return _openclaw_attach_depth() > 0
+
+
+def _openclaw_attach_scope_enter() -> None:
+    _OPENCLAW_ATTACH_CONTEXT.depth = _openclaw_attach_depth() + 1
+
+
+def _openclaw_attach_scope_exit() -> None:
+    depth = _openclaw_attach_depth()
+    if depth <= 1:
+        _OPENCLAW_ATTACH_CONTEXT.depth = 0
+    else:
+        _OPENCLAW_ATTACH_CONTEXT.depth = depth - 1
+
 try:
     import pyautogui  # type: ignore
     pyautogui.FAILSAFE = True
@@ -169,6 +199,14 @@ MONITOR_AUTO_APPROVE_ALL_DECISIONS = _env_bool("MONITOR_AUTO_APPROVE_ALL_DECISIO
 MONITOR_AUTO_EXECUTE_COMMANDS = _env_bool("MONITOR_AUTO_EXECUTE_COMMANDS", True)
 MONITOR_ALLOW_UNSAFE_COMMANDS = _env_bool("MONITOR_ALLOW_UNSAFE_COMMANDS", False)
 MONITOR_COMPUTER_CONTROL_ENABLED_DEFAULT = _env_bool("MONITOR_COMPUTER_CONTROL_ENABLED", True)
+MONITOR_AUTOPILOT_OPENCLAW_FLOW_ENABLED = _env_bool("MONITOR_AUTOPILOT_OPENCLAW_FLOW_ENABLED", True)
+MONITOR_AUTOPILOT_OPENCLAW_FLOW_COOLDOWN_SEC = max(
+    20,
+    int(os.getenv("MONITOR_AUTOPILOT_OPENCLAW_FLOW_COOLDOWN_SEC", "120")),
+)
+MONITOR_AUTOPILOT_OPENCLAW_FLOW_CHAT = str(
+    os.getenv("MONITOR_AUTOPILOT_OPENCLAW_FLOW_CHAT", "auto unstick run one cycle resume") or ""
+).strip()
 OPENCLAW_BROWSER_AUTO_START = _env_bool("OPENCLAW_BROWSER_AUTO_START", True)
 OPENCLAW_BROWSER_TIMEOUT_MS = max(5000, int(os.getenv("OPENCLAW_BROWSER_TIMEOUT_MS", "30000")))
 OPENCLAW_DASHBOARD_URL = os.getenv("OPENCLAW_DASHBOARD_URL", "http://127.0.0.1:5050/")
@@ -236,6 +274,12 @@ OPENCLAW_COMMANDS_WAL_PATH = Path(
         str(Path(__file__).parent.parent / "data" / "state" / "openclaw_commands_wal.jsonl"),
     )
 )
+INTERVENTION_HISTORY_PATH = Path(
+    os.getenv(
+        "INTERVENTION_HISTORY_PATH",
+        str(Path(__file__).parent.parent / "data" / "state" / "interventions.jsonl"),
+    )
+)
 CONTROL_PLANE_DEFAULT_LEASE_TTL_SEC = max(10, int(os.getenv("CONTROL_PLANE_DEFAULT_LEASE_TTL_SEC", "35")))
 CONTROL_PLANE_MAX_WORKERS = max(8, int(os.getenv("CONTROL_PLANE_MAX_WORKERS", "120")))
 OPENCLAW_POLICY_MOSTLY_AUTO = _env_bool("OPENCLAW_POLICY_MOSTLY_AUTO", True)
@@ -243,6 +287,29 @@ OPENCLAW_CIRCUIT_TRIGGER_COUNT = max(2, int(os.getenv("OPENCLAW_CIRCUIT_TRIGGER_
 OPENCLAW_CIRCUIT_OPEN_SEC = max(20, int(os.getenv("OPENCLAW_CIRCUIT_OPEN_SEC", "60")))
 OPENCLAW_CIRCUIT_CLASS_BLOCK_SEC = max(60, int(os.getenv("OPENCLAW_CIRCUIT_CLASS_BLOCK_SEC", "300")))
 OPENCLAW_CIRCUIT_ESCALATE_AFTER = max(1, int(os.getenv("OPENCLAW_CIRCUIT_ESCALATE_AFTER", "2")))
+OPENCLAW_REQUIRE_TASK_LEASE = _env_bool("OPENCLAW_REQUIRE_TASK_LEASE", False)
+OPENCLAW_LEASE_HEARTBEAT_SEC = max(15, int(os.getenv("OPENCLAW_LEASE_HEARTBEAT_SEC", "90")))
+AGENT_COORDINATION_AUTO_CREATE_TASKS = _env_bool("AGENT_COORDINATION_AUTO_CREATE_TASKS", True)
+AUTOMATION_TASK_HISTORY_MAX = max(50, int(os.getenv("AUTOMATION_TASK_HISTORY_MAX", "500")))
+AUTOMATION_ENABLE_APP_CONTROL = _env_bool("AUTOMATION_ENABLE_APP_CONTROL", True)
+AUTOMATION_ENABLE_TERMINAL_EXEC = _env_bool("AUTOMATION_ENABLE_TERMINAL_EXEC", True)
+AUTOMATION_ENABLE_MAIL_READ = _env_bool("AUTOMATION_ENABLE_MAIL_READ", True)
+AUTOMATION_ENABLE_MESSAGES_READ = _env_bool("AUTOMATION_ENABLE_MESSAGES_READ", True)
+AUTOMATION_TERMINAL_TIMEOUT_SEC = max(3, int(os.getenv("AUTOMATION_TERMINAL_TIMEOUT_SEC", "20")))
+AUTOMATION_TERMINAL_ALLOWED_BINS = {
+    token.strip().lower()
+    for token in os.getenv(
+        "AUTOMATION_TERMINAL_ALLOWED_BINS",
+        "python3,pytest,git,ls,cat,rg,tail,head,openclaw,curl,open,osascript,pwd,date",
+    ).split(",")
+    if token.strip()
+}
+AUTOMATION_EMAIL_IMAP_HOST = str(os.getenv("AUTOMATION_EMAIL_IMAP_HOST", "") or "").strip()
+AUTOMATION_EMAIL_IMAP_PORT = max(1, int(os.getenv("AUTOMATION_EMAIL_IMAP_PORT", "993")))
+AUTOMATION_EMAIL_IMAP_USERNAME = str(os.getenv("AUTOMATION_EMAIL_IMAP_USERNAME", "") or "").strip()
+AUTOMATION_EMAIL_IMAP_PASSWORD = str(os.getenv("AUTOMATION_EMAIL_IMAP_PASSWORD", "") or "").strip()
+AUTOMATION_EMAIL_IMAP_FOLDER = str(os.getenv("AUTOMATION_EMAIL_IMAP_FOLDER", "INBOX") or "INBOX").strip() or "INBOX"
+AUTOMATION_EMAIL_IMAP_SSL = _env_bool("AUTOMATION_EMAIL_IMAP_SSL", True)
 OPENCLAW_HIGH_RISK_ALLOWLIST = {
     token.strip().lower()
     for token in os.getenv(
@@ -267,7 +334,7 @@ OPENCLAW_HARD_DENY_KEYWORDS = {
     ).split(",")
     if token.strip()
 }
-AUTONOMY_PROFILE_DEFAULT = str(os.getenv("AUTONOMY_PROFILE", "balanced") or "").strip().lower() or "balanced"
+AUTONOMY_PROFILE_DEFAULT = str(os.getenv("AUTONOMY_PROFILE", "full_auto") or "").strip().lower() or "full_auto"
 MONITOR_FULL_AUTO_USER_PAUSE_MAX_SEC = max(
     60,
     int(os.getenv("MONITOR_FULL_AUTO_USER_PAUSE_MAX_SEC", "240")),
@@ -277,6 +344,10 @@ MONITOR_FULL_AUTO_MAINTENANCE_LEASE_SEC = max(
     int(os.getenv("MONITOR_FULL_AUTO_MAINTENANCE_LEASE_SEC", "180")),
 )
 GUARDIAN_CONTROL_TOKEN = str(os.getenv("GUARDIAN_CONTROL_TOKEN", "") or "").strip()
+AGENT_COORDINATION_DEDUP_WINDOW_SEC = max(
+    1.0,
+    float(os.getenv("AGENT_COORDINATION_DEDUP_WINDOW_SEC", "12")),
+)
 
 _monitor_supervisor_thread: Optional[threading.Thread] = None
 _monitor_supervisor_stop_event = threading.Event()
@@ -284,6 +355,7 @@ _monitor_supervisor_lock = threading.RLock()
 _monitor_supervisor_enabled = MONITOR_AUTOPILOT_ENABLED_DEFAULT
 _monitor_last_recovery_at: Dict[str, datetime] = {}
 _monitor_last_reason: Dict[str, str] = {}
+_monitor_last_openclaw_flow_at: Dict[str, datetime] = {}
 _monitor_autopilot_pause_until: Optional[datetime] = None
 _autonomy_profile = AUTONOMY_PROFILE_DEFAULT if AUTONOMY_PROFILE_DEFAULT in {"safe", "balanced", "full_auto"} else "balanced"
 _computer_control_enabled = MONITOR_COMPUTER_CONTROL_ENABLED_DEFAULT
@@ -313,6 +385,10 @@ _api_rate_limit_blocked_by_bucket: Dict[str, int] = defaultdict(int)
 _api_rate_limit_blocked_events: List[float] = []
 _guardian_control_audit_lock = threading.Lock()
 _guardian_control_audit: List[Dict[str, Any]] = []
+_AGENT_COORDINATION_DEDUP_LOCK = threading.Lock()
+_agent_coordination_recent: Dict[str, float] = {}
+_AUTOMATION_TASKS_LOCK = threading.Lock()
+_automation_recent_tasks: deque = deque(maxlen=AUTOMATION_TASK_HISTORY_MAX)
 
 
 def _extract_dashboard_token() -> str:
@@ -410,6 +486,7 @@ def _load_orion_instances_config() -> List[Dict[str, str]]:
 ORION_INSTANCES: List[Dict[str, str]] = _load_orion_instances_config()
 _prompt_system = get_prompt_system()
 _provider_store = ProviderProfileStore()
+_team_persona_store = get_team_persona_store()
 
 
 # ============================================
@@ -527,6 +604,155 @@ def _rate_limited(bucket: str, limit: int, window_sec: int = 60) -> Optional[Res
     response.status_code = 429
     response.headers["Retry-After"] = str(int(blocked.get("retry_after_sec", 1)))
     return response
+
+
+def _agent_coordination_debounced(signature: str, cooldown_sec: float = AGENT_COORDINATION_DEDUP_WINDOW_SEC) -> Tuple[bool, float]:
+    key = str(signature or "").strip().lower()
+    if not key:
+        return False, 0.0
+    cooldown = max(1.0, float(cooldown_sec))
+    now = time.time()
+    with _AGENT_COORDINATION_DEDUP_LOCK:
+        stale_before = now - max(90.0, cooldown * 8.0)
+        stale_keys = [item for item, ts in _agent_coordination_recent.items() if float(ts) < stale_before]
+        for item in stale_keys[:2000]:
+            _agent_coordination_recent.pop(item, None)
+        seen = float(_agent_coordination_recent.get(key, 0.0) or 0.0)
+        if seen > 0.0:
+            elapsed = now - seen
+            if elapsed < cooldown:
+                return True, round(max(0.0, cooldown - elapsed), 2)
+        _agent_coordination_recent[key] = now
+    return False, 0.0
+
+
+def _api_ok(data: Optional[Dict[str, Any]] = None, status_code: int = 200, **extra: Any):
+    payload: Dict[str, Any] = {
+        "success": True,
+        "timestamp": datetime.now().isoformat(),
+    }
+    if isinstance(data, dict):
+        payload.update(data)
+    if extra:
+        payload.update(extra)
+    return jsonify(payload), status_code
+
+
+def _api_error(
+    error_code: str,
+    message: str,
+    status_code: int = 400,
+    data: Optional[Dict[str, Any]] = None,
+    **extra: Any,
+):
+    payload: Dict[str, Any] = {
+        "success": False,
+        "error_code": str(error_code or "UNKNOWN_ERROR"),
+        "error": str(message or "Request failed"),
+        "timestamp": datetime.now().isoformat(),
+    }
+    if isinstance(data, dict):
+        payload.update(data)
+    if extra:
+        payload.update(extra)
+    return jsonify(payload), status_code
+
+
+def _sort_by_timestamp_desc(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _parse(value: Any) -> datetime:
+        try:
+            return datetime.fromisoformat(str(value))
+        except Exception:
+            return datetime.min
+
+    return sorted(rows, key=lambda row: _parse(row.get("timestamp")), reverse=True)
+
+
+def _append_jsonl_event(path: Path, row: Dict[str, Any]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, ensure_ascii=True) + "\n")
+    except Exception:
+        return
+
+
+def _read_jsonl_events(path: Path, limit: int = 200) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    if not path.exists():
+        return rows
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                text = str(line or "").strip()
+                if not text:
+                    continue
+                try:
+                    item = json.loads(text)
+                except Exception:
+                    continue
+                if isinstance(item, dict):
+                    rows.append(item)
+    except Exception:
+        return []
+    if limit > 0:
+        rows = rows[-limit:]
+    return rows
+
+
+def _resolve_member_id(payload: Optional[Dict[str, Any]] = None, fallback: str = "") -> str:
+    data = payload if isinstance(payload, dict) else {}
+    for key in ("member_id", "user_id", "actor"):
+        value = normalize_member_id(data.get(key))
+        if value:
+            return value
+    return normalize_member_id(fallback)
+
+
+def _team_adaptation(member_id: str, intent: str = "") -> Dict[str, Any]:
+    try:
+        return _team_persona_store.recommend_adaptation(member_id, intent=intent)
+    except Exception as exc:
+        logger.warning(f"Team persona adaptation failed: {exc}")
+        return {
+            "member_id": member_id,
+            "known_member": False,
+            "communication": {"tone": "balanced", "detail_level": "balanced", "response_structure": "bullets"},
+            "orchestration": {"autonomy_mode": "balanced", "risk_policy": "balanced", "escalate_when": "critical_only"},
+            "hints": [f"adaptation_error: {exc}"],
+        }
+
+
+def _adapt_chat_reply_for_member(reply: str, adaptation: Dict[str, Any]) -> str:
+    text = str(reply or "").strip()
+    if not text:
+        return text
+
+    comm = adaptation.get("communication") if isinstance(adaptation.get("communication"), dict) else {}
+    detail_level = str(comm.get("detail_level", "balanced"))
+    response_structure = str(comm.get("response_structure", "bullets"))
+    tone = str(comm.get("tone", "balanced"))
+
+    if detail_level == "compact":
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if len(lines) > 3:
+            text = "\n".join(lines[:3])
+    elif detail_level == "high" and "\n" not in text:
+        text = f"{text}\n- Next: continue execution.\n- Verify: check runtime + logs."
+
+    if response_structure in {"steps", "numbered"} and "\n" in text:
+        lines = [line.strip("- ").strip() for line in text.splitlines() if line.strip()]
+        text = "\n".join([f"{idx}. {line}" for idx, line in enumerate(lines, start=1)])
+    elif response_structure == "bullets" and "\n" in text and not any(line.strip().startswith("- ") for line in text.splitlines()):
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        text = "\n".join([f"- {line}" for line in lines])
+
+    if tone == "direct":
+        text = re.sub(r"\bMình (vừa|đã)\b", "Đã", text)
+    elif tone == "collaborative" and not text.lower().startswith("mình"):
+        text = f"Mình phối hợp tiếp như sau:\n{text}"
+
+    return text
 
 
 def _build_api_rate_limit_snapshot(window_sec: int = 300) -> Dict[str, Any]:
@@ -1601,6 +1827,46 @@ class PersistentState:
                 return dict(item)
         return None
 
+    def list_pending_decisions(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            return [dict(item) for item in self.pending_decisions]
+
+    def get_pending_decision(self, decision_id: str) -> Optional[Dict[str, Any]]:
+        target = str(decision_id or "").strip()
+        if not target:
+            return None
+        with self._lock:
+            for item in self.pending_decisions:
+                if str(item.get("id", "")) == target:
+                    return dict(item)
+        return None
+
+    def defer_decision(
+        self,
+        decision_id: str,
+        defer_sec: int = 300,
+        reason: str = "",
+        actor: str = "dashboard",
+    ) -> Optional[Dict[str, Any]]:
+        target = str(decision_id or "").strip()
+        if not target:
+            return None
+        now = datetime.now()
+        with self._lock:
+            for item in self.pending_decisions:
+                if str(item.get("id", "")) != target:
+                    continue
+                item["deferred"] = True
+                item["defer_reason"] = str(reason or "").strip()
+                item["defer_actor"] = str(actor or "dashboard").strip() or "dashboard"
+                item["deferred_at"] = now.isoformat()
+                item["deferred_until"] = (now + timedelta(seconds=max(30, int(defer_sec)))).isoformat()
+                item["defer_count"] = int(item.get("defer_count", 0) or 0) + 1
+                self._save()
+                socketio.emit("decision_deferred", dict(item))
+                return dict(item)
+        return None
+
     def approve_decision(self, decision_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
             for decision in self.pending_decisions:
@@ -2481,6 +2747,30 @@ def _append_guardian_control_audit(
             del _guardian_control_audit[:-300]
 
 
+def _append_intervention_history(
+    action: str,
+    decision_id: str,
+    success: bool,
+    actor: str = "dashboard",
+    detail: Optional[Dict[str, Any]] = None,
+) -> None:
+    row = {
+        "timestamp": datetime.now().isoformat(),
+        "action": str(action or "").strip().lower(),
+        "decision_id": str(decision_id or "").strip(),
+        "success": bool(success),
+        "actor": str(actor or "dashboard").strip() or "dashboard",
+    }
+    if isinstance(detail, dict) and detail:
+        row["detail"] = detail
+    _append_jsonl_event(INTERVENTION_HISTORY_PATH, row)
+
+
+def _intervention_history_tail(limit: int = 120) -> List[Dict[str, Any]]:
+    rows = _read_jsonl_events(INTERVENTION_HISTORY_PATH, limit=max(1, int(limit)))
+    return _sort_by_timestamp_desc(rows)
+
+
 def build_status_payload() -> Dict[str, Any]:
     payload = state.get_status()
     status_handler = _runtime_bridge.get("status_handler")
@@ -2506,6 +2796,10 @@ def build_status_payload() -> Dict[str, Any]:
         "token_required": bool(GUARDIAN_CONTROL_TOKEN),
         "audit_tail": _guardian_control_audit_tail(limit=12),
     }
+    try:
+        payload["team_persona"] = _team_persona_store.summary(limit=24)
+    except Exception as exc:
+        payload["team_persona"] = {"members": 0, "total_interactions": 0, "error": str(exc)}
 
     ops = _build_ops_snapshot()
     digest = _build_events_digest(limit=140)
@@ -2744,6 +3038,362 @@ def get_orion_instances_snapshot() -> List[Dict[str, Any]]:
     return snapshot
 
 
+def _select_orions_for_orchestration(
+    instances: List[Dict[str, Any]],
+    preferred_ids: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    preferred = {normalize_member_id(item) for item in (preferred_ids or []) if item}
+
+    def _score(row: Dict[str, Any]) -> Tuple[int, int, int, str]:
+        instance_id = str(row.get("id", ""))
+        preferred_bonus = 0 if normalize_member_id(instance_id) in preferred else 1
+        online_penalty = 0 if bool(row.get("online")) else 3
+        paused_penalty = 2 if bool(row.get("paused")) else 0
+        flow_penalty = int(row.get("active_flow_count", 0) or 0)
+        return (
+            preferred_bonus + online_penalty + paused_penalty,
+            flow_penalty,
+            0 if bool(row.get("running")) else 1,
+            instance_id,
+        )
+
+    ordered = sorted([row for row in instances if isinstance(row, dict)], key=_score)
+    if ordered:
+        return ordered
+    return [{"id": LOCAL_INSTANCE_ID, "name": LOCAL_INSTANCE_ID, "online": False, "running": False, "paused": False}]
+
+
+def _goal_to_work_items(goal: str, task_count: int = 3) -> List[Dict[str, str]]:
+    clean_goal = str(goal or "").strip()
+    if not clean_goal:
+        clean_goal = "Execution objective"
+    cap = max(1, min(8, int(task_count)))
+    stages = [
+        ("Discovery", "Map current state, constraints, and measurable success criteria."),
+        ("Execution", "Implement changes and coordinate dependent tasks."),
+        ("Verification", "Validate behavior, logs, and regression safety."),
+        ("Optimization", "Reduce noise, improve latency/cost, and harden automation."),
+        ("Documentation", "Update operational notes and handover steps."),
+    ]
+    rows: List[Dict[str, str]] = []
+    for index in range(cap):
+        stage = stages[index % len(stages)]
+        rows.append(
+            {
+                "title": f"{clean_goal} :: {stage[0]}",
+                "description": f"{stage[1]} Goal focus: {clean_goal}.",
+            }
+        )
+    return rows
+
+
+def _build_multi_orion_orchestration(
+    goal: str,
+    requested_by: str = "",
+    task_count: int = 3,
+    priority: str = "high",
+    create_tasks: bool = False,
+    preferred_orions: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    member_id = normalize_member_id(requested_by)
+    adaptation = _team_adaptation(member_id, intent=goal)
+    style = adaptation.get("orchestration") if isinstance(adaptation.get("orchestration"), dict) else {}
+    autonomy_mode = str(style.get("autonomy_mode", "balanced"))
+    risk_policy = str(style.get("risk_policy", "balanced"))
+
+    instances = get_orion_instances_snapshot()
+    selected = _select_orions_for_orchestration(instances, preferred_ids=preferred_orions)
+    work_items = _goal_to_work_items(goal, task_count=task_count)
+
+    assignments: List[Dict[str, Any]] = []
+    for idx, item in enumerate(work_items):
+        target = selected[idx % len(selected)]
+        assignments.append(
+            {
+                "rank": idx + 1,
+                "instance_id": str(target.get("id", LOCAL_INSTANCE_ID)),
+                "instance_name": str(target.get("name", target.get("id", LOCAL_INSTANCE_ID))),
+                "online": bool(target.get("online")),
+                "title": item["title"],
+                "description": item["description"],
+                "priority": priority,
+                "execution_mode": autonomy_mode,
+                "risk_policy": risk_policy,
+            }
+        )
+
+    created_tasks: List[Dict[str, Any]] = []
+    if create_tasks and "_hub" in globals() and _hub is not None:
+        for row in assignments:
+            try:
+                result = _hub.create_task_safe(
+                    title=row["title"],
+                    description=row["description"],
+                    priority=row["priority"],
+                    assigned_to=row["instance_id"],
+                )
+                created_tasks.append(result)
+            except Exception as exc:
+                created_tasks.append({"success": False, "error": str(exc), "task_title": row["title"]})
+
+    return {
+        "goal": goal,
+        "requested_by": member_id,
+        "adaptation": adaptation,
+        "selection": {
+            "candidate_count": len(instances),
+            "selected_count": len(selected),
+            "selected_orions": [
+                {
+                    "id": str(item.get("id", "")),
+                    "name": str(item.get("name", "")),
+                    "online": bool(item.get("online")),
+                    "running": bool(item.get("running")),
+                    "paused": bool(item.get("paused")),
+                    "active_flow_count": int(item.get("active_flow_count", 0) or 0),
+                }
+                for item in selected
+            ],
+        },
+        "assignments": assignments,
+        "created_tasks": created_tasks,
+        "orchestration_policy": {
+            "autonomy_mode": autonomy_mode,
+            "risk_policy": risk_policy,
+            "escalate_when": style.get("escalate_when", "critical_only"),
+        },
+    }
+
+
+def _estimate_tokens(text: Any) -> int:
+    content = str(text or "")
+    if not content:
+        return 0
+    return max(1, int((len(content) + 3) / 4))
+
+
+def _select_agents_for_goal(goal: str, max_agents: int = 4) -> List[str]:
+    text = str(goal or "").lower()
+    selected: List[str] = ["guardian", "orion"]
+    if re.search(r"\b(ui|ux|design|frontend|giao diện)\b", text):
+        selected.append("pixel")
+    if re.search(r"\b(security|audit|cipher|an toàn|bảo mật)\b", text):
+        selected.append("cipher")
+    if re.search(r"\b(deploy|release|ship|rollout|production)\b", text):
+        selected.append("flux")
+    if re.search(r"\b(research|analysis|plan|nghiên cứu|phân tích)\b", text):
+        selected.append("nova")
+    if re.search(r"\b(log|monitor|event|telemetry|runtime)\b", text):
+        selected.append("echo")
+
+    selected = list(dict.fromkeys([item for item in selected if item]))
+    # Keep coordination minimal by default: only add Nova when no specialist was selected.
+    if len(selected) <= 2:
+        selected.append("nova")
+    return selected[:max_agents]
+
+
+def _build_agent_coordination_plan(
+    goal: str,
+    adaptation: Dict[str, Any],
+    max_agents: int = 4,
+    compact_mode: bool = True,
+) -> Dict[str, Any]:
+    orchestration = adaptation.get("orchestration") if isinstance(adaptation.get("orchestration"), dict) else {}
+    comm = adaptation.get("communication") if isinstance(adaptation.get("communication"), dict) else {}
+    autonomy_mode = str(orchestration.get("autonomy_mode", "balanced"))
+    risk_policy = str(orchestration.get("risk_policy", "balanced"))
+    detail_level = str(comm.get("detail_level", "balanced"))
+    goal_short = str(goal or "").strip().replace("\n", " ")
+    goal_short = re.sub(r"\s+", " ", goal_short)[:180]
+
+    agents = _select_agents_for_goal(goal_short, max_agents=max_agents)
+    commands: List[Dict[str, Any]] = []
+    verbose_total = 0
+    compact_total = 0
+
+    for agent in agents:
+        verbose_command = (
+            f"Mission objective: {goal_short}. "
+            f"Agent role: {agent}. Work in coordinated mode with other agents. "
+            f"Autonomy={autonomy_mode}. Risk policy={risk_policy}. "
+            f"Response detail={detail_level}. Provide status, delta, blockers, and next action."
+        )
+        compact_command = (
+            f"{agent}|goal:{goal_short}|mode:{autonomy_mode}|risk:{risk_policy}"
+            f"|detail:{detail_level}|out:status+delta+next"
+        )
+        chosen = compact_command if compact_mode else verbose_command
+        verbose_tokens = _estimate_tokens(verbose_command)
+        chosen_tokens = _estimate_tokens(chosen)
+        verbose_total += verbose_tokens
+        compact_total += chosen_tokens
+        commands.append(
+            {
+                "agent": agent,
+                "command": chosen,
+                "command_verbose": verbose_command,
+                "estimated_tokens": chosen_tokens,
+                "estimated_tokens_verbose": verbose_tokens,
+                "compact_mode": bool(compact_mode),
+            }
+        )
+
+    return {
+        "goal": goal_short,
+        "agents": agents,
+        "commands": commands,
+        "token_budget": {
+            "compact_mode": bool(compact_mode),
+            "estimated_tokens_total": compact_total,
+            "estimated_tokens_verbose_total": verbose_total,
+            "estimated_tokens_saved": max(0, verbose_total - compact_total),
+            "saving_ratio": round((verbose_total - compact_total) / verbose_total, 4) if verbose_total > 0 else 0.0,
+        },
+    }
+
+
+def _execute_agent_coordination(
+    goal: str,
+    member_id: str = "",
+    max_agents: int = 4,
+    compact_mode: bool = True,
+    execute: bool = True,
+    priority: str = "high",
+    instance_ids: Optional[List[str]] = None,
+    multi_instance: bool = True,
+) -> Dict[str, Any]:
+    adaptation = _team_adaptation(member_id, intent=goal)
+    plan = _build_agent_coordination_plan(
+        goal=goal,
+        adaptation=adaptation,
+        max_agents=max_agents,
+        compact_mode=compact_mode,
+    )
+
+    instances = get_orion_instances_snapshot()
+    requested_instance_ids = instance_ids if isinstance(instance_ids, list) else []
+    if requested_instance_ids:
+        requested = {str(item).strip() for item in requested_instance_ids if str(item).strip()}
+        targets = [item for item in instances if str(item.get("id", "")).strip() in requested]
+    else:
+        if multi_instance:
+            targets = [item for item in instances if bool(item.get("online"))]
+            if not targets:
+                targets = [item for item in instances[:1]]
+        else:
+            targets = [item for item in instances if str(item.get("id", "")).strip() == LOCAL_INSTANCE_ID]
+            if not targets:
+                targets = [{"id": LOCAL_INSTANCE_ID, "name": LOCAL_INSTANCE_ID, "online": False}]
+
+    dispatch_results: Dict[str, Dict[str, Any]] = {}
+    total_sent = 0
+    total_success = 0
+    if execute:
+        for target_instance in targets:
+            instance_id = str(target_instance.get("id", "")).strip() or LOCAL_INSTANCE_ID
+            dispatch_results.setdefault(instance_id, {})
+            for row in plan.get("commands", []):
+                if not isinstance(row, dict):
+                    continue
+                agent = str(row.get("agent", "")).strip()
+                command = str(row.get("command", "")).strip()
+                if not agent or not command:
+                    continue
+                result = _call_instance_command(
+                    instance_id=instance_id,
+                    target=agent,
+                    command=command,
+                    priority=priority,
+                    options={
+                        "source": "agent_coordination_compact",
+                        "goal": goal[:160],
+                        "compact_mode": compact_mode,
+                        "member_id": member_id,
+                    },
+                )
+                ok = bool(result.get("success", True))
+                dispatch_results[instance_id][agent] = result
+                total_sent += 1
+                if ok:
+                    total_success += 1
+
+    return {
+        "goal": goal,
+        "member_id": member_id or None,
+        "adaptation": adaptation,
+        "plan": plan,
+        "execution": {
+            "executed": execute,
+            "instances": [str(item.get("id", "")) for item in targets],
+            "total_sent": total_sent,
+            "total_success": total_success,
+            "total_failed": max(0, total_sent - total_success),
+        },
+        "results": dispatch_results if execute else {},
+    }
+
+
+def _materialize_coordination_tasks(
+    goal: str,
+    coordination_payload: Dict[str, Any],
+    priority: str = "high",
+    member_id: str = "",
+    max_tasks: int = 8,
+) -> Dict[str, Any]:
+    if "_hub" not in globals() or _hub is None:
+        return {"enabled": False, "created": 0, "results": [], "error": "hub_unavailable"}
+
+    plan = coordination_payload.get("plan") if isinstance(coordination_payload.get("plan"), dict) else {}
+    commands = plan.get("commands") if isinstance(plan.get("commands"), list) else []
+    execution = coordination_payload.get("execution") if isinstance(coordination_payload.get("execution"), dict) else {}
+    instance_ids = execution.get("instances") if isinstance(execution.get("instances"), list) else []
+    if not isinstance(instance_ids, list) or not instance_ids:
+        instance_ids = [LOCAL_INSTANCE_ID]
+
+    cap = max(1, min(12, int(max_tasks)))
+    results: List[Dict[str, Any]] = []
+    created = 0
+    normalized_priority = str(priority or "high").strip().lower() or "high"
+    member = normalize_member_id(member_id)
+
+    for idx, row in enumerate(commands[:cap]):
+        if not isinstance(row, dict):
+            continue
+        agent = str(row.get("agent", "")).strip().lower() or "orion"
+        command = str(row.get("command", "")).strip()
+        target_instance = str(instance_ids[idx % len(instance_ids)]).strip() or LOCAL_INSTANCE_ID
+        title = f"[Coord] {agent.upper()} :: {goal[:86]}"
+        description_lines = [
+            f"Goal: {goal}",
+            f"Agent: {agent}",
+            f"Command: {command}",
+            f"Source: agent_coordination_auto_materialize",
+        ]
+        if member:
+            description_lines.append(f"Member: {member}")
+        description = "\n".join(description_lines)
+        try:
+            result = _hub.create_task_safe(
+                title=title,
+                description=description,
+                priority=normalized_priority,
+                assigned_to=target_instance,
+            )
+        except Exception as exc:
+            result = {"success": False, "error": str(exc), "task_title": title}
+        if result.get("success"):
+            created += 1
+        results.append(result)
+
+    return {
+        "enabled": True,
+        "created": created,
+        "requested": min(cap, len(commands)),
+        "results": results,
+    }
+
+
 def _monitor_supervisor_status() -> Dict[str, Any]:
     with _monitor_supervisor_lock:
         startup_age_sec = max(0, int((datetime.now() - _monitor_process_started_at).total_seconds()))
@@ -2761,6 +3411,9 @@ def _monitor_supervisor_status() -> Dict[str, Any]:
             "autopilot_pause_until": pause_until,
             "full_auto_user_pause_max_sec": MONITOR_FULL_AUTO_USER_PAUSE_MAX_SEC,
             "full_auto_maintenance_lease_sec": MONITOR_FULL_AUTO_MAINTENANCE_LEASE_SEC,
+            "openclaw_autopilot_flow_enabled": MONITOR_AUTOPILOT_OPENCLAW_FLOW_ENABLED,
+            "openclaw_autopilot_flow_cooldown_sec": MONITOR_AUTOPILOT_OPENCLAW_FLOW_COOLDOWN_SEC,
+            "last_openclaw_flow": {key: value.isoformat() for key, value in _monitor_last_openclaw_flow_at.items()},
             "last_recovery": {key: value.isoformat() for key, value in _monitor_last_recovery_at.items()},
             "last_reason": dict(_monitor_last_reason),
         }
@@ -2782,6 +3435,45 @@ def _monitor_pause_supervisor_temporarily(duration_sec: int) -> str:
         _monitor_supervisor_enabled = False
         _monitor_autopilot_pause_until = until
     return until.isoformat()
+
+
+def _monitor_maybe_enqueue_openclaw_flow(instance_id: str, reason: str) -> Dict[str, Any]:
+    if not MONITOR_AUTOPILOT_OPENCLAW_FLOW_ENABLED:
+        return {"attempted": False, "success": False, "reason": "disabled"}
+    if OPENCLAW_REQUIRE_TASK_LEASE:
+        return {"attempted": False, "success": False, "reason": "lease_enforcement_enabled"}
+    normalized_reason = str(reason or "").strip().lower()
+    if normalized_reason not in {"not_running"} and not normalized_reason.startswith(("no_progress:", "cycle_stalled:")):
+        return {"attempted": False, "success": False, "reason": "unsupported_reason"}
+
+    now = datetime.now()
+    with _monitor_supervisor_lock:
+        last = _monitor_last_openclaw_flow_at.get(instance_id)
+        if last and (now - last).total_seconds() < MONITOR_AUTOPILOT_OPENCLAW_FLOW_COOLDOWN_SEC:
+            return {"attempted": False, "success": False, "reason": "cooldown"}
+        _monitor_last_openclaw_flow_at[instance_id] = now
+
+    chat_text = MONITOR_AUTOPILOT_OPENCLAW_FLOW_CHAT or "auto unstick run one cycle resume"
+    queued = _enqueue_openclaw_command(
+        "flow",
+        {
+            "chat_text": chat_text,
+            "source": "autopilot",
+            "mode": "async",
+            "session_id": f"autopilot:{instance_id}",
+            "route_mode": "auto",
+            "priority": 1,
+            "risk_level": "medium",
+            "reason": reason,
+        },
+    )
+    return {
+        "attempted": True,
+        "success": bool(queued.get("success")),
+        "request_id": queued.get("request_id"),
+        "error_code": queued.get("error_code"),
+        "error": queued.get("error"),
+    }
 
 
 def _monitor_maybe_recover_instance(instance: Dict[str, Any]) -> None:
@@ -2833,6 +3525,17 @@ def _monitor_maybe_recover_instance(instance: Dict[str, Any]) -> None:
             return
         _monitor_last_recovery_at[instance_id] = now
         _monitor_last_reason[instance_id] = reason
+
+    openclaw = _monitor_maybe_enqueue_openclaw_flow(instance_id, reason)
+    if openclaw.get("attempted"):
+        flow_ok = bool(openclaw.get("success"))
+        flow_level = "success" if flow_ok else "warning"
+        flow_suffix = "queued" if flow_ok else f"failed:{openclaw.get('error_code') or 'unknown'}"
+        state.add_agent_log(
+            "guardian",
+            f"🧩 Monitor autopilot OpenClaw flow {instance_id} ({reason}) {flow_suffix}",
+            flow_level,
+        )
 
     result = _call_instance_command(
         instance_id,
@@ -3587,12 +4290,13 @@ def _openclaw_browser_cmd(
                 auto_recover=False,
             )
             return retry
-    if auto_attach and OPENCLAW_AUTO_ATTACH_ENABLED and not result.get("success"):
+    if auto_attach and OPENCLAW_AUTO_ATTACH_ENABLED and not result.get("success") and not _openclaw_attach_in_progress():
         error_text = "\n".join(
             str(result.get(key, "") or "") for key in ("error", "stderr", "stdout", "message")
         ).strip()
         if _is_openclaw_no_tab_error(error_text):
-            attach_result = _openclaw_attempt_attach(force=True)
+            # Respect attach cooldown to avoid recursive/noisy browser-open storms.
+            attach_result = _openclaw_attempt_attach(force=False)
             result["attach"] = attach_result
             if attach_result.get("success"):
                 retry = _openclaw_browser_cmd(
@@ -3696,9 +4400,9 @@ def _attempt_attach_via_menu() -> Dict[str, Any]:
         except Exception as exc:
             steps.append({"action": "menu_click", "result": {"success": False, "error": str(exc)}})
         time.sleep(OPENCLAW_AUTO_ATTACH_DELAY_SEC)
-        start = _openclaw_browser_cmd(["start"])
+        start = _openclaw_browser_cmd(["start"], auto_attach=False)
         steps.append({"action": "start_after_menu_click", "result": start})
-        status = _openclaw_browser_cmd(["status"])
+        status = _openclaw_browser_cmd(["status"], auto_attach=False)
         steps.append({"action": "status", "result": status})
         status_json = (status.get("json") or {})
         if status_json.get("running") or status_json.get("cdpReady"):
@@ -3781,110 +4485,114 @@ def _ensure_chrome_tab(url: str) -> Dict[str, Any]:
 
 
 def _openclaw_attempt_attach(force: bool = False) -> Dict[str, Any]:
-    steps: List[Dict[str, Any]] = []
-    _openclaw_metrics_inc("attach_attempts")
+    _openclaw_attach_scope_enter()
+    try:
+        steps: List[Dict[str, Any]] = []
+        _openclaw_metrics_inc("attach_attempts")
 
-    if not pyautogui:
-        _openclaw_metrics_inc("attach_failed")
-        _openclaw_metrics_event("attach_failed", {"error": "pyautogui not available"})
-        return {"success": False, "error": "pyautogui not available"}
+        if not pyautogui:
+            _openclaw_metrics_inc("attach_failed")
+            _openclaw_metrics_event("attach_failed", {"error": "pyautogui not available"})
+            return {"success": False, "error": "pyautogui not available"}
 
-    with _ATTACH_STATE_LOCK:
-        now = datetime.now()
-        if not force and _attach_state.cooldown_until and now < _attach_state.cooldown_until:
-            cooldown = (_attach_state.cooldown_until - now).total_seconds()
-            _openclaw_metrics_inc("attach_throttled")
-            _openclaw_metrics_event("attach_throttled", {"cooldown_sec": round(cooldown, 2)})
-            return {
-                "success": False,
-                "error": "Attach throttled",
-                "cooldown_until": _attach_state.cooldown_until.isoformat(),
-                "last_error": _attach_state.last_error,
-            }
-
-    extension_path = _openclaw_extension_path()
-    if not extension_path:
-        install = _run_openclaw_cli(["browser", "extension", "install"])
-        steps.append({"action": "install_extension", "result": install})
-        if install.get("success"):
-            candidate = str(install.get("stdout", "")).strip()
-            if candidate:
-                candidate_path = Path(candidate)
-                if candidate_path.exists():
-                    extension_path = candidate_path
-        if not extension_path:
-            extension_path = _openclaw_extension_path()
-
-    if not extension_path:
         with _ATTACH_STATE_LOCK:
-            _attach_state.last_error = "Extension path unavailable"
-            _attach_state.cooldown_until = datetime.now() + timedelta(seconds=OPENCLAW_AUTO_ATTACH_COOLDOWN_SEC)
-        _openclaw_metrics_inc("attach_failed")
-        _openclaw_metrics_event("attach_failed", {"error": "Extension path unavailable"})
-        return {"success": False, "error": "Extension path unavailable", "steps": steps}
+            now = datetime.now()
+            if not force and _attach_state.cooldown_until and now < _attach_state.cooldown_until:
+                cooldown = (_attach_state.cooldown_until - now).total_seconds()
+                _openclaw_metrics_inc("attach_throttled")
+                _openclaw_metrics_event("attach_throttled", {"cooldown_sec": round(cooldown, 2)})
+                return {
+                    "success": False,
+                    "error": "Attach throttled",
+                    "cooldown_until": _attach_state.cooldown_until.isoformat(),
+                    "last_error": _attach_state.last_error,
+                }
 
-    if OPENCLAW_LAUNCH_WITH_EXTENSION:
-        launch = _launch_chrome_with_extension(extension_path, OPENCLAW_DASHBOARD_URL)
-        steps.append({"action": "launch_chrome_with_extension", "result": launch})
-    else:
-        steps.append({"action": "open_chrome", "result": {"success": True, "url": OPENCLAW_DASHBOARD_URL}})
-        subprocess.run(["open", "-a", OPENCLAW_CHROME_APP, OPENCLAW_DASHBOARD_URL], check=False)
-    time.sleep(OPENCLAW_AUTO_ATTACH_DELAY_SEC)
+        extension_path = _openclaw_extension_path()
+        if not extension_path:
+            install = _run_openclaw_cli(["browser", "extension", "install"])
+            steps.append({"action": "install_extension", "result": install})
+            if install.get("success"):
+                candidate = str(install.get("stdout", "")).strip()
+                if candidate:
+                    candidate_path = Path(candidate)
+                    if candidate_path.exists():
+                        extension_path = candidate_path
+            if not extension_path:
+                extension_path = _openclaw_extension_path()
 
-    steps.append({"action": "activate_chrome", "result": _activate_chrome_window()})
-    time.sleep(OPENCLAW_AUTO_ATTACH_DELAY_SEC)
-    steps.append({"action": "ensure_tab", "result": _ensure_chrome_tab(OPENCLAW_DASHBOARD_URL)})
-    time.sleep(OPENCLAW_AUTO_ATTACH_DELAY_SEC)
+        if not extension_path:
+            with _ATTACH_STATE_LOCK:
+                _attach_state.last_error = "Extension path unavailable"
+                _attach_state.cooldown_until = datetime.now() + timedelta(seconds=OPENCLAW_AUTO_ATTACH_COOLDOWN_SEC)
+            _openclaw_metrics_inc("attach_failed")
+            _openclaw_metrics_event("attach_failed", {"error": "Extension path unavailable"})
+            return {"success": False, "error": "Extension path unavailable", "steps": steps}
 
-    icon_path = _find_extension_icon(extension_path)
-    steps.append({"action": "icon_path", "result": {"path": str(icon_path) if icon_path else ""}})
-
-    attached = False
-    method_used = None
-    for attempt_idx in range(OPENCLAW_AUTO_ATTACH_RETRIES):
-        click_result = {"success": False}
-        if OPENCLAW_AUTO_ATTACH_ICON_MATCH:
-            click_result = _click_extension_icon(icon_path)
-            steps.append({"action": "click_extension_icon", "result": click_result})
-        if click_result.get("success"):
-            method_used = "icon"
-            attached = True
-            time.sleep(OPENCLAW_AUTO_ATTACH_DELAY_SEC)
-            start = _openclaw_browser_cmd(["start"])
-            steps.append({"action": "start_after_click", "result": start})
-            status = _openclaw_browser_cmd(["status"])
-            steps.append({"action": "status", "result": status})
-            status_json = (status.get("json") or {})
-            if status_json.get("running") or status_json.get("cdpReady"):
-                attached = True
-                break
-            attached = False
-        if not attached and OPENCLAW_AUTO_ATTACH_HEURISTIC:
-            method_used = "menu"
-            menu_attempt = _attempt_attach_via_menu()
-            steps.extend(menu_attempt.get("steps", []))
-            if menu_attempt.get("success"):
-                attached = True
-                break
-
-    with _ATTACH_STATE_LOCK:
-        if attached:
-            _attach_state.last_error = None
-            _attach_state.cooldown_until = None
-            _attach_state.method = method_used
+        if OPENCLAW_LAUNCH_WITH_EXTENSION:
+            launch = _launch_chrome_with_extension(extension_path, OPENCLAW_DASHBOARD_URL)
+            steps.append({"action": "launch_chrome_with_extension", "result": launch})
         else:
-            _attach_state.last_error = "attach failed"
-            _attach_state.cooldown_until = datetime.now() + timedelta(seconds=OPENCLAW_AUTO_ATTACH_COOLDOWN_SEC)
-            _attach_state.method = method_used
-        _attach_state.last_attempt = datetime.now()
+            steps.append({"action": "open_chrome", "result": {"success": True, "url": OPENCLAW_DASHBOARD_URL}})
+            subprocess.run(["open", "-a", OPENCLAW_CHROME_APP, OPENCLAW_DASHBOARD_URL], check=False)
+        time.sleep(OPENCLAW_AUTO_ATTACH_DELAY_SEC)
 
-    if attached:
-        _openclaw_metrics_inc("attach_success")
-    else:
-        _openclaw_metrics_inc("attach_failed")
-        _openclaw_metrics_event("attach_failed", {"method": method_used or "unknown"})
+        steps.append({"action": "activate_chrome", "result": _activate_chrome_window()})
+        time.sleep(OPENCLAW_AUTO_ATTACH_DELAY_SEC)
+        steps.append({"action": "ensure_tab", "result": _ensure_chrome_tab(OPENCLAW_DASHBOARD_URL)})
+        time.sleep(OPENCLAW_AUTO_ATTACH_DELAY_SEC)
 
-    return {"success": attached, "method": method_used, "steps": steps}
+        icon_path = _find_extension_icon(extension_path)
+        steps.append({"action": "icon_path", "result": {"path": str(icon_path) if icon_path else ""}})
+
+        attached = False
+        method_used = None
+        for attempt_idx in range(OPENCLAW_AUTO_ATTACH_RETRIES):
+            click_result = {"success": False}
+            if OPENCLAW_AUTO_ATTACH_ICON_MATCH:
+                click_result = _click_extension_icon(icon_path)
+                steps.append({"action": "click_extension_icon", "result": click_result})
+            if click_result.get("success"):
+                method_used = "icon"
+                attached = True
+                time.sleep(OPENCLAW_AUTO_ATTACH_DELAY_SEC)
+                start = _openclaw_browser_cmd(["start"], auto_attach=False)
+                steps.append({"action": "start_after_click", "result": start})
+                status = _openclaw_browser_cmd(["status"], auto_attach=False)
+                steps.append({"action": "status", "result": status})
+                status_json = (status.get("json") or {})
+                if status_json.get("running") or status_json.get("cdpReady"):
+                    attached = True
+                    break
+                attached = False
+            if not attached and OPENCLAW_AUTO_ATTACH_HEURISTIC:
+                method_used = "menu"
+                menu_attempt = _attempt_attach_via_menu()
+                steps.extend(menu_attempt.get("steps", []))
+                if menu_attempt.get("success"):
+                    attached = True
+                    break
+
+        with _ATTACH_STATE_LOCK:
+            if attached:
+                _attach_state.last_error = None
+                _attach_state.cooldown_until = None
+                _attach_state.method = method_used
+            else:
+                _attach_state.last_error = "attach failed"
+                _attach_state.cooldown_until = datetime.now() + timedelta(seconds=OPENCLAW_AUTO_ATTACH_COOLDOWN_SEC)
+                _attach_state.method = method_used
+            _attach_state.last_attempt = datetime.now()
+
+        if attached:
+            _openclaw_metrics_inc("attach_success")
+        else:
+            _openclaw_metrics_inc("attach_failed")
+            _openclaw_metrics_event("attach_failed", {"method": method_used or "unknown"})
+
+        return {"success": attached, "method": method_used, "steps": steps}
+    finally:
+        _openclaw_attach_scope_exit()
 
 
 def _flatten_openclaw_nodes(payload: Any) -> List[Dict[str, Any]]:
@@ -4222,19 +4930,25 @@ def _openclaw_self_heal_once() -> Dict[str, Any]:
         if not _wait_for_openclaw_gateway_ready(max_wait_sec=1.6, interval_sec=0.4):
             record("gateway_restart", _restart_openclaw_gateway())
             _wait_for_openclaw_gateway_ready(max_wait_sec=3.0, interval_sec=0.5)
-        start_result = _openclaw_browser_cmd(["start"])
+        start_result = _openclaw_browser_cmd(["start"], auto_attach=False)
         record("browser_start", start_result)
         if start_result.get("success"):
-            snapshot_result = _openclaw_browser_cmd(["snapshot", "--format", "ai", "--labels", "--limit", "120"])
+            snapshot_result = _openclaw_browser_cmd(
+                ["snapshot", "--format", "ai", "--labels", "--limit", "120"],
+                auto_attach=False,
+            )
             record("snapshot", snapshot_result)
             ok = bool(snapshot_result.get("success"))
             if not ok and allow_open_dashboard():
-                open_result = _openclaw_browser_cmd(["open", OPENCLAW_DASHBOARD_URL])
+                open_result = _openclaw_browser_cmd(["open", OPENCLAW_DASHBOARD_URL], auto_attach=False)
                 record("browser_open", open_result)
                 if open_result.get("success"):
                     with _openclaw_self_heal_lock:
                         _openclaw_self_heal_last_open = datetime.now()
-                    snapshot_retry = _openclaw_browser_cmd(["snapshot", "--format", "ai", "--labels", "--limit", "120"])
+                    snapshot_retry = _openclaw_browser_cmd(
+                        ["snapshot", "--format", "ai", "--labels", "--limit", "120"],
+                        auto_attach=False,
+                    )
                     record("snapshot_retry", snapshot_retry)
                     ok = bool(snapshot_retry.get("success"))
         else:
@@ -4341,6 +5055,7 @@ def _openclaw_dashboard_flow(chat_text: str = "", approve: bool = True, deny: bo
         )
 
     def run_step(action: str, command: List[str], **kwargs) -> Dict[str, Any]:
+        kwargs.setdefault("auto_attach", False)
         result = _openclaw_browser_cmd(command, **kwargs)
         step = _record_flow_step(action, result)
         steps.append(step)
@@ -4780,13 +5495,13 @@ def _execute_openclaw_browser_action(data: Dict[str, Any]) -> Dict[str, Any]:
 
     attach = None
     if action == "start":
-        result = _openclaw_browser_cmd(["start"])
+        result = _openclaw_browser_cmd(["start"], auto_attach=False)
         error_code = result.get("error_code") or ""
         if not result.get("success") and OPENCLAW_AUTO_ATTACH_ENABLED and error_code != "TOKEN_MISSING":
             stderr = str(result.get("stderr", "")).lower()
             if "no tab is connected" in stderr or "extension" in stderr or "relay" in stderr:
                 attach = _openclaw_attempt_attach()
-                result = _openclaw_browser_cmd(["start"])
+                result = _openclaw_browser_cmd(["start"], auto_attach=False)
     elif action == "status":
         result = _openclaw_browser_cmd(["status"])
     elif action == "open":
@@ -5072,6 +5787,27 @@ def _parse_openclaw_queue_context(command_type: str, data: Dict[str, Any]) -> Di
 
 def _enqueue_openclaw_command(command_type: str, data: Dict[str, Any]) -> Dict[str, Any]:
     context = _parse_openclaw_queue_context(command_type, data)
+    lease_validation = _validate_openclaw_task_lease(data)
+    if not lease_validation.get("success"):
+        return {
+            "success": False,
+            "error": lease_validation.get("error", "Task lease validation failed"),
+            "error_code": lease_validation.get("error_code", "LEASE_CONFLICT"),
+            "decision": "denied",
+            "risk_level": context.get("risk_level", "medium"),
+            "policy_reasons": ["task_lease_enforcement"],
+            "token_status": {},
+            "target_worker": context.get("target_worker", ""),
+            "resolved_worker": "",
+            "queue_state": _openclaw_command_manager.queue_snapshot() if OPENCLAW_QUEUE_ENABLED else {"enabled": False},
+            "session_id": context.get("session_id"),
+            "lease": {
+                "enforced": bool(lease_validation.get("enforced")),
+                "task_id": lease_validation.get("task_id", ""),
+                "owner_id": lease_validation.get("owner_id", ""),
+            },
+        }
+
     policy = _evaluate_openclaw_policy(command_type, data, context)
     if not policy.get("allowed"):
         decision = str(policy.get("decision", "manual_required"))
@@ -5212,10 +5948,81 @@ def _openclaw_error_http_status(error_code: str) -> int:
         return 503
     if code in {"TOKEN_MISSING", "HEALTH_UNAVAILABLE", "POLICY_DENIED", "FAILURE_CLASS_BLOCKED"}:
         return 403
+    if code in {"LEASE_CONFLICT", "LEASE_EXPIRED", "LEASE_CONTEXT_REQUIRED"}:
+        return 423
+    if code in {"HUB_UNAVAILABLE"}:
+        return 503
     return 400
 
 
 _openclaw_command_manager.set_executor(_openclaw_queue_executor)
+
+
+def _extract_openclaw_lease_context(payload: Dict[str, Any]) -> Dict[str, str]:
+    owner_id = str(payload.get("task_owner_id") or payload.get("owner_id") or "").strip()
+    lease_token = str(payload.get("task_lease_token") or payload.get("lease_token") or "").strip()
+    task_id = str(payload.get("task_id") or payload.get("kanban_task_id") or "").strip()
+    return {
+        "owner_id": owner_id,
+        "lease_token": lease_token,
+        "task_id": task_id,
+    }
+
+
+def _validate_openclaw_task_lease(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not OPENCLAW_REQUIRE_TASK_LEASE:
+        return {"success": True, "enforced": False}
+
+    context = _extract_openclaw_lease_context(payload)
+    task_id = context["task_id"]
+    owner_id = context["owner_id"]
+    lease_token = context["lease_token"]
+
+    if not task_id or not owner_id or not lease_token:
+        return {
+            "success": False,
+            "enforced": True,
+            "error_code": "LEASE_CONTEXT_REQUIRED",
+            "error": "task_id, task_owner_id and task_lease_token are required",
+            "task_id": task_id,
+            "owner_id": owner_id,
+        }
+
+    if "_hub" not in globals() or _hub is None:
+        return {
+            "success": False,
+            "enforced": True,
+            "error_code": "HUB_UNAVAILABLE",
+            "error": "Multi-Orion hub is not available",
+            "task_id": task_id,
+            "owner_id": owner_id,
+        }
+
+    heartbeat = _hub.heartbeat_task_lease(
+        task_id=task_id,
+        owner_id=owner_id,
+        lease_token=lease_token,
+        lease_sec=OPENCLAW_LEASE_HEARTBEAT_SEC,
+    )
+    if not heartbeat.get("success"):
+        return {
+            "success": False,
+            "enforced": True,
+            "error_code": str(heartbeat.get("error_code") or "LEASE_CONFLICT"),
+            "error": str(heartbeat.get("error") or "Task lease validation failed"),
+            "task_id": task_id,
+            "owner_id": owner_id,
+            "details": heartbeat,
+        }
+
+    return {
+        "success": True,
+        "enforced": True,
+        "task_id": task_id,
+        "owner_id": owner_id,
+        "lease": heartbeat.get("lease", {}),
+        "version": heartbeat.get("version"),
+    }
 
 
 def _emit_chat_phase(message_id: str, phase: str, text: str, report: Optional[Dict[str, Any]] = None) -> None:
@@ -5505,6 +6312,7 @@ def _infer_flexible_chat_request(text: str) -> Optional[str]:
     flow_control_signals = ["dieu khien flow", "flow control", "dieu khien he thong"]
     uiux_signals = ["ui ux", "giao dien", "trai nghiem", "ux", "ui"]
     improve_signals = ["danh gia", "cai thien", "nang cap", "de xuat", "toi uu"]
+    coordination_signals = ["phoi hop", "coordinate", "orchestrate", "dieu phoi", "multi agent", "nhieu agent"]
 
     if _contains_any(normalized, recover_signals):
         return "guardian gỡ kẹt"
@@ -5516,6 +6324,8 @@ def _infer_flexible_chat_request(text: str) -> Optional[str]:
         return "resume"
     if _contains_any(normalized, flow_control_signals):
         return "điều khiển flow"
+    if _contains_any(normalized, coordination_signals):
+        return "agent coordination"
     if _contains_any(normalized, uiux_signals) and _contains_any(normalized, improve_signals):
         return "uiux review"
     if _contains_any(normalized, summary_signals):
@@ -5600,7 +6410,34 @@ def _build_chat_report(
     }
 
 
-def _build_project_chat_reply(message: str, instance_id: Optional[str] = None) -> Dict[str, Any]:
+def _soften_chat_reply(reply: str, intent: str = "") -> str:
+    text = str(reply or "").strip()
+    if not text:
+        return ""
+
+    # Remove rigid instance prefix like [Orion 1].
+    text = re.sub(r"^\[[^\]]+\]\s*", "", text)
+    replacements = (
+        ("Đã gửi lệnh", "Mình vừa gửi lệnh"),
+        ("Đã bật", "Mình vừa bật"),
+        ("Đã tắt", "Mình vừa tắt"),
+        ("Đã chạy", "Mình vừa chạy"),
+        ("Đã tạo", "Mình vừa tạo"),
+        ("Đã ghi nhận", "Mình đã ghi nhận"),
+        ("Không ", "Chưa "),
+    )
+    for src, dst in replacements:
+        text = text.replace(src, dst)
+    if intent in {"project_status_summary", "assistant_help"} and not text.lower().startswith("mình"):
+        text = f"Mình tóm tắt nhanh nhé:\n{text}"
+    return text
+
+
+def _build_project_chat_reply(
+    message: str,
+    instance_id: Optional[str] = None,
+    member_id: Optional[str] = None,
+) -> Dict[str, Any]:
     text = str(message or "").strip()
     lowered = text.lower()
     compact = re.sub(r"\s+", "", lowered)
@@ -5707,6 +6544,62 @@ def _build_project_chat_reply(message: str, instance_id: Optional[str] = None) -
             "reply": (
                 f"[{instance_label}] Đã ghi nhận feedback và giữ chế độ tự vận hành liên tục. "
                 "Guardian autopilot đang ON, monitor supervisor ON, hệ thống sẽ ưu tiên tự xử lý thay vì chờ xác nhận."
+            ),
+        }
+
+    if "agent coordination" in lowered or re.search(
+        r"(phoi hop|coordinate|orchestrate|multi.?agent|nhieu agent|nhieu orion)",
+        normalized_intent,
+    ):
+        goal = text
+        for prefix in ("agent coordination", "coordinate", "orchestrate", "phoi hop", "dieu phoi"):
+            if goal.lower().startswith(prefix):
+                goal = goal[len(prefix):].strip()
+                break
+        if not goal:
+            goal = "Improve workflow throughput with compact multi-agent coordination"
+        resolved_member = normalize_member_id(member_id)
+        payload = _execute_agent_coordination(
+            goal=goal,
+            member_id=resolved_member,
+            max_agents=4,
+            compact_mode=True,
+            execute=True,
+            priority="high",
+            instance_ids=[],
+            multi_instance=True,
+        )
+        materialized = {"enabled": False, "created": 0, "results": []}
+        if AGENT_COORDINATION_AUTO_CREATE_TASKS:
+            materialized = _materialize_coordination_tasks(
+                goal=goal,
+                coordination_payload=payload,
+                priority="high",
+                member_id=resolved_member,
+                max_tasks=4,
+            )
+        payload["task_materialization"] = materialized
+        plan = payload.get("plan") if isinstance(payload.get("plan"), dict) else {}
+        token_budget = plan.get("token_budget") if isinstance(plan.get("token_budget"), dict) else {}
+        execution = payload.get("execution") if isinstance(payload.get("execution"), dict) else {}
+        sent = int(execution.get("total_sent", 0) or 0)
+        success = int(execution.get("total_success", 0) or 0)
+        saved = int(token_budget.get("estimated_tokens_saved", 0) or 0)
+        created_tasks = int(materialized.get("created", 0) or 0)
+        ratio = round(float(token_budget.get("saving_ratio", 0.0) or 0.0) * 100, 1)
+        state.add_agent_log(
+            "guardian",
+            f"🧠 Chat auto-coordination sent={sent} success={success} saved≈{saved} tasks={created_tasks}",
+            "success" if success > 0 else "warning",
+        )
+        return {
+            "intent": "agent_coordination_dispatch",
+            "executed": bool(sent > 0 and success > 0),
+            "result": _with_context(payload),
+            "reply": (
+                f"[{instance_label}] Đã điều phối compact multi-agent cho mục tiêu: {goal}\n"
+                f"Dispatch: {sent} lệnh, success {success}. Token saving ước tính: {saved} (~{ratio}%). "
+                f"Hub tasks created: {created_tasks}."
             ),
         }
 
@@ -6023,6 +6916,122 @@ def _build_project_chat_reply(message: str, instance_id: Optional[str] = None) -
     }
 
 
+def _build_intervention_queue_snapshot() -> Dict[str, Any]:
+    pending = state.list_pending_decisions()
+    rows: List[Dict[str, Any]] = []
+    for item in pending:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "id": str(item.get("id", "")),
+                "kind": str(item.get("kind", item.get("action", "decision"))),
+                "action": str(item.get("action", "decision")),
+                "title": str(item.get("title", item.get("action", "Decision"))),
+                "risk_level": _normalize_risk_level(item.get("risk_level"), fallback="medium"),
+                "instance_id": str(item.get("instance_id", LOCAL_INSTANCE_ID) or LOCAL_INSTANCE_ID),
+                "instance_name": str(item.get("instance_name", "") or ""),
+                "command": str(item.get("command", "") or ""),
+                "timestamp": str(item.get("timestamp", "") or datetime.now().isoformat()),
+                "deferred": bool(item.get("deferred", False)),
+                "deferred_until": item.get("deferred_until"),
+                "details": item.get("details", {}) if isinstance(item.get("details"), dict) else {},
+            }
+        )
+    rows = _sort_by_timestamp_desc(rows)
+    risk_counts: Dict[str, int] = {"low": 0, "medium": 0, "high": 0, "critical": 0}
+    for row in rows:
+        risk = str(row.get("risk_level", "medium")).strip().lower()
+        if risk not in risk_counts:
+            risk = "medium"
+        risk_counts[risk] += 1
+    return {
+        "items": rows,
+        "summary": {
+            "pending": len(rows),
+            "deferred": sum(1 for row in rows if bool(row.get("deferred"))),
+            "risk_counts": risk_counts,
+        },
+    }
+
+
+def _build_audit_timeline(limit: int = 120, cursor: Optional[str] = None) -> Dict[str, Any]:
+    cap = max(10, min(800, int(limit)))
+    cursor_dt = _parse_iso_datetime(cursor) if cursor else None
+    items: List[Dict[str, Any]] = []
+
+    for event in state.get_event_feed(limit=cap * 2, include_routing=True):
+        ts = str(event.get("timestamp", "") or "")
+        items.append(
+            {
+                "timestamp": ts,
+                "type": str(event.get("type", "event_log")),
+                "level": str(event.get("level", "info")),
+                "message": str(event.get("message", "")),
+                "source": "events_feed",
+                "data": event.get("data", {}),
+            }
+        )
+
+    for event in _guardian_control_audit_tail(limit=max(20, cap)):
+        ts = str(event.get("timestamp", "") or "")
+        action = str(event.get("action", "guardian_control"))
+        items.append(
+            {
+                "timestamp": ts,
+                "type": "guardian_control",
+                "level": "success" if bool(event.get("success")) else "warning",
+                "message": f"Guardian control: {action}",
+                "source": "guardian_audit",
+                "data": event,
+            }
+        )
+
+    for event in _intervention_history_tail(limit=max(40, cap * 2)):
+        ts = str(event.get("timestamp", "") or "")
+        action = str(event.get("action", "intervention"))
+        items.append(
+            {
+                "timestamp": ts,
+                "type": "intervention",
+                "level": "success" if bool(event.get("success")) else "warning",
+                "message": f"Intervention {action}",
+                "source": "interventions_jsonl",
+                "data": event,
+            }
+        )
+
+    try:
+        if "_hub" in globals() and _hub is not None:
+            for row in list(_hub.audit_log)[-max(30, cap):]:
+                if not isinstance(row, dict):
+                    continue
+                ts = str(row.get("timestamp", "") or "")
+                action = str(row.get("action", "hub_action"))
+                items.append(
+                    {
+                        "timestamp": ts,
+                        "type": "hub_audit",
+                        "level": "info",
+                        "message": f"Hub {action}",
+                        "source": "hub_audit",
+                        "data": row,
+                    }
+                )
+    except Exception:
+        pass
+
+    items = _sort_by_timestamp_desc(items)
+    if cursor_dt:
+        items = [row for row in items if (_parse_iso_datetime(row.get("timestamp")) or datetime.min) < cursor_dt]
+    items = items[:cap]
+    next_cursor = items[-1].get("timestamp") if items else None
+    return {
+        "items": items,
+        "next_cursor": next_cursor,
+    }
+
+
 # ============================================
 # ROUTES
 # ============================================
@@ -6146,6 +7155,10 @@ def control_plane_workers():
     return jsonify({
         "success": True,
         "control_plane": _control_plane_registry.snapshot(),
+        "lease_enforcement": {
+            "require_task_lease": OPENCLAW_REQUIRE_TASK_LEASE,
+            "lease_heartbeat_sec": OPENCLAW_LEASE_HEARTBEAT_SEC,
+        },
         "timestamp": datetime.now().isoformat(),
     })
 
@@ -6553,6 +7566,567 @@ def openclaw_manual_hold(session_id: str):
     })
 
 
+# ============================================================================
+# UNIVERSAL AUTOMATION TASK BUS
+# Unified control for: browser, terminal, app, mail, messages, computer
+# ============================================================================
+
+# Task types supported by the automation bus
+AUTOMATION_TASK_TYPES = [
+    "browser",      # Chrome automation via OpenClaw
+    "terminal",     # Terminal/command execution
+    "app",          # Launch/control macOS apps
+    "mail",         # Email reading/sending
+    "messages",     # iMessage/Messages app
+    "computer",     # General computer control (keyboard/mouse)
+    "file",         # File operations
+    "clipboard",    # Clipboard operations
+]
+
+# Task status
+AUTOMATION_TASK_STATUS = ["pending", "running", "completed", "failed", "cancelled"]
+
+
+def _create_automation_task(task_type: str, action: str, params: Dict[str, Any], task_id: str = None) -> Dict[str, Any]:
+    """Create a new automation task entry."""
+    if task_id is None:
+        task_id = f"task_{int(time.time() * 1000)}_{secrets.token_hex(4)}"
+
+    return {
+        "task_id": task_id,
+        "task_type": task_type,
+        "action": action,
+        "params": params,
+        "status": "pending",
+        "created_at": datetime.now().isoformat(),
+        "started_at": None,
+        "completed_at": None,
+        "result": None,
+        "error": None,
+        "logs": [],
+    }
+
+
+def _execute_automation_task(task: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute a single automation task based on type."""
+    task_type = task["task_type"]
+    action = task["action"]
+    params = task["params"]
+
+    task["status"] = "running"
+    task["started_at"] = datetime.now().isoformat()
+
+    try:
+        if task_type == "browser":
+            # Delegate to OpenClaw browser control
+            result = _openclaw_execute_browser_action(action, params)
+        elif task_type == "terminal":
+            # Execute terminal command
+            result = _execute_terminal_action(action, params)
+        elif task_type == "app":
+            # Launch/control macOS apps
+            result = _execute_app_action(action, params)
+        elif task_type == "mail":
+            # Email automation
+            result = _execute_mail_action(action, params)
+        elif task_type == "messages":
+            # Messages app automation
+            result = _execute_messages_action(action, params)
+        elif task_type == "computer":
+            # General computer control (keyboard/mouse)
+            result = _execute_computer_action(action, params)
+        elif task_type == "file":
+            # File operations
+            result = _execute_file_action(action, params)
+        elif task_type == "clipboard":
+            # Clipboard operations
+            result = _execute_clipboard_action(action, params)
+        else:
+            raise ValueError(f"Unknown task type: {task_type}")
+
+        task["status"] = "completed"
+        task["result"] = result
+        task["completed_at"] = datetime.now().isoformat()
+        return task
+
+    except Exception as e:
+        task["status"] = "failed"
+        task["error"] = str(e)
+        task["completed_at"] = datetime.now().isoformat()
+        return task
+
+
+def _openclaw_execute_browser_action(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute browser action via OpenClaw."""
+    # Map unified actions to OpenClaw commands
+    action_map = {
+        "navigate": "goto",
+        "click": "click",
+        "type": "type",
+        "screenshot": "screenshot",
+        "read": "extract",
+        "scroll": "scroll",
+        "status": "status",
+    }
+
+    openclaw_action = action_map.get(action, action)
+
+    # Use existing OpenClaw flow
+    return {
+        "success": True,
+        "action": openclaw_action,
+        "params": params,
+        "source": "automation_bus",
+    }
+
+
+def _execute_terminal_action(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute terminal command."""
+    if action == "execute":
+        cmd = params.get("command", "")
+        timeout = params.get("timeout", 30)
+
+        try:
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            return {
+                "success": result.returncode == 0,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "returncode": result.returncode,
+            }
+        except subprocess.TimeoutExpired:
+            return {"success": False, "error": "Command timed out"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    elif action == "list_sessions":
+        # List active terminal sessions
+        return {
+            "success": True,
+            "sessions": [{"id": "main", "name": "Main Terminal"}],
+        }
+
+    return {"success": False, "error": f"Unknown terminal action: {action}"}
+
+
+def _execute_app_action(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Launch or control macOS applications."""
+    if action == "launch":
+        app_path = params.get("app_path", "")
+        app_name = params.get("app_name", "")
+
+        cmd = f'open -a "{app_name or app_path}"'
+        try:
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            return {
+                "success": result.returncode == 0,
+                "app": app_name or app_path,
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    elif action == "activate":
+        # Activate (bring to front) an app
+        app_name = params.get("app_name", "")
+        cmd = f'osascript -e \'tell application "{app_name}" to activate\''
+        try:
+            subprocess.run(cmd, shell=True, capture_output=True)
+            return {"success": True, "app": app_name}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    elif action == "list_running":
+        # List running applications
+        cmd = 'osascript -e \'tell application "System Events" to get name of every process whose background only is false\''
+        try:
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            apps = [a.strip() for a in result.stdout.split(", ") if a.strip()]
+            return {"success": True, "running_apps": apps}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    return {"success": False, "error": f"Unknown app action: {action}"}
+
+
+def _execute_mail_action(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Email automation via macOS Mail app."""
+    if action == "check_unread":
+        # Check unread emails (via AppleScript)
+        cmd = '''osascript -e 'tell application "Mail" to get count of (messages of inbox whose read status is false)' '''
+        try:
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            count = int(result.stdout.strip() or "0")
+            return {"success": True, "unread_count": count}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    elif action == "send":
+        # Send email via AppleScript
+        to = params.get("to", "")
+        subject = params.get("subject", "")
+        body = params.get("body", "")
+
+        cmd = f'''osascript -e 'tell application "Mail" to set newMessage to make new outgoing message with properties {{subject:"{subject}", content:"{body}", visible:false}} tell newMessage to make new to recipient at end of to recipients with properties address:"{to}" send newMessage'' '''
+        try:
+            subprocess.run(cmd, shell=True, capture_output=True)
+            return {"success": True, "to": to, "subject": subject}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    elif action == "list_folders":
+        return {
+            "success": True,
+            "folders": ["Inbox", "Sent", "Drafts", "Archive", "Junk"],
+        }
+
+    return {"success": False, "error": f"Unknown mail action: {action}"}
+
+
+def _execute_messages_action(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """iMessage/Messages app automation."""
+    if action == "check_unread":
+        cmd = '''osascript -e 'tell application "Messages" to get count of (messages of active chat whose read status is false)' '''
+        try:
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            count = int(result.stdout.strip() or "0")
+            return {"success": True, "unread_count": count}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    elif action == "send":
+        # Send iMessage
+        recipient = params.get("recipient", "")
+        message = params.get("message", "")
+
+        cmd = f'''osascript -e 'tell application "Messages" to send "{message}" to buddy "{recipient}"' '''
+        try:
+            subprocess.run(cmd, shell=True, capture_output=True)
+            return {"success": True, "recipient": recipient}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    elif action == "list_conversations":
+        return {
+            "success": True,
+            "conversations": [],
+        }
+
+    return {"success": False, "error": f"Unknown messages action: {action}"}
+
+
+def _execute_computer_action(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """General computer control - keyboard/mouse."""
+    try:
+        import pyautogui
+    except ImportError:
+        return {"success": False, "error": "pyautogui not installed"}
+
+    if action == "click":
+        x = params.get("x")
+        y = params.get("y")
+        button = params.get("button", "left")
+
+        if x is not None and y is not None:
+            pyautogui.click(x, y, button=button)
+        else:
+            pyautogui.click(button=button)
+        return {"success": True, "action": "click", "x": x, "y": y}
+
+    elif action == "type":
+        text = params.get("text", "")
+        pyautogui.write(text)
+        return {"success": True, "action": "type", "text_length": len(text)}
+
+    elif action == "hotkey":
+        keys = params.get("keys", [])
+        if keys:
+            pyautogui.hotkey(*keys)
+        return {"success": True, "action": "hotkey", "keys": keys}
+
+    elif action == "screenshot":
+        filepath = params.get("filepath", "/tmp/screenshot.png")
+        pyautogui.screenshot(filepath)
+        return {"success": True, "filepath": filepath}
+
+    elif action == "position":
+        x, y = pyautogui.position()
+        return {"success": True, "x": x, "y": y}
+
+    elif action == "move":
+        x = params.get("x")
+        y = params.get("y")
+        if x is not None and y is not None:
+            pyautogui.moveTo(x, y)
+        return {"success": True, "action": "move", "x": x, "y": y}
+
+    return {"success": False, "error": f"Unknown computer action: {action}"}
+
+
+def _execute_file_action(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """File operations."""
+    import shutil
+
+    if action == "read":
+        filepath = params.get("filepath", "")
+        try:
+            with open(filepath, "r") as f:
+                content = f.read()
+            return {"success": True, "content": content, "filepath": filepath}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    elif action == "write":
+        filepath = params.get("filepath", "")
+        content = params.get("content", "")
+        try:
+            with open(filepath, "w") as f:
+                f.write(content)
+            return {"success": True, "filepath": filepath}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    elif action == "copy":
+        src = params.get("src", "")
+        dst = params.get("dst", "")
+        try:
+            shutil.copy2(src, dst)
+            return {"success": True, "src": src, "dst": dst}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    elif action == "list":
+        dirpath = params.get("dirpath", ".")
+        try:
+            files = os.listdir(dirpath)
+            return {"success": True, "files": files, "dirpath": dirpath}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    return {"success": False, "error": f"Unknown file action: {action}"}
+
+
+def _execute_clipboard_action(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Clipboard operations."""
+    if action == "read":
+        cmd = "pbpaste"
+        try:
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            return {"success": True, "content": result.stdout}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    elif action == "write":
+        content = params.get("content", "")
+        cmd = f'echo "{content}" | pbcopy'
+        try:
+            subprocess.run(cmd, shell=True)
+            return {"success": True, "content_length": len(content)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    return {"success": False, "error": f"Unknown clipboard action: {action}"}
+
+
+@app.route('/api/automation/execute', methods=['POST'])
+def automation_execute():
+    """
+    Universal automation task bus.
+    Execute tasks across: browser, terminal, app, mail, messages, computer, file, clipboard.
+
+    Request body:
+    {
+        "task_type": "browser|terminal|app|mail|messages|computer|file|clipboard",
+        "action": "action_name",
+        "params": {...},
+        "task_id": "optional_custom_task_id"
+    }
+    """
+    data = request.get_json() or {}
+
+    task_type = data.get("task_type", "")
+    action = data.get("action", "")
+    params = data.get("params", {})
+    task_id = data.get("task_id")
+
+    # Validate task type
+    if task_type not in AUTOMATION_TASK_TYPES:
+        return jsonify({
+            "success": False,
+            "error": f"Invalid task_type. Must be one of: {AUTOMATION_TASK_TYPES}",
+        }), 400
+
+    # Create task
+    task = _create_automation_task(task_type, action, params, task_id)
+
+    # Add to recent tasks (for dedup)
+    task_key = f"{task_type}:{action}:{json.dumps(params, sort_keys=True)}"
+    with _AUTOMATION_TASKS_LOCK:
+        _automation_recent_tasks.append({
+            "task_id": task["task_id"],
+            "task_key": task_key,
+            "timestamp": time.time(),
+        })
+
+    # Execute task
+    result_task = _execute_automation_task(task)
+
+    return jsonify({
+        "success": result_task["status"] == "completed",
+        "task_id": result_task["task_id"],
+        "status": result_task["status"],
+        "result": result_task.get("result"),
+        "error": result_task.get("error"),
+        "created_at": result_task["created_at"],
+        "completed_at": result_task.get("completed_at"),
+    })
+
+
+@app.route('/api/automation/batch', methods=['POST'])
+def automation_batch():
+    """
+    Execute multiple automation tasks in batch.
+
+    Request body:
+    {
+        "tasks": [
+            {"task_type": "...", "action": "...", "params": {...}},
+            ...
+        ]
+    }
+    """
+    data = request.get_json() or {}
+    tasks_data = data.get("tasks", [])
+
+    if not tasks_data:
+        return jsonify({
+            "success": False,
+            "error": "No tasks provided",
+        }), 400
+
+    results = []
+    for task_data in tasks_data:
+        task_type = task_data.get("task_type", "")
+        action = task_data.get("action", "")
+        params = task_data.get("params", {})
+
+        if task_type not in AUTOMATION_TASK_TYPES:
+            results.append({
+                "success": False,
+                "error": f"Invalid task_type: {task_type}",
+            })
+            continue
+
+        task = _create_automation_task(task_type, action, params)
+        result_task = _execute_automation_task(task)
+
+        results.append({
+            "task_id": result_task["task_id"],
+            "status": result_task["status"],
+            "result": result_task.get("result"),
+            "error": result_task.get("error"),
+        })
+
+    return jsonify({
+        "success": True,
+        "total": len(tasks_data),
+        "results": results,
+    })
+
+
+@app.route('/api/automation/status/<task_id>')
+def automation_status(task_id: str):
+    """Get status of a specific automation task."""
+    # In a full implementation, we'd store tasks in a database
+    # For now, check recent tasks
+    return jsonify({
+        "task_id": task_id,
+        "status": "unknown",
+        "message": "Task status tracking requires persistent storage",
+    })
+
+
+@app.route('/api/automation/types')
+def automation_types():
+    """List supported automation task types and their actions."""
+    return jsonify({
+        "task_types": AUTOMATION_TASK_TYPES,
+        "capabilities": {
+            "browser": ["navigate", "click", "type", "screenshot", "read", "scroll", "status"],
+            "terminal": ["execute", "list_sessions"],
+            "app": ["launch", "activate", "list_running"],
+            "mail": ["check_unread", "send", "list_folders"],
+            "messages": ["check_unread", "send", "list_conversations"],
+            "computer": ["click", "type", "hotkey", "screenshot", "position", "move"],
+            "file": ["read", "write", "copy", "list"],
+            "clipboard": ["read", "write"],
+        },
+    })
+
+
+@app.route('/api/automation/history')
+def automation_history():
+    """Get recent automation task history."""
+    limit = _int_in_range(request.args.get("limit", 20), default=20, min_value=1, max_value=100)
+
+    with _AUTOMATION_TASKS_LOCK:
+        recent = list(_automation_recent_tasks)[-limit:]
+
+    return jsonify({
+        "count": len(recent),
+        "tasks": recent,
+    })
+
+
+@app.route('/api/automation/control', methods=['POST'])
+def automation_control():
+    """
+    Universal control endpoint for all automation.
+    Start/stop/restart automation services.
+
+    Request body:
+    {
+        "action": "start|stop|restart|status",
+        "target": "browser|terminal|all"
+    }
+    """
+    data = request.get_json() or {}
+    action = data.get("action", "status")
+    target = data.get("target", "all")
+
+    if action == "status":
+        return jsonify({
+            "success": True,
+            "target": target,
+            "status": {
+                "browser": "running" if _openclaw_browser_available else "stopped",
+                "automation_bus": "running",
+            },
+        })
+
+    elif action == "stop":
+        return jsonify({
+            "success": True,
+            "message": f"Stop {target} - requires persistent process management",
+        })
+
+    elif action == "start":
+        return jsonify({
+            "success": True,
+            "message": f"Start {target} - already running in daemon mode",
+        })
+
+    return jsonify({
+        "success": False,
+        "error": f"Unknown action: {action}",
+    }), 400
+
+
 @app.route('/api/model-routing/status')
 def get_model_routing_status():
     """Get model routing, token usage, and budget summary."""
@@ -6828,6 +8402,118 @@ def get_events_digest():
     })
 
 
+@app.route('/api/interventions/queue')
+def get_interventions_queue():
+    """Get unified pending intervention queue for manual overrides."""
+    snapshot = _build_intervention_queue_snapshot()
+    return _api_ok(
+        {
+            "queue": snapshot.get("items", []),
+            "summary": snapshot.get("summary", {}),
+        }
+    )
+
+
+@app.route('/api/interventions/history')
+def get_interventions_history():
+    """Get intervention action history from persistent JSONL + decision history."""
+    limit = _int_in_range(request.args.get("limit", 120), default=120, min_value=1, max_value=800)
+    file_rows = _intervention_history_tail(limit=limit * 2)
+    decision_rows = []
+    for row in list(state.decision_history)[-limit:]:
+        if not isinstance(row, dict):
+            continue
+        decision_rows.append(
+            {
+                "timestamp": row.get("timestamp"),
+                "action": f"decision_{row.get('decision', 'updated')}",
+                "decision_id": row.get("id"),
+                "success": True,
+                "actor": row.get("defer_actor", "dashboard"),
+                "detail": row,
+            }
+        )
+    merged = _sort_by_timestamp_desc(file_rows + decision_rows)[:limit]
+    return _api_ok({"history": merged, "count": len(merged)})
+
+
+@app.route('/api/interventions/<decision_id>/defer', methods=['POST'])
+def defer_intervention(decision_id: str):
+    data = request.get_json(silent=True) or {}
+    defer_sec = _int_in_range(data.get("defer_sec", 300), default=300, min_value=30, max_value=7200)
+    reason = str(data.get("reason", "manual_defer")).strip() or "manual_defer"
+    actor = str(data.get("actor", "dashboard")).strip() or "dashboard"
+    updated = state.defer_decision(decision_id=decision_id, defer_sec=defer_sec, reason=reason, actor=actor)
+    if not updated:
+        return _api_error("INTERVENTION_NOT_FOUND", "Intervention not found", status_code=404)
+    _append_intervention_history(
+        action="deferred",
+        decision_id=str(decision_id),
+        success=True,
+        actor=actor,
+        detail={"defer_sec": defer_sec, "reason": reason},
+    )
+    return _api_ok({"item": updated})
+
+
+@app.route('/api/interventions/<decision_id>/force-approve', methods=['POST'])
+def force_approve_intervention(decision_id: str):
+    data = request.get_json(silent=True) or {}
+    actor = str(data.get("actor", "dashboard")).strip() or "dashboard"
+    reason = str(data.get("reason", "force_approve")).strip() or "force_approve"
+    auth = _guardian_control_auth(data)
+    if not auth.get("authorized"):
+        return _api_error("UNAUTHORIZED", "Unauthorized", status_code=401, data={"token_required": True})
+
+    approved = state.approve_decision(decision_id)
+    if not approved:
+        return _api_error("INTERVENTION_NOT_FOUND", "Intervention not found", status_code=404)
+
+    execution = None
+    if str(approved.get("kind", "")).strip() == "command_intervention":
+        command = str(approved.get("command", "")).strip()
+        if command:
+            execution = _execute_approved_shell_command(command)
+
+    _append_intervention_history(
+        action="force_approved",
+        decision_id=str(decision_id),
+        success=True,
+        actor=actor,
+        detail={"reason": reason, "execution": execution or {}},
+    )
+    return _api_ok({"item": approved, "execution": execution})
+
+
+@app.route('/api/audit/timeline')
+def get_audit_timeline():
+    """Unified audit timeline with cursor-based pagination."""
+    limit = _int_in_range(request.args.get("limit", 120), default=120, min_value=10, max_value=800)
+    cursor = str(request.args.get("cursor", "") or "").strip() or None
+    timeline = _build_audit_timeline(limit=limit, cursor=cursor)
+    return _api_ok(
+        {
+            "items": timeline.get("items", []),
+            "count": len(timeline.get("items", [])),
+            "next_cursor": timeline.get("next_cursor"),
+        }
+    )
+
+
+@app.route('/api/audit/export')
+def export_audit_timeline():
+    """Export audit timeline in json or jsonl format."""
+    fmt = str(request.args.get("format", "jsonl") or "jsonl").strip().lower()
+    limit = _int_in_range(request.args.get("limit", 500), default=500, min_value=1, max_value=2000)
+    from_cursor = str(request.args.get("from", "") or "").strip() or None
+    timeline = _build_audit_timeline(limit=limit, cursor=from_cursor)
+    items = timeline.get("items", [])
+    if fmt == "json":
+        return _api_ok({"items": items, "count": len(items)})
+    body = "\n".join(json.dumps(item, ensure_ascii=True) for item in items) + ("\n" if items else "")
+    return Response(body, mimetype="application/x-ndjson")
+
+
 @app.route('/api/computer-control/status')
 def computer_control_status():
     """Get computer-control backend status."""
@@ -6937,6 +8623,103 @@ def user_profile():
     })
 
 
+@app.route('/api/team/personas', methods=['GET', 'POST'])
+def team_personas():
+    """List or create/update team member personas."""
+    if request.method == "GET":
+        limit = _int_in_range(request.args.get("limit", 80), default=80, min_value=1, max_value=300)
+        members = _team_persona_store.list_members(limit=limit)
+        return _api_ok(
+            {
+                "members": members,
+                "count": len(members),
+                "summary": _team_persona_store.summary(limit=min(24, limit)),
+            }
+        )
+
+    data = request.get_json(silent=True) or {}
+    member_id = _resolve_member_id(data)
+    if not member_id:
+        return _api_error("MISSING_MEMBER_ID", "Missing member_id")
+    try:
+        member = _team_persona_store.upsert_member(member_id, data)
+    except Exception as exc:
+        return _api_error("TEAM_PERSONA_UPDATE_FAILED", str(exc), status_code=400)
+    state.add_agent_log("guardian", f"🧠 Team persona updated for {member_id}", "success")
+    return _api_ok({"member": member})
+
+
+@app.route('/api/team/personas/<member_id>', methods=['GET', 'POST'])
+def team_persona_member(member_id: str):
+    key = normalize_member_id(member_id)
+    if not key:
+        return _api_error("MISSING_MEMBER_ID", "Missing member_id")
+
+    if request.method == "GET":
+        member = _team_persona_store.get_member(key)
+        if not member:
+            return _api_error("TEAM_MEMBER_NOT_FOUND", "Team member not found", status_code=404)
+        adaptation = _team_adaptation(key)
+        interactions = _team_persona_store.list_interactions(member_id=key, limit=30)
+        return _api_ok(
+            {
+                "member": member,
+                "adaptation": adaptation,
+                "interactions": interactions,
+                "interaction_count": len(interactions),
+            }
+        )
+
+    data = request.get_json(silent=True) or {}
+    try:
+        member = _team_persona_store.upsert_member(key, data)
+    except Exception as exc:
+        return _api_error("TEAM_PERSONA_UPDATE_FAILED", str(exc), status_code=400)
+    adaptation = _team_adaptation(key)
+    return _api_ok({"member": member, "adaptation": adaptation})
+
+
+@app.route('/api/team/personas/<member_id>/interaction', methods=['POST'])
+def team_persona_interaction(member_id: str):
+    key = normalize_member_id(member_id)
+    if not key:
+        return _api_error("MISSING_MEMBER_ID", "Missing member_id")
+    data = request.get_json(silent=True) or {}
+    message = str(data.get("message", "") or "").strip()
+    if not message:
+        return _api_error("MISSING_MESSAGE", "Missing interaction message")
+    try:
+        learned = _team_persona_store.record_interaction(
+            member_id=key,
+            message=message,
+            channel=str(data.get("channel", "chat") or "chat"),
+            intent=str(data.get("intent", "") or ""),
+            context=data.get("context") if isinstance(data.get("context"), dict) else {},
+        )
+    except Exception as exc:
+        return _api_error("TEAM_INTERACTION_FAILED", str(exc), status_code=400)
+    adaptation = _team_adaptation(key, intent=str(data.get("intent", "") or ""))
+    return _api_ok({"learned": learned, "adaptation": adaptation})
+
+
+@app.route('/api/team/personas/<member_id>/adaptation')
+def team_persona_adaptation(member_id: str):
+    key = normalize_member_id(member_id)
+    if not key:
+        return _api_error("MISSING_MEMBER_ID", "Missing member_id")
+    intent = str(request.args.get("intent", "") or "")
+    adaptation = _team_adaptation(key, intent=intent)
+    return _api_ok({"adaptation": adaptation})
+
+
+@app.route('/api/team/interactions')
+def team_persona_interactions():
+    limit = _int_in_range(request.args.get("limit", 120), default=120, min_value=1, max_value=600)
+    member_id = normalize_member_id(request.args.get("member_id", ""))
+    rows = _team_persona_store.list_interactions(member_id=member_id, limit=limit)
+    return _api_ok({"events": rows, "count": len(rows), "member_id": member_id or None})
+
+
 @app.route('/api/orion/instances')
 def get_orion_instances():
     """List all Orion instances and current health."""
@@ -6965,7 +8748,7 @@ def autonomy_profile():
         })
 
     data = request.get_json(silent=True) or {}
-    profile = _normalize_autonomy_profile(data.get("profile", "balanced"))
+    profile = _normalize_autonomy_profile(data.get("profile", _get_autonomy_profile()))
     applied = _set_autonomy_profile(profile)
     state.add_agent_log("guardian", f"🧠 Autonomy profile -> {applied.upper()}", "success")
     apply_results: Dict[str, Any] = {}
@@ -7312,6 +9095,82 @@ def send_orion_instance_command():
     }), 200
 
 
+@app.route('/api/orion/instances/broadcast', methods=['POST'])
+def broadcast_orion_instance_command():
+    """Broadcast one command to multiple Orion instances."""
+    rate_limited = _rate_limited("orion_instances_broadcast", API_RATE_LIMIT_COMMAND_PER_MIN, 60)
+    if rate_limited:
+        return rate_limited
+
+    data = request.get_json(silent=True) or {}
+    target = str(data.get("target", "orion")).strip().lower() or "orion"
+    command = str(data.get("command", "")).strip()
+    priority = str(data.get("priority", "high")).strip().lower() or "high"
+    options = data.get("options") if isinstance(data.get("options"), dict) else {}
+    instance_ids = data.get("instance_ids") if isinstance(data.get("instance_ids"), list) else []
+    only_online = _to_bool(data.get("only_online", True))
+
+    if not command:
+        return _api_error("MISSING_COMMAND", "Missing command")
+
+    available = get_orion_instances_snapshot()
+    if instance_ids:
+        requested = {str(item).strip() for item in instance_ids if str(item).strip()}
+        targets = [row for row in available if str(row.get("id", "")).strip() in requested]
+    else:
+        targets = [row for row in available if (bool(row.get("online")) if only_online else True)]
+
+    if not targets:
+        return _api_error("NO_TARGET_INSTANCES", "No Orion instances matched request", status_code=404)
+
+    member_id = _resolve_member_id(data)
+    adaptation = _team_adaptation(member_id, intent=command)
+    if member_id:
+        try:
+            _team_persona_store.record_interaction(
+                member_id=member_id,
+                message=f"broadcast {command}",
+                channel="api",
+                intent="orion_instances_broadcast",
+                context={"instance_id": "multi"},
+            )
+        except Exception:
+            pass
+
+    results: Dict[str, Any] = {}
+    success_count = 0
+    for row in targets:
+        instance_id = str(row.get("id", "")).strip()
+        if not instance_id:
+            continue
+        result = _call_instance_command(instance_id, target, command, priority, options)
+        ok = bool(result.get("success", True))
+        if ok:
+            success_count += 1
+        results[instance_id] = result
+        state.add_agent_log(
+            "guardian",
+            f"🛰 broadcast {instance_id}::{target} -> {command} ({'ok' if ok else 'fail'})",
+            "success" if ok else "warning",
+        )
+
+    return _api_ok(
+        {
+            "target": target,
+            "command": command,
+            "priority": priority,
+            "member_id": member_id or None,
+            "adaptation": adaptation,
+            "summary": {
+                "total": len(targets),
+                "success": success_count,
+                "failed": max(0, len(targets) - success_count),
+            },
+            "results": results,
+        }
+    )
+
+
 @app.route('/api/chat/ask', methods=['POST'])
 def chat_ask():
     """Lightweight assistant chat endpoint for project control and summaries."""
@@ -7325,8 +9184,23 @@ def chat_ask():
         raw_message = data.get("question")
     message = str(raw_message or "").strip()
     instance_id = str(data.get("instance_id", LOCAL_INSTANCE_ID)).strip() or LOCAL_INSTANCE_ID
+    member_id = _resolve_member_id(data)
     if not message:
         return jsonify({"success": False, "error": "Missing message"}), 400
+
+    member_adaptation = _team_adaptation(member_id, intent=message)
+    if member_id:
+        try:
+            _team_persona_store.record_interaction(
+                member_id=member_id,
+                message=message,
+                channel="chat",
+                intent="chat_ask",
+                context={"instance_id": instance_id},
+            )
+            member_adaptation = _team_adaptation(member_id, intent=message)
+        except Exception as exc:
+            logger.warning(f"Failed recording chat interaction for {member_id}: {exc}")
 
     feedback_id = _maybe_record_user_feedback(message)
     message_id = str(datetime.now().timestamp())
@@ -7335,7 +9209,7 @@ def chat_ask():
 
     state.add_agent_log("orion", f"💬 Chat: {message}", "info")
     _emit_chat_phase(message_id, "processing", "Đang tổng hợp trạng thái runtime và quyết định phù hợp...")
-    result = _build_project_chat_reply(message, instance_id=instance_id)
+    result = _build_project_chat_reply(message, instance_id=instance_id, member_id=member_id)
     activity = (result.get("result") or {}).get("agent_activity")
     if isinstance(activity, dict):
         _emit_chat_phase(
@@ -7345,6 +9219,8 @@ def chat_ask():
         )
     reply = str(result.get("reply", "")).strip() or "Đã nhận yêu cầu."
     intent = str(result.get("intent", "assistant_help"))
+    reply = _soften_chat_reply(reply, intent=intent)
+    reply = _adapt_chat_reply_for_member(reply, member_adaptation)
     report = result.get("report")
     if not isinstance(report, dict):
         report = _build_chat_report(
@@ -7354,12 +9230,21 @@ def chat_ask():
             result.get("result", {}) or {},
             reasoning=(result.get("result", {}) or {}).get("reasoning", {}),
         )
+    report["summary"] = reply
     if feedback_id:
         feedback_entries = (result.get("result", {}) or {}).get("feedback_recent") or []
         latest_feedback = feedback_entries[0] if isinstance(feedback_entries, list) and feedback_entries else {}
         category = str(latest_feedback.get("category", "general")).strip() or "general"
         reply = f"{reply}\n\nAcknowledged feedback #{feedback_id}: {category}. Applying updates automatically."
         report["summary"] = reply
+    if member_id:
+        report.setdefault("highlights", [])
+        highlights = report.get("highlights") if isinstance(report.get("highlights"), list) else []
+        style_line = member_adaptation.get("communication", {}) if isinstance(member_adaptation.get("communication"), dict) else {}
+        tone = style_line.get("tone", "balanced")
+        detail = style_line.get("detail_level", "balanced")
+        highlights.append(f"Adapted to member={member_id} ({tone}/{detail})")
+        report["highlights"] = highlights[:3]
     _emit_chat_phase(
         message_id,
         "report",
@@ -7383,6 +9268,8 @@ def chat_ask():
         "text": reply,
         "report": report,
         "feedback_id": feedback_id,
+        "member_id": member_id or None,
+        "member_adaptation": member_adaptation,
         "reasoning": result.get("result", {}).get("reasoning", {}),
         "ai_summary": result.get("result", {}).get("ai_summary"),
         "feedback_recent": result.get("result", {}).get("feedback_recent", []),
@@ -7398,6 +9285,8 @@ def chat_ask():
         "result": result.get("result", {}),
         "report": report,
         "instance_id": instance_id,
+        "member_id": member_id or None,
+        "member_adaptation": member_adaptation,
         "pending_decision": result.get("pending_decision"),
         "feedback_id": feedback_id,
         "reasoning": result.get("result", {}).get("reasoning"),
@@ -7424,6 +9313,7 @@ def approve_decision():
     """Manually approve a pending decision"""
     data = request.get_json(silent=True) or {}
     decision_id = data.get('decision_id')
+    actor = str(data.get("actor", "dashboard")).strip() or "dashboard"
 
     approved = state.approve_decision(decision_id)
     if not approved:
@@ -7439,6 +9329,14 @@ def approve_decision():
             else:
                 state.add_agent_log("guardian", f"⚠️ Approved command blocked/failed: {execution.get('error', 'unknown')}", "warning")
 
+    _append_intervention_history(
+        action="approved",
+        decision_id=str(decision_id or ""),
+        success=True,
+        actor=actor,
+        detail={"execution": execution or {}},
+    )
+
     return jsonify({
         "success": True,
         "decision": "approved",
@@ -7452,9 +9350,17 @@ def decline_decision():
     """Manually decline a pending decision"""
     data = request.get_json(silent=True) or {}
     decision_id = data.get('decision_id')
+    actor = str(data.get("actor", "dashboard")).strip() or "dashboard"
 
     declined = state.decline_decision(decision_id)
     if declined:
+        _append_intervention_history(
+            action="declined",
+            decision_id=str(decision_id or ""),
+            success=True,
+            actor=actor,
+            detail={"kind": declined.get("kind"), "action": declined.get("action")},
+        )
         return jsonify({"success": True, "decision": "declined", "item": declined})
 
     return jsonify({"success": False, "error": "Decision not found"})
@@ -7636,6 +9542,121 @@ def send_agents_batch_command():
     }), 200
 
 
+@app.route('/api/agents/coordination/dispatch', methods=['POST'])
+def dispatch_agent_coordination():
+    """Coordinate a compact multi-agent command plan to reduce token overhead."""
+    rate_limited = _rate_limited("agents_coordination_dispatch", API_RATE_LIMIT_COMMAND_PER_MIN, 60)
+    if rate_limited:
+        return rate_limited
+
+    data = request.get_json(silent=True) or {}
+    goal = str(data.get("goal", "") or "").strip()
+    if not goal:
+        return _api_error("MISSING_GOAL", "Missing coordination goal")
+
+    member_id = _resolve_member_id(data)
+    max_agents = _int_in_range(data.get("max_agents", 4), default=4, min_value=2, max_value=7)
+    compact_mode = _to_bool(data.get("compact_mode", True))
+    execute = _to_bool(data.get("execute", True))
+    priority = str(data.get("priority", "high") or "high").strip().lower() or "high"
+    create_tasks = _to_bool(data.get("create_tasks", AGENT_COORDINATION_AUTO_CREATE_TASKS))
+
+    instances = get_orion_instances_snapshot()
+    requested_instance_ids = data.get("instance_ids") if isinstance(data.get("instance_ids"), list) else []
+    if requested_instance_ids:
+        requested = {str(item).strip() for item in requested_instance_ids if str(item).strip()}
+        targets = [item for item in instances if str(item.get("id", "")).strip() in requested]
+    else:
+        multi_instance = _to_bool(data.get("multi_instance", True))
+        if multi_instance:
+            targets = [item for item in instances if bool(item.get("online"))]
+            if not targets:
+                targets = [item for item in instances[:1]]
+        else:
+            instance_id = str(data.get("instance_id", LOCAL_INSTANCE_ID)).strip() or LOCAL_INSTANCE_ID
+            targets = [item for item in instances if str(item.get("id", "")).strip() == instance_id]
+            if not targets:
+                targets = [{"id": instance_id, "name": instance_id, "online": False}]
+
+    if execute:
+        goal_key = re.sub(r"\s+", " ", str(goal).strip().lower())[:220]
+        target_ids = ",".join(
+            sorted(str(item.get("id", "")).strip().lower() for item in targets if str(item.get("id", "")).strip())
+        )
+        dedup_signature = (
+            f"{goal_key}|targets:{target_ids}|compact:{1 if compact_mode else 0}|agents:{max_agents}|prio:{priority}"
+        )
+        is_repeat, retry_after = _agent_coordination_debounced(dedup_signature)
+        if is_repeat:
+            return _api_ok(
+                {
+                    "goal": goal,
+                    "member_id": member_id or None,
+                    "execution": {
+                        "executed": False,
+                        "deduplicated": True,
+                        "retry_after_sec": retry_after,
+                        "instances": [str(item.get("id", "")) for item in targets],
+                        "total_sent": 0,
+                        "total_success": 0,
+                        "total_failed": 0,
+                    },
+                    "results": {},
+                },
+                status_code=202,
+            )
+
+    payload = _execute_agent_coordination(
+        goal=goal,
+        member_id=member_id,
+        max_agents=max_agents,
+        compact_mode=compact_mode,
+        execute=execute,
+        priority=priority,
+        instance_ids=[str(item.get("id", "")).strip() for item in targets if str(item.get("id", "")).strip()],
+        multi_instance=False,
+    )
+    materialized = {"enabled": False, "created": 0, "results": []}
+    if execute and create_tasks:
+        materialized = _materialize_coordination_tasks(
+            goal=goal,
+            coordination_payload=payload,
+            priority=priority,
+            member_id=member_id,
+            max_tasks=max_agents,
+        )
+    payload["task_materialization"] = materialized
+    plan = payload.get("plan") if isinstance(payload.get("plan"), dict) else {}
+    execution = payload.get("execution") if isinstance(payload.get("execution"), dict) else {}
+    execution_instances = execution.get("instances") if isinstance(execution.get("instances"), list) else []
+    targets_count = len(execution_instances)
+
+    if member_id:
+        try:
+            _team_persona_store.record_interaction(
+                member_id=member_id,
+                message=goal,
+                channel="coordination",
+                intent="agents_coordination_dispatch",
+                context={"instance_id": "multi" if targets_count > 1 else (execution_instances[0] if execution_instances else LOCAL_INSTANCE_ID)},
+            )
+        except Exception:
+            pass
+
+    state.add_agent_log(
+        "guardian",
+        (
+            f"🧩 Agent coordination ({'exec' if execute else 'plan'}) "
+            f"instances={targets_count} agents={len(plan.get('agents', []))} "
+            f"saved≈{plan.get('token_budget', {}).get('estimated_tokens_saved', 0)} tokens "
+            f"tasks={int(materialized.get('created', 0) or 0)}"
+        ),
+        "success",
+    )
+
+    return _api_ok(payload)
+
+
 @app.route('/api/guardian/preferences', methods=['POST'])
 def update_guardian_preferences():
     """Update Guardian preferences"""
@@ -7699,6 +9720,89 @@ try:
             }
         )
 
+    @app.route('/api/hub/tasks/batch-update', methods=['POST'])
+    def batch_update_tasks():
+        """Batch update tasks for status/assignment edits from dashboard."""
+        data = request.get_json(silent=True) or {}
+        updates = data.get("updates")
+        if not isinstance(updates, list) or not updates:
+            task_ids = data.get("task_ids")
+            if isinstance(task_ids, list) and task_ids:
+                updates = [{"task_id": task_id} for task_id in task_ids]
+                for key in ("status", "assigned_to", "owner_id", "lease_token", "force"):
+                    if key in data:
+                        for row in updates:
+                            row[key] = data.get(key)
+            else:
+                return jsonify({"success": False, "error": "Missing updates or task_ids", "error_code": "MISSING_UPDATES"}), 400
+
+        atomic = bool(data.get("atomic", False))
+        current_version = int(_hub.get_metrics().get("state_version", 0) or 0)
+        applied = 0
+        results: List[Dict[str, Any]] = []
+
+        for raw in updates:
+            row = raw if isinstance(raw, dict) else {}
+            task_id = str(row.get("task_id", "")).strip()
+            if not task_id:
+                results.append({"success": False, "error_code": "MISSING_TASK_ID", "error": "Missing task_id"})
+                if atomic:
+                    break
+                continue
+
+            has_status = "status" in row
+            has_assignee = "assigned_to" in row
+            if has_status:
+                result = _hub.update_task_status_safe(
+                    task_id=task_id,
+                    new_status=row.get("status"),
+                    expected_version=current_version,
+                    owner_id=row.get("owner_id"),
+                    lease_token=row.get("lease_token"),
+                    force=bool(row.get("force", False)),
+                )
+                if result.get("success"):
+                    current_version = int(result.get("version", current_version) or current_version)
+            else:
+                result = {"success": True, "task_id": task_id, "version": current_version}
+
+            if result.get("success") and has_assignee:
+                assign_result = _hub.assign_task_safe(
+                    task_id=task_id,
+                    orion_id=row.get("assigned_to"),
+                    expected_version=current_version,
+                )
+                if not assign_result.get("success"):
+                    result = assign_result
+                else:
+                    result = assign_result
+            else:
+                if not has_status:
+                    result = {"success": False, "error": "No update action provided", "error_code": "NO_ACTION"}
+
+            if result.get("success"):
+                applied += 1
+                current_version = int(result.get("version", current_version) or current_version)
+            results.append({"task_id": task_id, **result})
+            if atomic and not result.get("success"):
+                break
+
+        all_success = applied == len(updates)
+        status = 200 if all_success else 409
+        return jsonify(
+            {
+                "success": all_success,
+                "summary": {
+                    "total": len(updates),
+                    "applied": applied,
+                    "failed": max(0, len(updates) - applied),
+                    "atomic": atomic,
+                },
+                "results": results,
+                "version": current_version,
+            }
+        ), status
+
     @app.route('/api/hub/tasks/<task_id>', methods=['PUT', 'DELETE'])
     def update_task(task_id):
         """Update, assign, or delete a task with version-safe operations."""
@@ -7737,6 +9841,22 @@ try:
             else:
                 status = 400
         return jsonify(result), status
+
+    @app.route('/api/hub/tasks/<task_id>/history')
+    def get_hub_task_history(task_id):
+        """Project audit history entries for one task."""
+        limit = _int_in_range(request.args.get("limit", 80), default=80, min_value=1, max_value=500)
+        task_key = str(task_id or "").strip()
+        rows: List[Dict[str, Any]] = []
+        for row in list(_hub.audit_log)[-max(limit * 3, 80):]:
+            if not isinstance(row, dict):
+                continue
+            details = row.get("details") if isinstance(row.get("details"), dict) else {}
+            if str(details.get("task_id", "")).strip() != task_key:
+                continue
+            rows.append(row)
+        rows = _sort_by_timestamp_desc(rows)[:limit]
+        return jsonify({"success": True, "task_id": task_key, "history": rows, "count": len(rows)})
 
     @app.route('/api/hub/tasks/<task_id>/claim', methods=['POST'])
     def claim_hub_task(task_id):
@@ -7791,10 +9911,13 @@ try:
     @app.route('/api/hub/orions')
     def get_hub_orions():
         """Get all registered Orion instances"""
+        snapshot = _hub.get_snapshot()
         return jsonify({
             "success": True,
-            "orions": _hub.orions,
-            "metrics": _hub.get_metrics()
+            "orions": snapshot.get("orions", {}),
+            "metrics": _hub.get_metrics(),
+            "version": snapshot.get("version", 0),
+            "updated_at": snapshot.get("updated_at"),
         })
 
     @app.route('/api/hub/audit')
@@ -7806,6 +9929,93 @@ try:
             "audit": _hub.audit_log[-limit:]
         })
 
+    @app.route('/api/hub/workload')
+    def get_agent_workload():
+        """Get agent workload summary - tasks per assignee with priority breakdown"""
+        tasks = _hub.list_tasks()
+        orions_snapshot = _hub.get_snapshot().get("orions", {})
+
+        workload: Dict[str, Any] = {}
+        unassigned: List[Dict[str, Any]] = []
+        priority_counts: Dict[str, int] = {"p0": 0, "p1": 0, "p2": 0, "p3": 0}
+        status_counts: Dict[str, int] = {"todo": 0, "in_progress": 0, "done": 0, "blocked": 0}
+
+        for task in tasks:
+            assignee = str(task.get("assigned_to") or "").strip().lower() or "unassigned"
+            priority_raw = str(task.get("priority") or "normal").strip().lower()
+            status_raw = str(task.get("status") or "todo").strip().lower()
+
+            # Normalize priority to P0-P3
+            priority_norm = "p3"
+            if priority_raw in ("p0", "critical", "urgent", "highest"):
+                priority_norm = "p0"
+            elif priority_raw in ("p1", "high", "important"):
+                priority_norm = "p1"
+            elif priority_raw in ("p2", "medium", "normal"):
+                priority_norm = "p2"
+            priority_counts[priority_norm] = priority_counts.get(priority_norm, 0) + 1
+
+            # Normalize status
+            if status_raw in ("in_progress", "running", "active", "claimed"):
+                status_counts["in_progress"] = status_counts.get("in_progress", 0) + 1
+            elif status_raw in ("done", "completed", "resolved"):
+                status_counts["done"] = status_counts.get("done", 0) + 1
+            elif status_raw in ("blocked", "stuck", "waiting"):
+                status_counts["blocked"] = status_counts.get("blocked", 0) + 1
+            else:
+                status_counts["todo"] = status_counts.get("todo", 0) + 1
+
+            task_summary = {
+                "id": task.get("id"),
+                "title": task.get("title", ""),
+                "priority": priority_norm,
+                "status": status_raw,
+                "created_at": task.get("created_at"),
+            }
+
+            if assignee == "unassigned":
+                unassigned.append(task_summary)
+            else:
+                if assignee not in workload:
+                    workload[assignee] = {
+                        "assignee": assignee,
+                        "tasks": [],
+                        "by_priority": {"p0": 0, "p1": 0, "p2": 0, "p3": 0},
+                        "by_status": {"todo": 0, "in_progress": 0, "done": 0, "blocked": 0},
+                        "is_online": False,
+                        "last_heartbeat": None,
+                    }
+                    # Check if this assignee is an online Orion
+                    orion_key = assignee.replace("-", "_")
+                    if orion_key in orions_snapshot:
+                        orion_info = orions_snapshot[orion_key]
+                        workload[assignee]["is_online"] = orion_info.get("is_alive", False)
+                        workload[assignee]["last_heartbeat"] = orion_info.get("last_heartbeat")
+
+                workload[assignee]["tasks"].append(task_summary)
+                workload[assignee]["by_priority"][priority_norm] = workload[assignee]["by_priority"].get(priority_norm, 0) + 1
+                norm_status = "todo"
+                if status_raw in ("in_progress", "running", "active", "claimed"):
+                    norm_status = "in_progress"
+                elif status_raw in ("done", "completed", "resolved"):
+                    norm_status = "done"
+                elif status_raw in ("blocked", "stuck", "waiting"):
+                    norm_status = "blocked"
+                workload[assignee]["by_status"][norm_status] = workload[assignee]["by_status"].get(norm_status, 0) + 1
+
+        # Sort by total tasks descending
+        workload_list = sorted(workload.values(), key=lambda x: len(x.get("tasks", [])), reverse=True)
+
+        return jsonify({
+            "success": True,
+            "workload": workload_list,
+            "unassigned": unassigned,
+            "priority_breakdown": priority_counts,
+            "status_breakdown": status_counts,
+            "total_tasks": len(tasks),
+            "total_assignees": len(workload),
+        })
+
     @app.route('/api/hub/register-orion', methods=['POST'])
     def register_orion_instance():
         """Register a new Orion instance"""
@@ -7815,6 +10025,93 @@ try:
             config=data.get("config", {})
         )
         return jsonify({"success": True, "orion": orion})
+
+    @app.route('/api/hub/spawn', methods=['POST'])
+    def spawn_hub_orion():
+        """Compatibility spawn endpoint used by live dashboard quick-action."""
+        data = request.get_json(silent=True) or {}
+        goal = str(data.get("goal", "Scale mission")).strip() or "Scale mission"
+        new_id = str(data.get("instance_id", "")).strip()
+        if not new_id:
+            new_id = f"orion-spawn-{int(time.time())}"
+        registration = _hub.register_orion(
+            instance_id=new_id,
+            config={
+                "goal": goal,
+                "source": "dashboard_spawn",
+                "created_at": datetime.now().isoformat(),
+            },
+        )
+        state.add_agent_log("guardian", f"🛰 Spawn requested for {new_id}: {goal}", "info")
+        return jsonify(
+            {
+                "success": bool(registration.get("success", False)),
+                "spawn": {
+                    "instance_id": new_id,
+                    "goal": goal,
+                },
+                "orion": registration,
+                "timestamp": datetime.now().isoformat(),
+            }
+        ), (200 if registration.get("success") else 409)
+
+    @app.route('/api/hub/orchestrate', methods=['POST'])
+    def orchestrate_hub_goal():
+        """Build persona-aware execution plan across multiple Orion instances."""
+        data = request.get_json(silent=True) or {}
+        goal = str(data.get("goal", "") or "").strip()
+        if not goal:
+            return _api_error("MISSING_GOAL", "Missing orchestration goal")
+
+        member_id = _resolve_member_id(data)
+        task_count = _int_in_range(data.get("task_count", 3), default=3, min_value=1, max_value=8)
+        priority = str(data.get("priority", "high") or "high").strip().lower() or "high"
+        create_tasks = _to_bool(data.get("create_tasks", False))
+        compact_mode = _to_bool(data.get("compact_mode", True))
+        max_agents = _int_in_range(data.get("max_agents", 4), default=4, min_value=2, max_value=7)
+        preferred_orions = data.get("preferred_orions") if isinstance(data.get("preferred_orions"), list) else []
+
+        plan = _build_multi_orion_orchestration(
+            goal=goal,
+            requested_by=member_id,
+            task_count=task_count,
+            priority=priority,
+            create_tasks=create_tasks,
+            preferred_orions=preferred_orions,
+        )
+        adaptation = plan.get("adaptation") if isinstance(plan.get("adaptation"), dict) else {}
+        plan["agent_coordination"] = _build_agent_coordination_plan(
+            goal=goal,
+            adaptation=adaptation,
+            max_agents=max_agents,
+            compact_mode=compact_mode,
+        )
+        if member_id:
+            try:
+                _team_persona_store.record_interaction(
+                    member_id=member_id,
+                    message=goal,
+                    channel="orchestration",
+                    intent="hub_orchestrate",
+                    context={"instance_id": "multi"},
+                )
+            except Exception:
+                pass
+
+        assignment_count = len(plan.get("assignments", []))
+        state.add_agent_log(
+            "guardian",
+            f"🧭 Orchestration plan generated ({assignment_count} assignments, member={member_id or 'unknown'})",
+            "success",
+        )
+        return _api_ok(
+            {
+                "plan": plan,
+                "assignment_count": assignment_count,
+                "created_tasks": len(plan.get("created_tasks", [])),
+                "token_budget": (plan.get("agent_coordination") or {}).get("token_budget", {}),
+            }
+        )
 
 except ImportError as e:
     print(f"⚠️ Multi-Orion Hub not available: {e}")

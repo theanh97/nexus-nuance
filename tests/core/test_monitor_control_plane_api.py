@@ -1,8 +1,9 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
 import monitor.app as monitor_app
+from src.memory.team_persona import TeamPersonaStore
 
 
 def _healthy_token_info() -> monitor_app._OpenClawTokenInfo:
@@ -16,15 +17,39 @@ def _healthy_token_info() -> monitor_app._OpenClawTokenInfo:
     )
 
 
+def _create_hub_task(client, title: str = "Hub task") -> str:
+    created = client.post(
+        "/api/hub/tasks",
+        json={"title": title, "description": "lease guarded task"},
+    )
+    assert created.status_code == 200
+    payload = created.get_json()
+    assert payload["success"] is True
+    return payload["task"]["id"]
+
+
 @pytest.fixture
-def client(monkeypatch):
+def client(monkeypatch, tmp_path):
     monitor_app.app.config["TESTING"] = True
     monkeypatch.setattr(monitor_app, "DASHBOARD_ACCESS_TOKEN", "")
     monkeypatch.setattr(monitor_app, "_autonomy_profile", "balanced")
     monkeypatch.setattr(monitor_app, "_monitor_supervisor_enabled", True)
     monkeypatch.setattr(monitor_app, "_monitor_autopilot_pause_until", None)
+    monkeypatch.setattr(monitor_app, "_agent_coordination_recent", {})
     monkeypatch.setattr(monitor_app, "GUARDIAN_CONTROL_TOKEN", "")
     monkeypatch.setattr(monitor_app, "_guardian_control_audit", [])
+    monkeypatch.setattr(
+        monitor_app,
+        "_team_persona_store",
+        TeamPersonaStore(
+            state_path=tmp_path / "team_personas.json",
+            events_path=tmp_path / "team_persona_events.jsonl",
+        ),
+    )
+    with monitor_app._hub._exclusive_state() as state:
+        state.clear()
+        state.update(monitor_app._hub._default_state())
+        monitor_app._hub._commit_state(state, increment_version=False)
     with monitor_app.app.test_client() as app_client:
         yield app_client
 
@@ -303,6 +328,95 @@ def test_openclaw_flow_dashboard_burst_uses_queue_idempotency(client, monkeypatc
     assert after_hits >= before_hits + 1
 
 
+def test_openclaw_browser_auto_attach_uses_non_force_mode(monkeypatch):
+    monkeypatch.setattr(monitor_app, "_collect_token_info", lambda force_refresh=False: _healthy_token_info())
+
+    calls = {"count": 0}
+
+    def fake_cli(args, timeout_ms=0, retries=0):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return {"success": False, "stderr": "No tab is connected", "stdout": "", "returncode": 1}
+        return {"success": True, "stdout": "{\"running\": true}", "stderr": "", "returncode": 0}
+
+    attach_force_args = []
+
+    def fake_attach(force=False):
+        attach_force_args.append(bool(force))
+        return {"success": True, "method": "stub", "steps": []}
+
+    monkeypatch.setattr(monitor_app, "_run_openclaw_cli", fake_cli)
+    monkeypatch.setattr(monitor_app, "_openclaw_attempt_attach", fake_attach)
+
+    result = monitor_app._openclaw_browser_cmd(["start"], auto_recover=False)
+
+    assert result["success"] is True
+    assert attach_force_args == [False]
+
+
+def test_openclaw_browser_auto_attach_skips_inside_attach_scope(monkeypatch):
+    monkeypatch.setattr(monitor_app, "_collect_token_info", lambda force_refresh=False: _healthy_token_info())
+    monkeypatch.setattr(
+        monitor_app,
+        "_run_openclaw_cli",
+        lambda args, timeout_ms=0, retries=0: {
+            "success": False,
+            "stderr": "No tab is connected",
+            "stdout": "",
+            "returncode": 1,
+        },
+    )
+    attach_calls = []
+    monkeypatch.setattr(
+        monitor_app,
+        "_openclaw_attempt_attach",
+        lambda force=False: attach_calls.append(bool(force)) or {"success": True},
+    )
+
+    monitor_app._openclaw_attach_scope_enter()
+    try:
+        result = monitor_app._openclaw_browser_cmd(["status"], auto_recover=False)
+    finally:
+        monitor_app._openclaw_attach_scope_exit()
+
+    assert result["success"] is False
+    assert attach_calls == []
+
+
+def test_openclaw_attempt_attach_verification_disables_nested_auto_attach(monkeypatch):
+    monkeypatch.setattr(monitor_app, "pyautogui", object())
+    monkeypatch.setattr(monitor_app, "OPENCLAW_AUTO_ATTACH_RETRIES", 1)
+    monkeypatch.setattr(monitor_app, "OPENCLAW_AUTO_ATTACH_HEURISTIC", False)
+    monkeypatch.setattr(monitor_app, "OPENCLAW_AUTO_ATTACH_ICON_MATCH", True)
+    monkeypatch.setattr(monitor_app, "OPENCLAW_AUTO_ATTACH_DELAY_SEC", 0.0)
+    monkeypatch.setattr(monitor_app, "OPENCLAW_LAUNCH_WITH_EXTENSION", False)
+    monkeypatch.setattr(monitor_app, "OPENCLAW_CHROME_APP", "Google Chrome")
+    monkeypatch.setattr(monitor_app, "OPENCLAW_DASHBOARD_URL", "http://127.0.0.1:5050/")
+
+    monkeypatch.setattr(monitor_app, "_openclaw_extension_path", lambda: monitor_app.Path("."))
+    monkeypatch.setattr(monitor_app, "_activate_chrome_window", lambda: {"success": True})
+    monkeypatch.setattr(monitor_app, "_ensure_chrome_tab", lambda url: {"success": True, "url": url})
+    monkeypatch.setattr(monitor_app, "_find_extension_icon", lambda extension_path: monitor_app.Path("icon.png"))
+    monkeypatch.setattr(monitor_app, "_click_extension_icon", lambda icon_path: {"success": True})
+    monkeypatch.setattr(monitor_app.subprocess, "run", lambda *args, **kwargs: None)
+
+    auto_attach_flags = []
+
+    def fake_browser_cmd(args, **kwargs):
+        auto_attach_flags.append(bool(kwargs.get("auto_attach", True)))
+        if args and args[0] == "status":
+            return {"success": True, "json": {"running": True}}
+        return {"success": True, "json": {}}
+
+    monkeypatch.setattr(monitor_app, "_openclaw_browser_cmd", fake_browser_cmd)
+
+    result = monitor_app._openclaw_attempt_attach(force=True)
+
+    assert result["success"] is True
+    assert auto_attach_flags
+    assert all(flag is False for flag in auto_attach_flags)
+
+
 def test_hub_task_create_returns_version(client):
     response = client.post(
         "/api/hub/tasks",
@@ -426,3 +540,558 @@ def test_hub_task_update_respects_lease_owner(client):
     allowed_payload = allowed.get_json()
     assert allowed_payload["success"] is True
     assert allowed_payload["task"]["status"] == "review"
+
+
+def test_openclaw_lease_enforcement_rejects_missing_context(client, monkeypatch):
+    monkeypatch.setattr(monitor_app, "_collect_token_info", lambda force_refresh=False: _healthy_token_info())
+    _install_openclaw_test_queue(monkeypatch)
+    monkeypatch.setattr(monitor_app, "OPENCLAW_REQUIRE_TASK_LEASE", True)
+
+    response = client.post(
+        "/api/openclaw/browser",
+        json={
+            "action": "open",
+            "url": "http://127.0.0.1:5050/",
+            "mode": "async",
+            "source": "manual",
+            "session_id": "lease-missing",
+        },
+    )
+    assert response.status_code == 423
+    payload = response.get_json()
+    assert payload["success"] is False
+    assert payload["error_code"] == "LEASE_CONTEXT_REQUIRED"
+
+
+def test_openclaw_lease_enforcement_accepts_valid_context(client, monkeypatch):
+    monkeypatch.setattr(monitor_app, "_collect_token_info", lambda force_refresh=False: _healthy_token_info())
+    _install_openclaw_test_queue(monkeypatch)
+    monkeypatch.setattr(monitor_app, "OPENCLAW_REQUIRE_TASK_LEASE", True)
+
+    task_id = _create_hub_task(client, title="OpenClaw lease")
+    claim = client.post(
+        f"/api/hub/tasks/{task_id}/claim",
+        json={"owner_id": "orion:test", "lease_sec": 120},
+    )
+    assert claim.status_code == 200
+    lease_token = claim.get_json()["lease"]["lease_token"]
+
+    response = client.post(
+        "/api/openclaw/browser",
+        json={
+            "action": "open",
+            "url": "http://127.0.0.1:5050/",
+            "mode": "async",
+            "source": "manual",
+            "session_id": "lease-valid",
+            "task_id": task_id,
+            "task_owner_id": "orion:test",
+            "task_lease_token": lease_token,
+        },
+    )
+    assert response.status_code == 202
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["accepted"] is True
+
+
+def test_control_plane_workers_exposes_lease_enforcement(client):
+    response = client.get("/api/control-plane/workers")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert "lease_enforcement" in payload
+    assert "require_task_lease" in payload["lease_enforcement"]
+    assert "lease_heartbeat_sec" in payload["lease_enforcement"]
+
+
+def test_monitor_recovery_enqueues_openclaw_autopilot_flow(monkeypatch):
+    monkeypatch.setattr(monitor_app, "MONITOR_AUTOPILOT_OPENCLAW_FLOW_ENABLED", True)
+    monkeypatch.setattr(monitor_app, "MONITOR_AUTOPILOT_OPENCLAW_FLOW_COOLDOWN_SEC", 120)
+    monkeypatch.setattr(monitor_app, "OPENCLAW_REQUIRE_TASK_LEASE", False)
+    monkeypatch.setattr(monitor_app, "_monitor_process_started_at", datetime.now() - timedelta(seconds=600))
+    monkeypatch.setattr(monitor_app, "_monitor_last_recovery_at", {})
+    monkeypatch.setattr(monitor_app, "_monitor_last_reason", {})
+    monkeypatch.setattr(monitor_app, "_monitor_last_openclaw_flow_at", {})
+
+    queued_calls = []
+
+    def fake_enqueue(command_type, payload):
+        queued_calls.append({"command_type": command_type, "payload": dict(payload)})
+        return {"success": True, "request_id": "oc-autopilot-1"}
+
+    guardian_calls = []
+
+    def fake_guardian(instance_id, target, command, priority, options=None):
+        guardian_calls.append(
+            {
+                "instance_id": instance_id,
+                "target": target,
+                "command": command,
+                "priority": priority,
+                "options": dict(options or {}),
+            }
+        )
+        return {"success": True}
+
+    monkeypatch.setattr(monitor_app, "_enqueue_openclaw_command", fake_enqueue)
+    monkeypatch.setattr(monitor_app, "_call_instance_command", fake_guardian)
+
+    monitor_app._monitor_maybe_recover_instance(
+        {"id": "orion-test", "online": True, "running": False, "paused": False}
+    )
+
+    assert len(queued_calls) == 1
+    queued = queued_calls[0]
+    assert queued["command_type"] == "flow"
+    assert queued["payload"]["source"] == "autopilot"
+    assert queued["payload"]["mode"] == "async"
+    assert queued["payload"]["session_id"] == "autopilot:orion-test"
+    assert len(guardian_calls) == 1
+    assert guardian_calls[0]["command"] == "unstick_orion"
+
+
+def test_monitor_recovery_skips_openclaw_autopilot_when_lease_required(monkeypatch):
+    monkeypatch.setattr(monitor_app, "MONITOR_AUTOPILOT_OPENCLAW_FLOW_ENABLED", True)
+    monkeypatch.setattr(monitor_app, "OPENCLAW_REQUIRE_TASK_LEASE", True)
+    monkeypatch.setattr(monitor_app, "_monitor_process_started_at", datetime.now() - timedelta(seconds=600))
+    monkeypatch.setattr(monitor_app, "_monitor_last_recovery_at", {})
+    monkeypatch.setattr(monitor_app, "_monitor_last_reason", {})
+    monkeypatch.setattr(monitor_app, "_monitor_last_openclaw_flow_at", {})
+
+    queued_calls = []
+    monkeypatch.setattr(
+        monitor_app,
+        "_enqueue_openclaw_command",
+        lambda command_type, payload: queued_calls.append((command_type, payload)) or {"success": True},
+    )
+
+    guardian_calls = []
+    monkeypatch.setattr(
+        monitor_app,
+        "_call_instance_command",
+        lambda *args, **kwargs: guardian_calls.append((args, kwargs)) or {"success": True},
+    )
+
+    monitor_app._monitor_maybe_recover_instance(
+        {"id": "orion-test", "online": True, "running": False, "paused": False}
+    )
+
+    assert queued_calls == []
+    assert len(guardian_calls) == 1
+
+
+def test_interventions_queue_and_defer(client):
+    decision = monitor_app.state.add_pending_decision(
+        {
+            "action": "command_intervention",
+            "kind": "command_intervention",
+            "title": "Need manual check",
+            "risk_level": "high",
+            "command": "ls -la",
+            "instance_id": "orion-test",
+        }
+    )
+    decision_id = decision["id"]
+
+    queue = client.get("/api/interventions/queue")
+    assert queue.status_code == 200
+    queue_payload = queue.get_json()
+    assert queue_payload["success"] is True
+    ids = [row["id"] for row in queue_payload["queue"]]
+    assert decision_id in ids
+
+    deferred = client.post(
+        f"/api/interventions/{decision_id}/defer",
+        json={"reason": "wait_for_window", "defer_sec": 120},
+    )
+    assert deferred.status_code == 200
+    deferred_payload = deferred.get_json()
+    assert deferred_payload["success"] is True
+    assert deferred_payload["item"]["deferred"] is True
+
+
+def test_interventions_force_approve_runs_command(client, monkeypatch):
+    monkeypatch.setattr(
+        monitor_app,
+        "_execute_approved_shell_command",
+        lambda command: {"success": True, "command": command, "output": "ok"},
+    )
+    decision = monitor_app.state.add_pending_decision(
+        {
+            "action": "command_intervention",
+            "kind": "command_intervention",
+            "title": "Execute command",
+            "risk_level": "medium",
+            "command": "ls",
+            "instance_id": "orion-test",
+            "auto_execute_on_approve": True,
+        }
+    )
+    decision_id = decision["id"]
+
+    approved = client.post(
+        f"/api/interventions/{decision_id}/force-approve",
+        json={"actor": "test-suite", "reason": "forced"},
+    )
+    assert approved.status_code == 200
+    approved_payload = approved.get_json()
+    assert approved_payload["success"] is True
+    assert approved_payload["item"]["decision"] == "approved"
+    assert approved_payload["execution"]["success"] is True
+
+
+def test_hub_tasks_batch_update_and_history(client):
+    created = client.post(
+        "/api/hub/tasks",
+        json={"title": "Batch update me", "description": "batch"},
+    )
+    assert created.status_code == 200
+    task_id = created.get_json()["task"]["id"]
+
+    updated = client.post(
+        "/api/hub/tasks/batch-update",
+        json={"updates": [{"task_id": task_id, "status": "review", "assigned_to": "orion-1"}]},
+    )
+    assert updated.status_code == 200
+    updated_payload = updated.get_json()
+    assert updated_payload["success"] is True
+    assert updated_payload["summary"]["applied"] == 1
+
+    history = client.get(f"/api/hub/tasks/{task_id}/history")
+    assert history.status_code == 200
+    history_payload = history.get_json()
+    assert history_payload["success"] is True
+    assert history_payload["task_id"] == task_id
+    assert history_payload["count"] >= 1
+
+
+def test_audit_timeline_and_export_endpoints(client):
+    timeline = client.get("/api/audit/timeline?limit=60")
+    assert timeline.status_code == 200
+    timeline_payload = timeline.get_json()
+    assert timeline_payload["success"] is True
+    assert "items" in timeline_payload
+
+    exported = client.get("/api/audit/export?format=jsonl&limit=20")
+    assert exported.status_code == 200
+    body = exported.get_data(as_text=True)
+    assert isinstance(body, str)
+
+
+def test_hub_spawn_endpoint(client):
+    spawned = client.post("/api/hub/spawn", json={"goal": "test scaling"})
+    assert spawned.status_code == 200
+    payload = spawned.get_json()
+    assert payload["success"] is True
+    assert payload["spawn"]["instance_id"]
+
+
+def test_team_persona_endpoints_support_self_learning(client):
+    created = client.post(
+        "/api/team/personas",
+        json={
+            "member_id": "pm-lan",
+            "name": "Lan",
+            "role": "product_manager",
+            "preferences": {"response_structure": "steps"},
+        },
+    )
+    assert created.status_code == 200
+    created_payload = created.get_json()
+    assert created_payload["success"] is True
+    assert created_payload["member"]["member_id"] == "pm-lan"
+
+    interaction = client.post(
+        "/api/team/personas/pm-lan/interaction",
+        json={
+            "message": "Chỉ làm luôn, không cần hỏi lại. Gửi bản ngắn gọn.",
+            "channel": "chat",
+            "intent": "delivery_push",
+        },
+    )
+    assert interaction.status_code == 200
+    interaction_payload = interaction.get_json()
+    assert interaction_payload["success"] is True
+    assert interaction_payload["learned"]["signals"]["direct"] is True
+    assert interaction_payload["adaptation"]["member_id"] == "pm-lan"
+
+    adaptation = client.get("/api/team/personas/pm-lan/adaptation?intent=ship_release")
+    assert adaptation.status_code == 200
+    adaptation_payload = adaptation.get_json()
+    assert adaptation_payload["success"] is True
+    assert adaptation_payload["adaptation"]["known_member"] is True
+    assert adaptation_payload["adaptation"]["communication"]["response_structure"] == "steps"
+
+
+def test_orion_instances_broadcast_command(client, monkeypatch):
+    monkeypatch.setattr(
+        monitor_app,
+        "get_orion_instances_snapshot",
+        lambda: [
+            {"id": "orion-1", "name": "Orion 1", "online": True, "running": True, "paused": False, "active_flow_count": 1},
+            {"id": "orion-2", "name": "Orion 2", "online": True, "running": True, "paused": False, "active_flow_count": 0},
+        ],
+    )
+    calls = []
+
+    def fake_call(instance_id, target, command, priority, options=None):
+        calls.append((instance_id, target, command, priority, dict(options or {})))
+        return {"success": True, "instance_id": instance_id}
+
+    monkeypatch.setattr(monitor_app, "_call_instance_command", fake_call)
+
+    response = client.post(
+        "/api/orion/instances/broadcast",
+        json={
+            "member_id": "lead-dev",
+            "target": "guardian",
+            "command": "autopilot_on",
+            "priority": "high",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["summary"]["total"] == 2
+    assert payload["summary"]["success"] == 2
+    assert len(calls) == 2
+
+
+def test_hub_orchestrate_generates_assignments_and_tasks(client, monkeypatch):
+    monkeypatch.setattr(
+        monitor_app,
+        "get_orion_instances_snapshot",
+        lambda: [
+            {"id": "orion-1", "name": "Orion 1", "online": True, "running": True, "paused": False, "active_flow_count": 0},
+            {"id": "orion-2", "name": "Orion 2", "online": True, "running": True, "paused": False, "active_flow_count": 1},
+        ],
+    )
+    response = client.post(
+        "/api/hub/orchestrate",
+        json={
+            "member_id": "pm-lan",
+            "goal": "Ship autonomous triage",
+            "task_count": 4,
+            "create_tasks": True,
+            "priority": "high",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["assignment_count"] == 4
+    plan = payload["plan"]
+    assert len(plan["assignments"]) == 4
+    assert len(plan["created_tasks"]) == 4
+    assert "token_budget" in payload
+    assert payload["token_budget"]["estimated_tokens_total"] >= 1
+
+
+def test_chat_ask_returns_member_adaptation_payload(client, monkeypatch):
+    monkeypatch.setattr(
+        monitor_app,
+        "_build_project_chat_reply",
+        lambda message, instance_id=None, member_id=None: {
+            "intent": "assistant_help",
+            "executed": False,
+            "reply": "Line 1\nLine 2\nLine 3\nLine 4",
+            "result": {"reasoning": {}, "ai_summary": {}, "feedback_recent": []},
+        },
+    )
+    response = client.post(
+        "/api/chat/ask",
+        json={
+            "member_id": "pm-lan",
+            "instance_id": "orion-1",
+            "message": "Chỉ cần bản ngắn gọn, làm luôn.",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["member_id"] == "pm-lan"
+    assert payload["member_adaptation"]["member_id"] == "pm-lan"
+
+
+def test_chat_ask_auto_dispatches_agent_coordination(client, monkeypatch):
+    monkeypatch.setattr(
+        monitor_app,
+        "get_orion_instances_snapshot",
+        lambda: [
+            {"id": "orion-1", "name": "Orion 1", "online": True, "running": True, "paused": False, "active_flow_count": 0},
+            {"id": "orion-2", "name": "Orion 2", "online": True, "running": True, "paused": False, "active_flow_count": 1},
+        ],
+    )
+    calls = []
+
+    def fake_call(instance_id, target, command, priority, options=None):
+        calls.append({"instance_id": instance_id, "target": target, "command": command, "priority": priority})
+        return {"success": True, "instance_id": instance_id, "target": target}
+
+    monkeypatch.setattr(monitor_app, "_call_instance_command", fake_call)
+
+    response = client.post(
+        "/api/chat/ask",
+        json={
+            "member_id": "lead-dev",
+            "instance_id": "orion-1",
+            "message": "coordinate release and runtime monitor",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["intent"] == "agent_coordination_dispatch"
+    assert payload["executed"] is True
+    assert payload["member_id"] == "lead-dev"
+    assert payload["result"]["task_materialization"]["enabled"] is True
+    assert payload["result"]["task_materialization"]["created"] >= 1
+    assert len(calls) >= 2
+
+
+def test_agents_coordination_dispatch_compact_mode(client, monkeypatch):
+    monkeypatch.setattr(
+        monitor_app,
+        "get_orion_instances_snapshot",
+        lambda: [
+            {"id": "orion-1", "name": "Orion 1", "online": True, "running": True, "paused": False, "active_flow_count": 0},
+            {"id": "orion-2", "name": "Orion 2", "online": True, "running": True, "paused": False, "active_flow_count": 1},
+        ],
+    )
+    calls = []
+
+    def fake_call(instance_id, target, command, priority, options=None):
+        calls.append({"instance_id": instance_id, "target": target, "command": command, "priority": priority})
+        return {"success": True, "instance_id": instance_id, "target": target}
+
+    monkeypatch.setattr(monitor_app, "_call_instance_command", fake_call)
+
+    response = client.post(
+        "/api/agents/coordination/dispatch",
+        json={
+            "member_id": "lead-dev",
+            "goal": "Coordinate release + security audit + runtime monitor",
+            "compact_mode": True,
+            "max_agents": 4,
+            "execute": True,
+            "multi_instance": True,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["execution"]["executed"] is True
+    assert payload["execution"]["total_sent"] == len(calls)
+    assert payload["plan"]["token_budget"]["estimated_tokens_saved"] >= 0
+    assert payload["plan"]["token_budget"]["estimated_tokens_total"] > 0
+    assert payload["task_materialization"]["enabled"] is True
+    assert payload["task_materialization"]["created"] >= 1
+
+
+def test_agents_coordination_dispatch_defaults_multi_instance(client, monkeypatch):
+    monkeypatch.setattr(
+        monitor_app,
+        "get_orion_instances_snapshot",
+        lambda: [
+            {"id": "orion-1", "name": "Orion 1", "online": True, "running": True, "paused": False, "active_flow_count": 0},
+            {"id": "orion-2", "name": "Orion 2", "online": True, "running": True, "paused": False, "active_flow_count": 0},
+        ],
+    )
+    calls = []
+
+    def fake_call(instance_id, target, command, priority, options=None):
+        calls.append({"instance_id": instance_id, "target": target, "command": command, "priority": priority})
+        return {"success": True, "instance_id": instance_id, "target": target}
+
+    monkeypatch.setattr(monitor_app, "_call_instance_command", fake_call)
+
+    response = client.post(
+        "/api/agents/coordination/dispatch",
+        json={
+            "goal": "Runtime monitor and logs",
+            "compact_mode": True,
+            "max_agents": 3,
+            "execute": True,
+        },
+    )
+    assert response.status_code == 200
+    assert calls
+    assert {row["instance_id"] for row in calls} == {"orion-1", "orion-2"}
+
+
+def test_agents_coordination_dispatch_can_skip_task_materialization(client, monkeypatch):
+    monkeypatch.setattr(
+        monitor_app,
+        "get_orion_instances_snapshot",
+        lambda: [
+            {"id": "orion-1", "name": "Orion 1", "online": True, "running": True, "paused": False, "active_flow_count": 0},
+        ],
+    )
+    monkeypatch.setattr(
+        monitor_app,
+        "_call_instance_command",
+        lambda instance_id, target, command, priority, options=None: {"success": True, "instance_id": instance_id, "target": target},
+    )
+    response = client.post(
+        "/api/agents/coordination/dispatch",
+        json={
+            "goal": "single instance coordinate",
+            "execute": True,
+            "create_tasks": False,
+            "compact_mode": True,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["task_materialization"]["enabled"] is False
+    assert payload["task_materialization"]["created"] == 0
+
+
+def test_agents_coordination_dispatch_deduplicates_repeated_goal(client, monkeypatch):
+    monkeypatch.setattr(
+        monitor_app,
+        "get_orion_instances_snapshot",
+        lambda: [{"id": "orion-1", "name": "Orion 1", "online": True, "running": True, "paused": False, "active_flow_count": 0}],
+    )
+    calls = []
+
+    def fake_call(instance_id, target, command, priority, options=None):
+        calls.append({"instance_id": instance_id, "target": target, "command": command, "priority": priority})
+        return {"success": True}
+
+    monkeypatch.setattr(monitor_app, "_call_instance_command", fake_call)
+
+    first = client.post(
+        "/api/agents/coordination/dispatch",
+        json={
+            "goal": "Coordinate release + security audit",
+            "compact_mode": True,
+            "max_agents": 3,
+            "execute": True,
+            "instance_id": "orion-1",
+        },
+    )
+    assert first.status_code == 200
+    first_payload = first.get_json()
+    assert first_payload["success"] is True
+    sent_after_first = len(calls)
+    assert sent_after_first > 0
+
+    second = client.post(
+        "/api/agents/coordination/dispatch",
+        json={
+            "goal": "Coordinate release + security audit",
+            "compact_mode": True,
+            "max_agents": 3,
+            "execute": True,
+            "instance_id": "orion-1",
+        },
+    )
+    assert second.status_code == 202
+    second_payload = second.get_json()
+    assert second_payload["success"] is True
+    assert second_payload["execution"]["executed"] is False
+    assert second_payload["execution"]["deduplicated"] is True
+    assert len(calls) == sent_after_first
