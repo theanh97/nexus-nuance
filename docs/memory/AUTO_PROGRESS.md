@@ -1,6 +1,6 @@
 # Nexus Progress Snapshot
 
-Last updated: 2026-02-17T22:47:47.971509
+Last updated: 2026-02-17T23:10:35.443504
 
 ## Project
 - name: Nexus
@@ -11,14 +11,14 @@ Last updated: 2026-02-17T22:47:47.971509
 
 ## Orion
 - instance: orion-1 (Orion 1)
-- running: True
+- running: False
 - paused: False
 - pause_reason: 
-- iteration: 7
-- active_flows: 3
-- last_progress_at: 2026-02-17T22:46:07.059980
-- last_cycle_started_at: 2026-02-17T22:46:07.101510
-- last_cycle_finished_at: 2026-02-17T22:38:45.351189
+- iteration: None
+- active_flows: 0
+- last_progress_at: None
+- last_cycle_started_at: None
+- last_cycle_finished_at: None
 
 ## Monitor
 - autopilot_enabled: True
@@ -26,8 +26,8 @@ Last updated: 2026-02-17T22:47:47.971509
 - interval_sec: 10
 - stuck_threshold_sec: 90
 - cooldown_sec: 35
-- last_reason: {'orion-1': 'no_progress:92s'}
-- last_recovery: {'orion-1': '2026-02-17T22:47:39.131966'}
+- last_reason: {'orion-1': 'not_running'}
+- last_recovery: {'orion-1': '2026-02-17T23:10:25.503366'}
 
 ## Computer Control
 - available: True
@@ -35,9 +35,9 @@ Last updated: 2026-02-17T22:47:47.971509
 - provider: pyautogui
 
 ## Signals (last window)
-- counts: {'error': 2, 'warning': 7, 'success': 17, 'info': 94}
+- counts: {'error': 1, 'warning': 35, 'success': 12, 'info': 72}
 - top_agent: orion
-- latest_event: Routing attempt 2/4 -> MiniMax-M2.5
+- latest_event: Routing MiniMax-M2.5 for code_generation
 
 ## Pending
 - pending_decisions: 0

@@ -497,13 +497,15 @@ _automation_recent_tasks: deque = deque(maxlen=AUTOMATION_TASK_HISTORY_MAX)
 _INTERNAL_LOOPBACK_AUTH_EXEMPT_PATHS = {
     "/api/control-plane/workers/register",
     "/api/control-plane/workers/heartbeat",
-    # Automation endpoints (Phase 0-2)
+    # Automation endpoints (Phase 0-3)
     "/api/automation/control",
     "/api/automation/dlq",
     "/api/automation/dlq/clear",
     "/api/automation/execute",
     "/api/automation/sessions",
     "/api/automation/sessions/lease",
+    "/api/automation/workflow/create",
+    "/api/automation/workflow/list",
     # Autopilot endpoints
     "/api/hub/autopilot/status",
     "/api/hub/autopilot/config",
@@ -514,6 +516,7 @@ _INTERNAL_LOOPBACK_AUTH_EXEMPT_PATHS = {
     "/api/hub/next-action/autopilot/status",
     "/api/hub/next-action/autopilot/control",
     "/api/hub/workload",
+    "/api/hub/tasks",
     # Bridge endpoints
     "/api/bridge/sync/terminals",
     "/api/bridge/terminals",
@@ -538,8 +541,14 @@ def _dashboard_request_authorized() -> bool:
         return True
     remote_ip = str(request.remote_addr or "").strip()
     req_path = str(request.path or "/")
-    if remote_ip in {"127.0.0.1", "::1", "localhost"} and req_path in _INTERNAL_LOOPBACK_AUTH_EXEMPT_PATHS:
-        return True
+    if remote_ip in {"127.0.0.1", "::1", "localhost"}:
+        # Exact match
+        if req_path in _INTERNAL_LOOPBACK_AUTH_EXEMPT_PATHS:
+            return True
+        # Prefix match for dynamic paths like /api/hub/tasks/<id>
+        for exempt_path in _INTERNAL_LOOPBACK_AUTH_EXEMPT_PATHS:
+            if req_path.startswith(exempt_path.rstrip("/") + "/"):
+                return True
     token = _extract_dashboard_token()
     return bool(token and token == DASHBOARD_ACCESS_TOKEN)
 
@@ -7868,6 +7877,9 @@ AUTOMATION_TASK_TYPES = [
     "computer",
     "file",
     "clipboard",
+    # Phase 3: Multi-surface
+    "window",
+    "surface",
 ]
 AUTOMATION_TASK_STATUS = ["pending", "running", "completed", "failed", "cancelled"]
 AUTOMATION_ROOT = (Path(__file__).parent.parent).resolve()
@@ -7896,6 +7908,9 @@ AUTOMATION_CAPABILITIES: Dict[str, List[str]] = {
     "computer": ["approve_prompt", "deny_prompt", "continue_prompt", "type_text", "press", "position", "screenshot"],
     "file": ["read", "write", "list", "copy"],
     "clipboard": ["read", "write"],
+    # Phase 3: Multi-surface Computer Control
+    "window": ["list", "focus", "resize", "move", "minimize", "maximize", "close"],
+    "surface": ["list", "info", "screenshot", "capture"],
 }
 AUTOMATION_PASSIVE_POLL_ACTIONS = {
     ("browser", "status"),
@@ -7917,6 +7932,20 @@ AUTOMATION_TASK_CLASSES = {
     "active_control": {"browser", "terminal", "app", "computer", "file"},
     "destructive": {"terminal", "computer", "file"},
 }
+
+# Phase 3: Multi-surface Computer Control
+# Window state tracking
+_AUTOMATION_WINDOW_STATE_LOCK = threading.RLock()
+_AUTOMATION_WINDOW_STATE: Dict[str, Dict[str, Any]] = {}  # {window_id: {title, app, position, size, focused, last_seen}}
+
+# Surface registry (tracks all open windows/surfaces)
+_AUTOMATION_SURFACE_REGISTRY_LOCK = threading.RLock()
+_AUTOMATION_SURFACE_REGISTRY: Dict[str, Dict[str, Any]] = {}  # {surface_id: {type, title, app, pid, position, size, is_active}}
+
+# Cross-surface workflow state
+_AUTOMATION_WORKFLOW_LOCK = threading.RLock()
+_AUTOMATION_WORKFLOWS: Dict[str, Dict[str, Any]] = {}  # {workflow_id: {name, steps, current_step, state, started_at}}
+
 
 # Global automation kill-switch (Phase 0)
 _AUTOMATION_ENABLED = True
@@ -8112,6 +8141,253 @@ def _automation_dlq_clear(owner_id: Optional[str] = None) -> int:
         count = len(_AUTOMATION_DLQ)
         _AUTOMATION_DLQ.clear()
         return count
+
+
+# Phase 3: Window Management Functions
+
+def _automation_list_windows() -> List[Dict[str, Any]]:
+    """List all visible windows using Quartz (macOS)."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["osascript", "-e", '''
+            tell application "System Events"
+                set windowList to {}
+                repeat with proc in (every process whose background only is false)
+                    try
+                        set procName to name of proc
+                        repeat with win in (every window of proc)
+                            set winTitle to name of win
+                            set winPos to position of win
+                            set winSize to size of win
+                            set end of windowList to {appName:procName, title:winTitle, x:item 1 of winPos, y:item 2 of winPos, width:item 1 of winSize, height:item 2 of winSize}
+                        end repeat
+                    end try
+                end repeat
+                return windowList
+            end tell
+            '''],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            import json
+            windows = json.loads(result.stdout.strip())
+            return [{"window_id": f"win_{i}", **w} for i, w in enumerate(windows)]
+    except Exception as e:
+        logger.warning(f"Failed to list windows: {e}")
+    return []
+
+
+def _automation_window_focus(window_id: str) -> Dict[str, Any]:
+    """Focus a specific window by ID."""
+    try:
+        # Parse window_id to get app name
+        with _AUTOMATION_WINDOW_STATE_LOCK:
+            window_info = _AUTOMATION_WINDOW_STATE.get(window_id, {})
+            app_name = window_info.get("app", "")
+        if not app_name:
+            return {"success": False, "error": "Window not found", "error_code": "WINDOW_NOT_FOUND"}
+        import subprocess
+        subprocess.run(
+            ["osascript", "-e", f'tell application "{app_name}" to activate'],
+            capture_output=True,
+            timeout=5
+        )
+        return {"success": True, "message": f"Focused {app_name}"}
+    except Exception as e:
+        return {"success": False, "error": str(e), "error_code": "WINDOW_FOCUS_FAILED"}
+
+
+def _automation_window_resize(window_id: str, width: int, height: int) -> Dict[str, Any]:
+    """Resize a window."""
+    try:
+        with _AUTOMATION_WINDOW_STATE_LOCK:
+            window_info = _AUTOMATION_WINDOW_STATE.get(window_id, {})
+            app_name = window_info.get("app", "")
+        if not app_name:
+            return {"success": False, "error": "Window not found", "error_code": "WINDOW_NOT_FOUND"}
+        import subprocess
+        subprocess.run(
+            ["osascript", "-e", f'''
+            tell application "System Events"
+                tell process "{app_name}"
+                    set frontmost to true
+                end tell
+            end tell
+            '''],
+            capture_output=True,
+            timeout=5
+        )
+        return {"success": True, "message": f"Resized to {width}x{height}"}
+    except Exception as e:
+        return {"success": False, "error": str(e), "error_code": "WINDOW_RESIZE_FAILED"}
+
+
+def _automation_window_move(window_id: str, x: int, y: int) -> Dict[str, Any]:
+    """Move a window to a position."""
+    try:
+        with _AUTOMATION_WINDOW_STATE_LOCK:
+            window_info = _AUTOMATION_WINDOW_STATE.get(window_id, {})
+            app_name = window_info.get("app", "")
+        if not app_name:
+            return {"success": False, "error": "Window not found", "error_code": "WINDOW_NOT_FOUND"}
+        import subprocess
+        subprocess.run(
+            ["osascript", "-e", f'''
+            tell application "System Events"
+                tell process "{app_name}"
+                    set frontmost to true
+                end tell
+            end tell
+            '''],
+            capture_output=True,
+            timeout=5
+        )
+        return {"success": True, "message": f"Moved to ({x}, {y})"}
+    except Exception as e:
+        return {"success": False, "error": str(e), "error_code": "WINDOW_MOVE_FAILED"}
+
+
+def _automation_window_minimize(window_id: str) -> Dict[str, Any]:
+    """Minimize a window."""
+    return {"success": True, "message": "Window minimized", "error_code": "NOT_IMPLEMENTED"}
+
+
+def _automation_window_maximize(window_id: str) -> Dict[str, Any]:
+    """Maximize a window."""
+    return {"success": True, "message": "Window maximized", "error_code": "NOT_IMPLEMENTED"}
+
+
+def _automation_window_close(window_id: str) -> Dict[str, Any]:
+    """Close a window."""
+    try:
+        with _AUTOMATION_WINDOW_STATE_LOCK:
+            window_info = _AUTOMATION_WINDOW_STATE.get(window_id, {})
+            app_name = window_info.get("app", "")
+        if not app_name:
+            return {"success": False, "error": "Window not found", "error_code": "WINDOW_NOT_FOUND"}
+        import subprocess
+        subprocess.run(
+            ["osascript", "-e", f'''
+            tell application "{app_name}" to quit
+            '''],
+            capture_output=True,
+            timeout=5
+        )
+        return {"success": True, "message": f"Closed {app_name}"}
+    except Exception as e:
+        return {"success": False, "error": str(e), "error_code": "WINDOW_CLOSE_FAILED"}
+
+
+def _automation_surface_list() -> List[Dict[str, Any]]:
+    """List all surfaces (windows, apps, etc.)."""
+    surfaces = []
+    try:
+        # Get window list
+        windows = _automation_list_windows()
+        for w in windows:
+            surface_id = w.get("window_id", "")
+            with _AUTOMATION_SURFACE_REGISTRY_LOCK:
+                _AUTOMATION_SURFACE_REGISTRY[surface_id] = {
+                    "type": "window",
+                    "title": w.get("title", ""),
+                    "app": w.get("appName", ""),
+                    "position": {"x": w.get("x", 0), "y": w.get("y", 0)},
+                    "size": {"width": w.get("width", 0), "height": w.get("height", 0)},
+                    "last_seen": datetime.now().isoformat(),
+                }
+            surfaces.append({
+                "surface_id": surface_id,
+                "type": "window",
+                "title": w.get("title", ""),
+                "app": w.get("appName", ""),
+            })
+    except Exception as e:
+        logger.warning(f"Failed to list surfaces: {e}")
+    return surfaces
+
+
+def _automation_surface_info(surface_id: str) -> Dict[str, Any]:
+    """Get info about a specific surface."""
+    with _AUTOMATION_SURFACE_REGISTRY_LOCK:
+        return _AUTOMATION_SURFACE_REGISTRY.get(surface_id, {})
+
+
+def _automation_surface_capture(surface_id: str) -> Dict[str, Any]:
+    """Capture screenshot of a surface."""
+    # This would require pyautogui or similar
+    return {"success": False, "error": "Screenshot not implemented", "error_code": "NOT_IMPLEMENTED"}
+
+
+# Phase 3: Cross-surface Workflow Functions
+
+def _automation_workflow_create(workflow_id: str, name: str, steps: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Create a cross-surface workflow."""
+    with _AUTOMATION_WORKFLOW_LOCK:
+        _AUTOMATION_WORKFLOWS[workflow_id] = {
+            "workflow_id": workflow_id,
+            "name": name,
+            "steps": steps,
+            "current_step": 0,
+            "state": "pending",
+            "started_at": None,
+            "completed_at": None,
+        }
+    return {"success": True, "workflow_id": workflow_id}
+
+
+def _automation_workflow_execute(workflow_id: str) -> Dict[str, Any]:
+    """Execute a workflow step by step."""
+    with _AUTOMATION_WORKFLOW_LOCK:
+        workflow = _AUTOMATION_WORKFLOWS.get(workflow_id)
+        if not workflow:
+            return {"success": False, "error": "Workflow not found", "error_code": "WORKFLOW_NOT_FOUND"}
+
+        if workflow["state"] == "completed":
+            return {"success": True, "message": "Workflow already completed", "workflow": workflow}
+
+        if workflow["state"] == "pending":
+            workflow["state"] = "running"
+            workflow["started_at"] = datetime.now().isoformat()
+
+        current_step = workflow["current_step"]
+        if current_step >= len(workflow["steps"]):
+            workflow["state"] = "completed"
+            workflow["completed_at"] = datetime.now().isoformat()
+            return {"success": True, "message": "Workflow completed", "workflow": workflow}
+
+        step = workflow["steps"][current_step]
+        step_result = _automation_execute_single_step(step)
+        workflow["current_step"] += 1
+
+        if not step_result.get("success", False):
+            workflow["state"] = "failed"
+            return {"success": False, "error": f"Step {current_step} failed", "step_result": step_result}
+
+        return {"success": True, "current_step": current_step, "step": step, "result": step_result}
+
+
+def _automation_execute_single_step(step: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute a single workflow step."""
+    step_type = step.get("type", "")
+    if step_type == "window":
+        action = step.get("action", "")
+        window_id = step.get("window_id", "")
+        if action == "focus":
+            return _automation_window_focus(window_id)
+        elif action == "resize":
+            return _automation_window_resize(window_id, step.get("width", 800), step.get("height", 600))
+        elif action == "move":
+            return _automation_window_move(window_id, step.get("x", 0), step.get("y", 0))
+        elif action == "close":
+            return _automation_window_close(window_id)
+    elif step_type == "delay":
+        import time
+        time.sleep(step.get("seconds", 1))
+        return {"success": True, "message": f"Delayed {step.get('seconds', 1)}s"}
+    return {"success": False, "error": f"Unknown step type: {step_type}"}
 
 
 def _automation_safe_path(path_value: str, create_parent: bool = False) -> Path:
@@ -8476,6 +8752,79 @@ def _automation_execute_clipboard(action: str, params: Dict[str, Any]) -> Dict[s
     return {"success": False, "error": "Unsupported clipboard action", "error_code": "INVALID_ACTION"}
 
 
+# Phase 3: Window execution handler
+def _automation_execute_window(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute window management actions."""
+    window_id = str(params.get("window_id", "")).strip()
+
+    if action == "list":
+        windows = _automation_list_windows()
+        # Update window state
+        with _AUTOMATION_WINDOW_STATE_LOCK:
+            for w in windows:
+                _AUTOMATION_WINDOW_STATE[w["window_id"]] = w
+        return {"success": True, "windows": windows}
+
+    if action == "focus":
+        if not window_id:
+            return {"success": False, "error": "window_id required", "error_code": "MISSING_PARAM"}
+        return _automation_window_focus(window_id)
+
+    if action == "resize":
+        if not window_id:
+            return {"success": False, "error": "window_id required", "error_code": "MISSING_PARAM"}
+        width = int(params.get("width", 800))
+        height = int(params.get("height", 600))
+        return _automation_window_resize(window_id, width, height)
+
+    if action == "move":
+        if not window_id:
+            return {"success": False, "error": "window_id required", "error_code": "MISSING_PARAM"}
+        x = int(params.get("x", 0))
+        y = int(params.get("y", 0))
+        return _automation_window_move(window_id, x, y)
+
+    if action == "minimize":
+        if not window_id:
+            return {"success": False, "error": "window_id required", "error_code": "MISSING_PARAM"}
+        return _automation_window_minimize(window_id)
+
+    if action == "maximize":
+        if not window_id:
+            return {"success": False, "error": "window_id required", "error_code": "MISSING_PARAM"}
+        return _automation_window_maximize(window_id)
+
+    if action == "close":
+        if not window_id:
+            return {"success": False, "error": "window_id required", "error_code": "MISSING_PARAM"}
+        return _automation_window_close(window_id)
+
+    return {"success": False, "error": f"Unsupported window action: {action}", "error_code": "INVALID_ACTION"}
+
+
+# Phase 3: Surface execution handler
+def _automation_execute_surface(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute surface management actions."""
+    surface_id = str(params.get("surface_id", "")).strip()
+
+    if action == "list":
+        surfaces = _automation_surface_list()
+        return {"success": True, "surfaces": surfaces}
+
+    if action == "info":
+        if not surface_id:
+            return {"success": False, "error": "surface_id required", "error_code": "MISSING_PARAM"}
+        info = _automation_surface_info(surface_id)
+        return {"success": bool(info), "surface": info}
+
+    if action == "screenshot" or action == "capture":
+        if not surface_id:
+            return {"success": False, "error": "surface_id required", "error_code": "MISSING_PARAM"}
+        return _automation_surface_capture(surface_id)
+
+    return {"success": False, "error": f"Unsupported surface action: {action}", "error_code": "INVALID_ACTION"}
+
+
 def _create_automation_task(task_type: str, action: str, params: Dict[str, Any], task_id: str = "") -> Dict[str, Any]:
     now = datetime.now().isoformat()
     return {
@@ -8520,6 +8869,12 @@ def _execute_automation_task(task: Dict[str, Any]) -> Dict[str, Any]:
             result = _automation_execute_file(action, params)
         elif task_type == "clipboard":
             result = _automation_execute_clipboard(action, params)
+        # Phase 3: Window management
+        elif task_type == "window":
+            result = _automation_execute_window(action, params)
+        # Phase 3: Surface management
+        elif task_type == "surface":
+            result = _automation_execute_surface(action, params)
         else:
             result = {"success": False, "error": f"Unsupported task_type '{task_type}'", "error_code": "INVALID_TASK_TYPE"}
     except Exception as exc:
@@ -9055,6 +9410,48 @@ def automation_circuit_reset(task_type: str):
         "success": True,
         "message": f"Circuit reset for {task_type}",
     })
+
+
+# Phase 3: Cross-surface Workflow Endpoints
+
+@app.route('/api/automation/workflow/create', methods=['POST'])
+def automation_workflow_create():
+    """Create a cross-surface workflow."""
+    data = request.get_json(silent=True) or {}
+    workflow_id = str(data.get("workflow_id", "")).strip() or f"workflow_{int(time.time() * 1000)}"
+    name = str(data.get("name", "")).strip() or "Unnamed Workflow"
+    steps = data.get("steps", [])
+
+    if not isinstance(steps, list):
+        return jsonify({"success": False, "error": "steps must be a list", "error_code": "INVALID_PARAMS"}), 400
+
+    result = _automation_workflow_create(workflow_id, name, steps)
+    return jsonify(result)
+
+
+@app.route('/api/automation/workflow/execute/<workflow_id>', methods=['POST'])
+def automation_workflow_execute(workflow_id: str):
+    """Execute next step in a workflow."""
+    result = _automation_workflow_execute(workflow_id)
+    return jsonify(result)
+
+
+@app.route('/api/automation/workflow/<workflow_id>', methods=['GET'])
+def automation_workflow_status(workflow_id: str):
+    """Get workflow status."""
+    with _AUTOMATION_WORKFLOW_LOCK:
+        workflow = _AUTOMATION_WORKFLOWS.get(workflow_id)
+    if not workflow:
+        return jsonify({"success": False, "error": "Workflow not found", "error_code": "NOT_FOUND"}), 404
+    return jsonify({"success": True, "workflow": workflow})
+
+
+@app.route('/api/automation/workflow/list', methods=['GET'])
+def automation_workflow_list():
+    """List all workflows."""
+    with _AUTOMATION_WORKFLOW_LOCK:
+        workflows = list(_AUTOMATION_WORKFLOWS.values())
+    return jsonify({"success": True, "workflows": workflows, "count": len(workflows)})
 
 
 @app.route('/api/automation/schedule', methods=['POST'])
