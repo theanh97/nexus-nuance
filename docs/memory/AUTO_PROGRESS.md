@@ -1,6 +1,6 @@
 # Nexus Progress Snapshot
 
-Last updated: 2026-02-17T22:22:47.515820
+Last updated: 2026-02-17T22:30:54.210960
 
 ## Project
 - name: Nexus
@@ -35,9 +35,9 @@ Last updated: 2026-02-17T22:22:47.515820
 - provider: pyautogui
 
 ## Signals (last window)
-- counts: {'error': 2, 'warning': 6, 'success': 43, 'info': 65}
-- top_agent: guardian
-- latest_event: Agent coordination (exec) instances=1 agents=3 saved92 tokens tasks=3
+- counts: {'error': 4, 'warning': 2, 'success': 15, 'info': 99}
+- top_agent: orion
+- latest_event: Routing glm-4-flash for test_generation
 
 ## Pending
 - pending_decisions: 0

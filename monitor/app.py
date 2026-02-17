@@ -400,6 +400,77 @@ _hub_next_action_autopilot_stop_event = threading.Event()
 _hub_next_action_autopilot_lock = threading.RLock()
 _hub_next_action_autopilot_last_run: Optional[datetime] = None
 _hub_next_action_autopilot_last_error: Optional[str] = None
+
+
+def _hub_next_action_autopilot_loop() -> None:
+    """Background loop that auto-executes next actions based on policy."""
+    global _hub_next_action_autopilot_last_run, _hub_next_action_autopilot_last_error
+    logger.info("🚀 Hub Next-Action Autopilot loop started")
+
+    while not _hub_next_action_autopilot_stop_event.is_set():
+        try:
+            if not HUB_NEXT_ACTION_AUTOPILOT_ENABLED:
+                _hub_next_action_autopilot_stop_event.wait(HUB_NEXT_ACTION_AUTOPILOT_INTERVAL_SEC)
+                continue
+
+            actions = _hub_next_actions(limit=HUB_NEXT_ACTION_AUTOPILOT_MAX_PER_TICK * 2)
+            if not actions:
+                _hub_next_action_autopilot_stop_event.wait(HUB_NEXT_ACTION_AUTOPILOT_INTERVAL_SEC)
+                continue
+
+            executed_count = 0
+            for action in actions[:HUB_NEXT_ACTION_AUTOPILOT_MAX_PER_TICK]:
+                action_type = action.get("action_type", "")
+
+                if HUB_NEXT_ACTION_AUTOPILOT_ALLOW_TYPES and action_type.lower() not in HUB_NEXT_ACTION_AUTOPILOT_ALLOW_TYPES:
+                    logger.debug(f"Skipping {action_type}: not allowed")
+                    continue
+
+                should_exec, reason = True, "Allowed"
+                if "_AUTOPILOT_STATE" in dir():
+                    should_exec, reason = _autopilot_should_execute(action)
+
+                if not should_exec:
+                    logger.debug(f"Blocked: {reason}")
+                    continue
+
+                result = _autopilot_execute_action(action)
+                executed_count += 1
+
+                if result.get("success"):
+                    logger.info(f"✅ Autopilot: {action_type}")
+                    state.add_agent_log("autopilot", f"🎯 Auto: {action.get('title', action_type)}", "success")
+                else:
+                    logger.warning(f"❌ Autopilot failed: {result.get('error')}")
+                    state.add_agent_log("autopilot", f"⚠️ Failed: {action.get('title', action_type)}", "warning")
+
+            _hub_next_action_autopilot_last_run = datetime.now()
+            _hub_next_action_autopilot_last_error = None
+            if executed_count > 0:
+                logger.info(f"🤖 Autopilot: {executed_count} actions")
+
+        except Exception as exc:
+            logger.error(f"Autopilot error: {exc}")
+            _hub_next_action_autopilot_last_error = str(exc)
+
+        _hub_next_action_autopilot_stop_event.wait(HUB_NEXT_ACTION_AUTOPILOT_INTERVAL_SEC)
+
+
+def _ensure_hub_autopilot_started() -> None:
+    global _hub_next_action_autopilot_thread
+    with _hub_next_action_autopilot_lock:
+        if _hub_next_action_autopilot_thread and _hub_next_action_autopilot_thread.is_alive():
+            return
+        _hub_next_action_autopilot_stop_event.clear()
+        _hub_next_action_autopilot_thread = threading.Thread(
+            target=_hub_next_action_autopilot_loop,
+            name="hub-autopilot",
+            daemon=True,
+        )
+        _hub_next_action_autopilot_thread.start()
+        logger.info("✅ Hub autopilot started")
+
+
 _openclaw_self_heal_thread: Optional[threading.Thread] = None
 _openclaw_self_heal_stop_event = threading.Event()
 _openclaw_self_heal_lock = threading.RLock()
@@ -426,6 +497,14 @@ _automation_recent_tasks: deque = deque(maxlen=AUTOMATION_TASK_HISTORY_MAX)
 _INTERNAL_LOOPBACK_AUTH_EXEMPT_PATHS = {
     "/api/control-plane/workers/register",
     "/api/control-plane/workers/heartbeat",
+    # Autopilot endpoints
+    "/api/hub/autopilot/status",
+    "/api/hub/autopilot/config",
+    "/api/hub/autopilot/run",
+    "/api/hub/autopilot/preview",
+    # Hub endpoints for local testing
+    "/api/hub/next-actions",
+    "/api/hub/workload",
 }
 
 
@@ -8665,6 +8744,36 @@ def automation_control():
     # Get current enabled state
     enabled, reason = _automation_is_enabled()
 
+    # Calculate stale sessions (Phase 1)
+    stale_sessions = []
+    now = time.time()
+    with _AUTOMATION_TASKS_LOCK:
+        for sid, sess in _automation_sessions.items():
+            last_hb = sess.get("last_heartbeat_at")
+            if last_hb:
+                try:
+                    hb_time = datetime.fromisoformat(str(last_hb)).timestamp()
+                    if now - hb_time > AUTOMATION_SESSION_LEASE_TTL_SEC * 2:
+                        stale_sessions.append({"session_id": sid, "last_heartbeat": last_hb})
+                except:
+                    pass
+
+    # Calculate queue depth summary
+    queue_total = 0
+    queue_by_owner = {}
+    with _AUTOMATION_TASKS_LOCK:
+        for sid, sess in _automation_sessions.items():
+            depth = sess.get("queue_depth", 0)
+            owner = sess.get("owner_id", "unknown")
+            queue_total += depth
+            queue_by_owner[owner] = queue_by_owner.get(owner, 0) + depth
+
+    # Get rate limit info
+    with _AUTOMATION_RATE_LOCK:
+        rate_summary = {}
+        for owner_id, info in _AUTOMATION_RATE_COUNTS.items():
+            rate_summary[owner_id] = {"count": info["count"], "window_start": info["window_start"]}
+
     if action == "status":
         # Get rate limit info
         with _AUTOMATION_RATE_LOCK:
@@ -8682,6 +8791,14 @@ def automation_control():
                     "schedules_count": len(_automation_scheduled_tasks),
                     "tasks_cached": len(_automation_tasks_by_id),
                     "sessions_count": len(_automation_sessions),
+                    # Phase 1: Enhanced status
+                    "stale_sessions": stale_sessions,
+                    "stale_count": len(stale_sessions),
+                    "queue_summary": {
+                        "total_depth": queue_total,
+                        "by_owner": queue_by_owner,
+                    },
+                    "lease_ttl_sec": AUTOMATION_SESSION_LEASE_TTL_SEC,
                     "rate_limits": _AUTOMATION_RATE_MAX_PER_WINDOW,
                     "rate_usage": rate_summary,
                     "task_classes": {
@@ -12806,6 +12923,7 @@ def run_dashboard(host: str = "localhost", port: int = 5001):
     print(f"🚀 Dashboard running at http://{host}:{port}")
     print(f"📊 Real-time updates enabled via Socket.IO")
     _ensure_monitor_supervisor_started()
+    _ensure_hub_autopilot_started()
     _ensure_openclaw_self_heal_started()
     if OPENCLAW_SELF_HEAL_BOOTSTRAP:
         try:
