@@ -504,7 +504,12 @@ _INTERNAL_LOOPBACK_AUTH_EXEMPT_PATHS = {
     "/api/hub/autopilot/preview",
     # Hub endpoints for local testing
     "/api/hub/next-actions",
+    "/api/hub/next-action/autopilot/status",
+    "/api/hub/next-action/autopilot/control",
     "/api/hub/workload",
+    # Bridge endpoints
+    "/api/bridge/sync/terminals",
+    "/api/bridge/terminals",
 }
 
 
@@ -11646,6 +11651,52 @@ try:
                 "timestamp": datetime.now().isoformat(),
             }
         )
+
+    @app.route('/api/hub/next-action/autopilot/status')
+    def get_hub_autopilot_status():
+        """Get hub next-action autopilot status."""
+        with _hub_next_action_autopilot_lock:
+            return jsonify({
+                "success": True,
+                "enabled": HUB_NEXT_ACTION_AUTOPILOT_ENABLED,
+                "interval_sec": HUB_NEXT_ACTION_AUTOPILOT_INTERVAL_SEC,
+                "max_per_tick": HUB_NEXT_ACTION_AUTOPILOT_MAX_PER_TICK,
+                "allowed_types": list(HUB_NEXT_ACTION_AUTOPILOT_ALLOW_TYPES),
+                "running": _hub_next_action_autopilot_thread is not None and _hub_next_action_autopilot_thread.is_alive(),
+                "last_run": _hub_next_action_autopilot_last_run.isoformat() if _hub_next_action_autopilot_last_run else None,
+                "last_error": _hub_next_action_autopilot_last_error,
+                "timestamp": datetime.now().isoformat(),
+            })
+
+    @app.route('/api/hub/next-action/autopilot/control', methods=['POST'])
+    def control_hub_autopilot():
+        """Control hub next-action autopilot."""
+        data = request.get_json(silent=True) or {}
+        action = data.get("action", "")
+
+        if action == "start":
+            _ensure_hub_autopilot_started()
+            return jsonify({"success": True, "message": "Autopilot started"})
+        elif action == "stop":
+            with _hub_next_action_autopilot_lock:
+                if _hub_next_action_autopilot_thread and _hub_next_action_autopilot_thread.is_alive():
+                    _hub_next_action_autopilot_stop_event.set()
+                    _hub_next_action_autopilot_thread.join(timeout=5)
+            return jsonify({"success": True, "message": "Autopilot stopped"})
+        elif action == "trigger":
+            # Run one cycle immediately
+            try:
+                actions = _hub_next_actions(limit=HUB_NEXT_ACTION_AUTOPILOT_MAX_PER_TICK)
+                executed = 0
+                for action in actions[:HUB_NEXT_ACTION_AUTOPILOT_MAX_PER_TICK]:
+                    result = _autopilot_execute_action(action)
+                    if result.get("success"):
+                        executed += 1
+                return jsonify({"success": True, "executed": executed, "total": len(actions)})
+            except Exception as e:
+                return jsonify({"success": False, "error": str(e)})
+        else:
+            return jsonify({"success": False, "error": "Unknown action"}), 400
 
     # ========== Autopilot: Auto-Execute Next Actions ==========
     _AUTOPILOT_STATE: Dict[str, Any] = {

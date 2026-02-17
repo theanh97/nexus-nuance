@@ -274,6 +274,53 @@ def test_monitor_autopilot_disable_full_auto_uses_temporary_pause(client, monkey
     assert body["pause_until"] is not None
 
 
+def test_hub_next_action_autopilot_status(client):
+    """Test hub next-action autopilot status endpoint."""
+    resp = client.get("/api/hub/next-action/autopilot/status")
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["success"] is True
+    assert "enabled" in body
+    assert "interval_sec" in body
+    assert "running" in body
+    assert "allowed_types" in body
+    assert isinstance(body["allowed_types"], list)
+
+
+def test_hub_next_action_autopilot_control_trigger(client):
+    """Test hub next-action autopilot trigger action."""
+    resp = client.post("/api/hub/next-action/autopilot/control", json={"action": "trigger"})
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["success"] is True
+    assert "executed" in body
+
+
+def test_hub_next_action_autopilot_control_start(client):
+    """Test hub next-action autopilot start."""
+    resp = client.post("/api/hub/next-action/autopilot/control", json={"action": "start"})
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["success"] is True
+    assert "started" in body["message"].lower()
+
+
+def test_hub_next_action_autopilot_control_stop(client):
+    """Test hub next-action autopilot stop."""
+    resp = client.post("/api/hub/next-action/autopilot/control", json={"action": "stop"})
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["success"] is True
+
+
+def test_hub_next_action_autopilot_control_unknown(client):
+    """Test hub next-action autopilot unknown action."""
+    resp = client.post("/api/hub/next-action/autopilot/control", json={"action": "unknown"})
+    assert resp.status_code == 400
+    body = resp.get_json()
+    assert body["success"] is False
+
+
 def test_slo_summary_endpoint(client):
     resp = client.get("/api/slo/summary")
     assert resp.status_code == 200
