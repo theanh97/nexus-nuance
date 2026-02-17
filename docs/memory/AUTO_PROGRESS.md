@@ -1,6 +1,6 @@
 # Nexus Progress Snapshot
 
-Last updated: 2026-02-17T23:37:19.094085
+Last updated: 2026-02-17T23:41:11.768590
 
 ## Project
 - name: Nexus
@@ -11,14 +11,14 @@ Last updated: 2026-02-17T23:37:19.094085
 
 ## Orion
 - instance: orion-1 (Orion 1)
-- running: False
+- running: True
 - paused: False
 - pause_reason: 
-- iteration: None
-- active_flows: 0
-- last_progress_at: None
-- last_cycle_started_at: None
-- last_cycle_finished_at: None
+- iteration: 3
+- active_flows: 3
+- last_progress_at: 2026-02-17T23:41:07.238832
+- last_cycle_started_at: 2026-02-17T23:38:46.249836
+- last_cycle_finished_at: 2026-02-17T23:41:07.226186
 
 ## Monitor
 - autopilot_enabled: True
@@ -26,8 +26,8 @@ Last updated: 2026-02-17T23:37:19.094085
 - interval_sec: 10
 - stuck_threshold_sec: 90
 - cooldown_sec: 35
-- last_reason: {}
-- last_recovery: {}
+- last_reason: {'orion-1': 'no_progress:136s'}
+- last_recovery: {'orion-1': '2026-02-17T23:41:01.906547'}
 
 ## Computer Control
 - available: True
@@ -35,9 +35,9 @@ Last updated: 2026-02-17T23:37:19.094085
 - provider: pyautogui
 
 ## Signals (last window)
-- counts: {'error': 5, 'warning': 35, 'success': 13, 'info': 67}
+- counts: {'error': 5, 'warning': 3, 'success': 14, 'info': 98}
 - top_agent: orion
-- latest_event: Routing glm-4-flash for test_generation
+- latest_event: Duration: 141.0s
 
 ## Pending
 - pending_decisions: 0
