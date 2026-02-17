@@ -501,6 +501,9 @@ _INTERNAL_LOOPBACK_AUTH_EXEMPT_PATHS = {
     "/api/automation/control",
     "/api/automation/dlq",
     "/api/automation/dlq/clear",
+    "/api/automation/execute",
+    "/api/automation/sessions",
+    "/api/automation/sessions/lease",
     # Autopilot endpoints
     "/api/hub/autopilot/status",
     "/api/hub/autopilot/config",
