@@ -67,6 +67,7 @@ from .learning_loop import (
     LearningLoop,
     get_learning_loop,
     start_learning,
+    start_learning_resilient,
     learn,
     status
 )
@@ -282,6 +283,7 @@ from .learning_policy import (
     select_learning_policy,
     update_learning_policy,
     get_learning_policy_state,
+    apply_policy_drift_guard,
 )
 
 from .cafe_loop import (
@@ -308,7 +310,7 @@ __all__ = [
     "track_decision", "track_action", "track_error", "health_check",
 
     # Learning Loop
-    "LearningLoop", "get_learning_loop", "start_learning", "learn", "status",
+    "LearningLoop", "get_learning_loop", "start_learning", "start_learning_resilient", "learn", "status",
 
     # Advanced Learning
     "AdvancedLearningEngine", "get_learning_engine", "run_daily_learning",
@@ -391,7 +393,7 @@ __all__ = [
     "ProposalEngineV2", "get_proposal_engine_v2", "generate_proposals_v2",
     "ExperimentExecutor", "get_experiment_executor", "execute_proposal",
     "OutcomeVerifier", "get_outcome_verifier", "verify_experiment",
-    "select_learning_policy", "update_learning_policy", "get_learning_policy_state",
+    "select_learning_policy", "update_learning_policy", "get_learning_policy_state", "apply_policy_drift_guard",
     "CAFEScorer", "get_cafe_scorer",
     "CafeCalibrator", "get_cafe_calibrator",
 ]

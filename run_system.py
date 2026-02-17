@@ -90,7 +90,7 @@ class AutoDevSystem:
         self.manual_override_sec = int(os.getenv("MANUAL_OVERRIDE_SEC", "90"))
         self.manual_override_until: Optional[datetime] = None
         self.manual_override_reason: str = ""
-        self.autonomy_profile = self._normalize_autonomy_profile(os.getenv("AUTONOMY_PROFILE", "balanced"))
+        self.autonomy_profile = self._normalize_autonomy_profile(os.getenv("AUTONOMY_PROFILE", "full_auto"))
         self.full_auto_user_pause_max_sec = max(
             60,
             int(os.getenv("MONITOR_FULL_AUTO_USER_PAUSE_MAX_SEC", "240")),

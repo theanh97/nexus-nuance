@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.memory import (
-    start_learning, status, health_check,
+    start_learning, start_learning_resilient, status, health_check,
     scan_knowledge, get_pending_improvements
 )
 from src.core.runtime_sync import run_full_sync
@@ -48,6 +48,26 @@ def main():
     parser.add_argument(
         "--iterations", type=int, default=None,
         help="Maximum iterations (default: infinite)"
+    )
+    parser.add_argument(
+        "--resilient", action="store_true",
+        help="Enable resilient loop mode (auto restart on iteration crash)"
+    )
+    parser.add_argument(
+        "--max-restarts", type=int, default=None,
+        help="Max consecutive crash restarts in resilient mode (default: infinite)"
+    )
+    parser.add_argument(
+        "--restart-delay", type=int, default=3,
+        help="Base restart delay in seconds for resilient mode (default: 3)"
+    )
+    parser.add_argument(
+        "--restart-delay-max", type=int, default=120,
+        help="Max restart delay in seconds for resilient mode (default: 120)"
+    )
+    parser.add_argument(
+        "--restart-jitter", type=float, default=2.0,
+        help="Max random jitter seconds added to restart delay (default: 2.0)"
     )
     parser.add_argument(
         "--sync-models", action="store_true",
@@ -408,11 +428,22 @@ def main():
     print(f"\n🚀 Starting Continuous Learning")
     print(f"   Interval: {args.interval}s")
     print(f"   Max iterations: {args.iterations or 'infinite'}")
+    print(f"   Mode: {'resilient' if args.resilient else 'standard'}")
     print("-" * 40)
     print("\nPress Ctrl+C to stop\n")
 
     try:
-        start_learning(interval=args.interval, max_iterations=args.iterations)
+        if args.resilient:
+            start_learning_resilient(
+                interval=args.interval,
+                max_iterations=args.iterations,
+                max_restarts=args.max_restarts,
+                restart_delay_seconds=args.restart_delay,
+                restart_delay_max_seconds=args.restart_delay_max,
+                restart_jitter_seconds=args.restart_jitter,
+            )
+        else:
+            start_learning(interval=args.interval, max_iterations=args.iterations)
     except KeyboardInterrupt:
         print("\n\n⏹️ Stopped by user")
         print("=" * 60)

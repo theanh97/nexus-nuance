@@ -43,18 +43,28 @@ class AsyncAgent(ABC):
         self.model = model
         self.api_key = api_key
         self.api_base = api_base or os.getenv("GLM_API_BASE") or os.getenv("ZAI_OPENAI_BASE_URL", "https://api.z.ai/api/openai/v1")
+        autonomy_profile = str(os.getenv("AUTONOMY_PROFILE", "balanced") or "").strip().lower()
+        full_auto_profile = autonomy_profile == "full_auto"
+
+        def _env_bool(name: str, default: bool) -> bool:
+            value = os.getenv(name)
+            if value is None:
+                return default
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+
         self.router = ModelRouter()
-        self.smart_routing_enabled = os.getenv("ENABLE_SMART_ROUTING", "true").lower() == "true"
-        self.subscription_fallback_enabled = os.getenv("ENABLE_SUBSCRIPTION_FALLBACK", "false").lower() == "true"
-        self.subscription_critical_only = os.getenv("SUBSCRIPTION_FALLBACK_CRITICAL_ONLY", "false").lower() == "true"
-        self.subscription_first_for_critical = os.getenv("SUBSCRIPTION_FIRST_FOR_CRITICAL", "false").lower() == "true"
-        self.subscription_primary_routing_enabled = os.getenv("ENABLE_SUBSCRIPTION_PRIMARY_ROUTING", "false").lower() == "true"
-        self.subscription_primary_cost_only = os.getenv("SUBSCRIPTION_PRIMARY_COST_ONLY", "true").lower() == "true"
-        self.auto_subscription_cost_routing = os.getenv("ENABLE_AUTO_SUBSCRIPTION_COST_ROUTING", "true").lower() == "true"
+        self.smart_routing_enabled = _env_bool("ENABLE_SMART_ROUTING", True)
+        self.subscription_fallback_enabled = _env_bool("ENABLE_SUBSCRIPTION_FALLBACK", full_auto_profile)
+        self.subscription_critical_only = _env_bool("SUBSCRIPTION_FALLBACK_CRITICAL_ONLY", False)
+        self.subscription_first_for_critical = _env_bool("SUBSCRIPTION_FIRST_FOR_CRITICAL", False)
+        self.subscription_primary_routing_enabled = _env_bool("ENABLE_SUBSCRIPTION_PRIMARY_ROUTING", full_auto_profile)
+        self.subscription_primary_cost_only = _env_bool("SUBSCRIPTION_PRIMARY_COST_ONLY", True)
+        self.auto_subscription_cost_routing = _env_bool("ENABLE_AUTO_SUBSCRIPTION_COST_ROUTING", True)
         self.subscription_failure_threshold = max(1, int(os.getenv("SUBSCRIPTION_FAILURE_THRESHOLD", "2")))
         self.subscription_failure_cooldown_sec = max(30, int(os.getenv("SUBSCRIPTION_FAILURE_COOLDOWN_SEC", "180")))
-        self.subscription_skip_when_no_tty = os.getenv("SUBSCRIPTION_SKIP_WHEN_NO_TTY", "true").lower() == "true"
-        self.keep_current_model_first = os.getenv("ROUTER_KEEP_CURRENT_MODEL_FIRST", "false").lower() == "true"
+        self.subscription_skip_when_no_tty = _env_bool("SUBSCRIPTION_SKIP_WHEN_NO_TTY", not full_auto_profile)
+        self.keep_current_model_first = _env_bool("ROUTER_KEEP_CURRENT_MODEL_FIRST", False)
+        self.continue_on_non_retryable_api_error = _env_bool("ROUTER_CONTINUE_ON_NON_RETRYABLE_API_ERROR", True)
         self.prompt_system = get_prompt_system()
         self.prompt_system.ensure_core_directives()
 
@@ -294,8 +304,7 @@ class AsyncAgent(ABC):
                 "retryable": retryable,
                 "error_class": error_class,
             })
-            # Do not abort the whole routing chain on subscription/config errors.
-            if not retryable and cfg.supports_api:
+            if not retryable and cfg.supports_api and not self.continue_on_non_retryable_api_error:
                 break
 
         if can_try_subscription:
@@ -421,7 +430,20 @@ class AsyncAgent(ABC):
         text = str(error_text or "").lower()
         if not text:
             return "unknown"
-        if any(k in text for k in ["timeout", "rate limit", "quota", "429", "temporarily unavailable", "overloaded", "connection reset", "network", "service unavailable", "upstream"]):
+        if any(k in text for k in [
+            "timeout",
+            "rate limit",
+            "quota",
+            "429",
+            "temporarily unavailable",
+            "overloaded",
+            "connection reset",
+            "network",
+            "service unavailable",
+            "upstream",
+            "name or service not known",
+            "nodename nor servname",
+        ]):
             return "transient"
         if any(k in text for k in ["unauthorized", "invalid api key", "authentication", "forbidden", "permission denied", "insufficient_quota"]):
             return "auth"
@@ -429,7 +451,21 @@ class AsyncAgent(ABC):
             return "subscription_non_tty"
         if any(k in text for k in ["no such file", "not found", "unavailable", "missing", "not installed"]):
             return "missing_dependency"
-        if any(k in text for k in ["invalid config", "yaml", "json", "parse", "unsupported", "bad option"]):
+        if any(k in text for k in [
+            "invalid config",
+            "yaml",
+            "json",
+            "parse",
+            "unsupported",
+            "bad option",
+            "model not found",
+            "model does not exist",
+            "unknown model",
+            "invalid model",
+            "model is not available",
+            "模型不存在",
+            "mô hình không tồn tại",
+        ]):
             return "config"
         return "runtime"
 

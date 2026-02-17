@@ -14,6 +14,7 @@ HEALTH_PATH="${AUTODEV_24X7_HEALTH_PATH:-/api/status}"
 HEALTH_TIMEOUT_SEC="${AUTODEV_24X7_HEALTH_TIMEOUT_SEC:-6}"
 RESTART_DELAY_SEC="${AUTODEV_24X7_RESTART_DELAY_SEC:-3}"
 EXTRA_ARGS="${AUTODEV_24X7_EXTRA_ARGS:-}"
+STOP_BEHAVIOR="${AUTODEV_24X7_STOP_BEHAVIOR:-resume}"
 
 if [ "${AUTODEV_FORCE_STALE_LOCK_CLEANUP:-false}" = "true" ] || \
    [ "${AUTODEV_FORCE_STALE_LOCK_CLEANUP:-false}" = "1" ]; then
@@ -46,9 +47,12 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] host=$DASHBOARD_HOST port=$DASHBOARD_PORT" 
 
 while :; do
   if [ -f "$STOP_FLAG" ]; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] stop flag detected -> exit supervisor" >> "$LOG_PATH"
     rm -f "$STOP_FLAG"
-    exit 0
+    if [ "$STOP_BEHAVIOR" = "exit" ]; then
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] stop flag detected -> exit supervisor (behavior=exit)" >> "$LOG_PATH"
+      exit 0
+    fi
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] stop flag detected -> consumed and continue (behavior=$STOP_BEHAVIOR)" >> "$LOG_PATH"
   fi
 
   cleanup_stale_lock

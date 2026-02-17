@@ -1,6 +1,6 @@
 # Nexus Progress Snapshot
 
-Last updated: 2026-02-17T04:25:42Z
+Last updated: 2026-02-17T19:45:31.191266
 
 ## Project
 - name: Nexus
@@ -11,14 +11,14 @@ Last updated: 2026-02-17T04:25:42Z
 
 ## Orion
 - instance: orion-1 (Orion 1)
-- running: False
+- running: True
 - paused: False
 - pause_reason: 
-- iteration: None
-- active_flows: 0
-- last_progress_at: None
-- last_cycle_started_at: None
-- last_cycle_finished_at: None
+- iteration: 69
+- active_flows: 3
+- last_progress_at: 2026-02-17T19:45:28.870581
+- last_cycle_started_at: 2026-02-17T19:45:28.789304
+- last_cycle_finished_at: 2026-02-17T19:45:28.855250
 
 ## Monitor
 - autopilot_enabled: True
@@ -26,8 +26,8 @@ Last updated: 2026-02-17T04:25:42Z
 - interval_sec: 10
 - stuck_threshold_sec: 90
 - cooldown_sec: 35
-- last_reason: {}
-- last_recovery: {}
+- last_reason: {'orion-1': 'paused:dashboard_interrupt'}
+- last_recovery: {'orion-1': '2026-02-17T19:31:41.043907'}
 
 ## Computer Control
 - available: True
@@ -35,15 +35,9 @@ Last updated: 2026-02-17T04:25:42Z
 - provider: pyautogui
 
 ## Signals (last window)
-- counts: {'error': 0, 'warning': 9, 'success': 12, 'info': 98}
+- counts: {'error': 0, 'warning': 12, 'success': 5, 'info': 103}
 - top_agent: orion
-- latest_event: Self-improvement complete: 0 applied, 0 pending
+- latest_event: OpenClaw self-heal failed; fallback attempted.
 
 ## Pending
 - pending_decisions: 0
-
-## Self-Learning Upgrades
-- CAFE loop added for event/evidence quality gating.
-- Automatic CAFE calibration for per-model confidence bias.
-- Verification holdout window to reduce premature inconclusive verdicts.
-- Self-assessment score exposed in status for health and stagnation checks.

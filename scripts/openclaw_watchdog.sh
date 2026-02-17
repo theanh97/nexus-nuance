@@ -10,6 +10,7 @@ INTERVAL_SEC="${OPENCLAW_WATCHDOG_INTERVAL_SEC:-30}"
 RESTART_ON_FAIL="${OPENCLAW_WATCHDOG_RESTART_ON_FAIL:-true}"
 FAIL_THRESHOLD="${OPENCLAW_WATCHDOG_FAIL_THRESHOLD:-2}"
 RESTART_COOLDOWN_SEC="${OPENCLAW_WATCHDOG_RESTART_COOLDOWN_SEC:-120}"
+STOP_BEHAVIOR="${OPENCLAW_WATCHDOG_STOP_BEHAVIOR:-resume}"
 
 mkdir -p "$(dirname "$LOG_PATH")" "$(dirname "$STOP_FLAG")"
 
@@ -25,8 +26,11 @@ log "openclaw watchdog started (interval=${INTERVAL_SEC}s, restart_on_fail=${RES
 while :; do
   if [ -f "$STOP_FLAG" ]; then
     rm -f "$STOP_FLAG"
-    log "stop flag detected -> exit watchdog"
-    exit 0
+    if [ "$STOP_BEHAVIOR" = "exit" ]; then
+      log "stop flag detected -> exit watchdog (behavior=exit)"
+      exit 0
+    fi
+    log "stop flag detected -> consumed and continue (behavior=$STOP_BEHAVIOR)"
   fi
 
   if openclaw gateway probe >/dev/null 2>&1; then
@@ -49,4 +53,3 @@ while :; do
 
   sleep "$INTERVAL_SEC"
 done
-

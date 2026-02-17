@@ -7,9 +7,12 @@ import os
 import asyncio
 import json
 import hashlib
+import time
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 from pathlib import Path
+
+import requests
 
 from src.core.agent import AsyncAgent
 from src.core.message import AgentMessage, MessageType, Priority, TaskResult, ProjectContext
@@ -74,6 +77,14 @@ class Orion(AsyncAgent):
         self.last_nova_iteration = 0
         self.last_nova_result: Optional[TaskResult] = None
         self.agent_controls: Dict[str, Dict[str, Any]] = {}
+
+        self.instance_id = str(os.getenv("ORION_INSTANCE_ID", self.name.lower())).strip().lower() or self.name.lower()
+        self.control_plane_base_url = str(os.getenv("MONITOR_BASE_URL", os.getenv("OPENCLAW_DASHBOARD_URL", "http://127.0.0.1:5050"))).strip().rstrip("/")
+        self.control_plane_lease_ttl_sec = max(10, int(os.getenv("CONTROL_PLANE_DEFAULT_LEASE_TTL_SEC", "35")))
+        self.control_plane_heartbeat_interval_sec = max(3, int(os.getenv("ORION_CONTROL_PLANE_HEARTBEAT_SEC", "10")))
+        self.task_lease_heartbeat_interval_sec = max(10, int(os.getenv("ORION_TASK_LEASE_HEARTBEAT_SEC", "60")))
+        self._last_control_plane_heartbeat_at: float = 0.0
+        self._last_task_lease_heartbeat_at: float = 0.0
 
         # User commands
         self.user_commands: asyncio.Queue = asyncio.Queue()
@@ -222,6 +233,7 @@ class Orion(AsyncAgent):
         """
 
         self._log("🔄 Starting INFINITE improvement loop")
+        self._register_control_plane_worker()
 
         while self.running and self.iteration < self.max_iterations:
 
@@ -301,6 +313,7 @@ class Orion(AsyncAgent):
 
         cycle_start = datetime.now()
         self.last_cycle_started_at = cycle_start
+        self._heartbeat_control_plane()
         cycle_result = {
             "iteration": self.iteration,
             "timestamp": cycle_start.isoformat(),
@@ -556,7 +569,113 @@ class Orion(AsyncAgent):
 
     def _orion_lease_owner_id(self) -> str:
         """Stable owner identifier for claiming hub tasks."""
-        return f"orion:{self.name.lower()}"
+        return f"orion:{self.instance_id}"
+
+    def _register_control_plane_worker(self) -> None:
+        if not self.control_plane_base_url:
+            return
+        payload = {
+            "worker_id": self.instance_id,
+            "capabilities": ["orion", "openclaw", "guardian"],
+            "version": "orion-runtime",
+            "region": "local",
+            "mode": "local",
+            "lease_ttl_sec": self.control_plane_lease_ttl_sec,
+            "metadata": {
+                "agent": self.name,
+                "source": "orion_loop",
+            },
+        }
+        try:
+            requests.post(
+                f"{self.control_plane_base_url}/api/control-plane/workers/register",
+                json=payload,
+                timeout=2.5,
+            )
+        except Exception as exc:
+            self._log(f"⚠️ Control-plane register skipped: {exc}")
+
+    def _heartbeat_control_plane(self, running_task: Optional[Dict[str, Any]] = None) -> None:
+        now = time.time()
+        if now - self._last_control_plane_heartbeat_at < self.control_plane_heartbeat_interval_sec:
+            return
+        if not self.control_plane_base_url:
+            return
+
+        payload = {
+            "worker_id": self.instance_id,
+            "health": "ok" if self.running and not self.paused else "degraded",
+            "queue_depth": 0,
+            "running_tasks": 1 if running_task else 0,
+            "backpressure_level": "normal",
+            "lease_ttl_sec": self.control_plane_lease_ttl_sec,
+            "metadata": {
+                "iteration": self.iteration,
+                "paused": self.paused,
+                "task_id": str(running_task.get("id")) if isinstance(running_task, dict) else "",
+            },
+        }
+        try:
+            requests.post(
+                f"{self.control_plane_base_url}/api/control-plane/workers/heartbeat",
+                json=payload,
+                timeout=2.5,
+            )
+            self._last_control_plane_heartbeat_at = now
+        except Exception as exc:
+            self._log(f"⚠️ Control-plane heartbeat failed: {exc}")
+
+    def _heartbeat_task_lease(self, task: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if not isinstance(task, dict):
+            return {"success": False, "error_code": "NO_TASK"}
+
+        lease = task.get("lease") if isinstance(task.get("lease"), dict) else {}
+        task_id = str(task.get("id") or "").strip()
+        lease_token = str(lease.get("lease_token") or "").strip()
+        owner_id = self._orion_lease_owner_id()
+
+        if not task_id or not lease_token:
+            return {"success": False, "error_code": "MISSING_LEASE_CONTEXT"}
+
+        now = time.time()
+        if now - self._last_task_lease_heartbeat_at < self.task_lease_heartbeat_interval_sec:
+            return {"success": True, "skipped": True}
+
+        try:
+            hub = get_multi_orion_hub()
+            result = hub.heartbeat_task_lease(
+                task_id=task_id,
+                owner_id=owner_id,
+                lease_token=lease_token,
+                lease_sec=max(90, self.task_lease_heartbeat_interval_sec * 2),
+            )
+            if result.get("success"):
+                refreshed_lease = result.get("lease") if isinstance(result.get("lease"), dict) else {}
+                if refreshed_lease:
+                    task["lease"] = refreshed_lease
+                self._last_task_lease_heartbeat_at = now
+            return result
+        except Exception as exc:
+            return {"success": False, "error": str(exc), "error_code": "LEASE_HEARTBEAT_ERROR"}
+
+    def _task_assigned_to_this_orion(self, task: Dict[str, Any]) -> bool:
+        assigned = str(task.get("assigned_to") or "").strip().lower()
+        if not assigned:
+            return True
+
+        instance_id = str(self.instance_id or "").strip().lower()
+        name_alias = str(self.name or "").strip().lower()
+        candidates = {assigned}
+        candidates_compact = {item.replace("_", "-").replace(" ", "-") for item in candidates}
+        aliases = {
+            instance_id,
+            name_alias,
+            f"orion-{instance_id}" if instance_id and not instance_id.startswith("orion-") else instance_id,
+            instance_id.replace("_", "-"),
+        }
+        aliases = {item for item in aliases if item}
+        aliases_compact = {item.replace("_", "-").replace(" ", "-") for item in aliases}
+        return bool(candidates.intersection(aliases) or candidates_compact.intersection(aliases_compact))
 
     def _get_next_task_from_kanban(self) -> Optional[Dict]:
         """Claim next eligible Kanban task via hub lease ownership."""
@@ -570,6 +689,8 @@ class Orion(AsyncAgent):
                 if not isinstance(task, dict):
                     continue
                 if str(task.get("status") or "") not in {"backlog", "todo"}:
+                    continue
+                if not self._task_assigned_to_this_orion(task):
                     continue
                 task_id = str(task.get("id") or "").strip()
                 if not task_id:
@@ -636,6 +757,11 @@ class Orion(AsyncAgent):
             lease_token = ""
             if isinstance(kanban_task.get("lease"), dict):
                 lease_token = str(kanban_task.get("lease", {}).get("lease_token", ""))
+            lease_check = self._heartbeat_task_lease(kanban_task)
+            if not lease_check.get("success"):
+                self._log(f"⚠️ Lease heartbeat failed before dispatch: {lease_check.get('error_code') or lease_check.get('error')}")
+                return self.create_result(False, {"error": "Task lease invalid", "lease": lease_check})
+            self._heartbeat_control_plane(running_task=kanban_task)
             self._update_task_status(kanban_task["id"], "in_progress", lease_token=lease_token)
             self._log(f"📋 Working on task: {kanban_task.get('title', 'Unknown')}")
 
@@ -648,6 +774,9 @@ class Orion(AsyncAgent):
                 "context": self.context.to_dict() if self.context else {},
                 "iteration": self.iteration,
                 "kanban_task": kanban_task,  # Include Kanban task in context
+                "task_owner_id": self._orion_lease_owner_id() if kanban_task else "",
+                "task_lease_token": str((kanban_task.get("lease") or {}).get("lease_token", "")) if isinstance(kanban_task, dict) else "",
+                "task_id": str(kanban_task.get("id", "")) if isinstance(kanban_task, dict) else "",
                 "runtime_hints": {
                     "nova_no_output_streak": self.consecutive_nova_no_output,
                     "no_deploy_streak": self.consecutive_no_deploy_cycles,

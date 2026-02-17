@@ -10,6 +10,7 @@ THE CORE PRINCIPLE:
 import json
 import os
 import time
+import random
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from pathlib import Path
@@ -33,7 +34,12 @@ from .storage_v2 import get_storage_v2
 from .proposal_engine import get_proposal_engine_v2
 from .experiment_executor import get_experiment_executor
 from .outcome_verifier import get_outcome_verifier
-from .learning_policy import get_learning_policy_state, select_learning_policy, update_learning_policy
+from .learning_policy import (
+    get_learning_policy_state,
+    select_learning_policy,
+    update_learning_policy,
+    apply_policy_drift_guard,
+)
 from .memory_governor import get_memory_governor
 from .migrate_proposals_v1_to_v2 import migrate_once as migrate_proposals_v1_to_v2
 
@@ -203,6 +209,8 @@ class LearningLoop:
         self.anomaly_recovery_wins_required = int(os.getenv("ANOMALY_RECOVERY_WINS_REQUIRED", "2"))
         self.anomaly_recovery_wins_streak = 0
         self.anomaly_autopause_until: Optional[str] = None
+        self.anomaly_autopause_started_at: Optional[str] = None
+        self.anomaly_policy_penalty_applied = False
         self.anomaly_last_reason: str = "none"
         self.daily_cadence_min_switch_seconds = int(os.getenv("DAILY_CADENCE_MIN_SWITCH_SECONDS", "900"))
         self.daily_cadence_last_adjusted_at: Optional[str] = None
@@ -273,6 +281,8 @@ class LearningLoop:
                 self.normal_mode_losses = int(data.get("normal_mode_losses", 0))
                 self.normal_mode_last_reason = str(data.get("normal_mode_last_reason", self.normal_mode_last_reason))
                 self.anomaly_autopause_until = data.get("anomaly_autopause_until")
+                self.anomaly_autopause_started_at = data.get("anomaly_autopause_started_at")
+                self.anomaly_policy_penalty_applied = bool(data.get("anomaly_policy_penalty_applied", False))
                 self.anomaly_last_reason = str(data.get("anomaly_last_reason", self.anomaly_last_reason))
                 self.daily_cadence_last_adjusted_at = data.get("daily_cadence_last_adjusted_at")
                 self.daily_cadence_last_reason = str(data.get("daily_cadence_last_reason", self.daily_cadence_last_reason))
@@ -311,6 +321,8 @@ class LearningLoop:
                 "normal_mode_losses": self.normal_mode_losses,
                 "normal_mode_last_reason": self.normal_mode_last_reason,
                 "anomaly_autopause_until": self.anomaly_autopause_until,
+                "anomaly_autopause_started_at": self.anomaly_autopause_started_at,
+                "anomaly_policy_penalty_applied": self.anomaly_policy_penalty_applied,
                 "anomaly_last_reason": self.anomaly_last_reason,
                 "daily_cadence_last_adjusted_at": self.daily_cadence_last_adjusted_at,
                 "daily_cadence_last_reason": self.daily_cadence_last_reason,
@@ -727,6 +739,8 @@ class LearningLoop:
             "normal_mode_last_reason": self.normal_mode_last_reason,
             "anomaly_autopause_enabled": self.anomaly_guard_enabled,
             "anomaly_autopause_until": self.anomaly_autopause_until,
+            "anomaly_autopause_started_at": self.anomaly_autopause_started_at,
+            "anomaly_policy_penalty_applied": self.anomaly_policy_penalty_applied,
             "anomaly_autopause_remaining_sec": anomaly_remaining,
             "anomaly_last_reason": self.anomaly_last_reason,
             "anomaly_pressure_scale": self.anomaly_pressure_scale,
@@ -846,7 +860,26 @@ class LearningLoop:
 
         if autopause_until_dt and autopause_until_dt > now:
             if recovering:
+                recovery_latency_seconds = 0.0
+                started_at_dt = self._parse_time(self.anomaly_autopause_started_at)
+                if started_at_dt:
+                    recovery_latency_seconds = max(0.0, (now - started_at_dt).total_seconds())
+                recovery_weight = max(0.5, 1.2 - min(0.7, recovery_latency_seconds / 3600.0))
+                if self.enable_policy_bandit:
+                    update_learning_policy(
+                        {
+                            "verdict": "win",
+                            "selected": get_learning_policy_state().get("selected", {}),
+                            "weight": recovery_weight,
+                            "metadata": {
+                                "source": "guardrail_recovery_unlock",
+                                "recovery_latency_seconds": recovery_latency_seconds,
+                            },
+                        }
+                    )
                 self.anomaly_autopause_until = None
+                self.anomaly_autopause_started_at = None
+                self.anomaly_policy_penalty_applied = False
                 self.anomaly_last_reason = "recovery_unlocked"
             else:
                 self.anomaly_last_reason = "cooldown_active"
@@ -873,6 +906,8 @@ class LearningLoop:
             self.anomaly_autopause_until = (
                 now + timedelta(seconds=max(60, self.anomaly_autopause_cooldown_sec))
             ).isoformat()
+            self.anomaly_autopause_started_at = now.isoformat()
+            self.anomaly_policy_penalty_applied = False
             self.anomaly_last_reason = reason
             self.anomaly_recovery_wins_streak = 0
             return {
@@ -883,6 +918,9 @@ class LearningLoop:
                 "dynamic_health_threshold": round(dynamic_health_threshold, 2),
             }
 
+        self.anomaly_autopause_until = None
+        self.anomaly_autopause_started_at = None
+        self.anomaly_policy_penalty_applied = False
         self.anomaly_last_reason = "healthy"
         return {
             "paused": False,
@@ -890,6 +928,88 @@ class LearningLoop:
             "dynamic_open_issues_threshold": dynamic_open_issues_threshold,
             "dynamic_health_threshold": round(dynamic_health_threshold, 2),
         }
+
+    def _apply_guardrail_policy_penalty_if_needed(self, v2_guardrail: Dict[str, Any]) -> bool:
+        if not self.enable_policy_bandit:
+            return False
+        if self.anomaly_policy_penalty_applied:
+            return False
+        if not isinstance(v2_guardrail, dict) or not bool(v2_guardrail.get("paused", False)):
+            return False
+
+        pause_reason = str(v2_guardrail.get("reason", "unknown") or "unknown")
+        selected_policy_state = get_learning_policy_state().get("selected", {})
+        recovery_latency_seconds = 0.0
+        if self.anomaly_autopause_started_at:
+            started_at_dt = self._parse_time(self.anomaly_autopause_started_at)
+            if started_at_dt:
+                recovery_latency_seconds = max(0.0, (datetime.now() - started_at_dt).total_seconds())
+        try:
+            pressure_signal = float(
+                v2_guardrail.get("dynamic_health_threshold", self.anomaly_health_threshold)
+                or self.anomaly_health_threshold
+            ) / 100.0
+        except (TypeError, ValueError):
+            pressure_signal = max(0.0, float(self.anomaly_health_threshold) / 100.0)
+
+        update_learning_policy(
+            {
+                "verdict": "loss",
+                "selected": selected_policy_state,
+                "guardrail_penalty": pause_reason,
+                "recovery_latency_seconds": recovery_latency_seconds,
+                "guardrail_pressure": pressure_signal,
+                "metadata": {
+                    "source": "v2_guardrail",
+                    "pause_reason": pause_reason,
+                },
+            }
+        )
+        self.anomaly_policy_penalty_applied = True
+        return True
+
+    def _maybe_apply_policy_drift_guard(self, v2_guardrail: Dict[str, Any], health: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.enable_policy_bandit:
+            return {"families_adjusted": 0, "arms_adjusted": 0, "detail": {}}
+        paused = bool((v2_guardrail or {}).get("paused", False)) if isinstance(v2_guardrail, dict) else False
+        open_issues = int((health or {}).get("open_issues", 0) or 0)
+        try:
+            health_score = float((health or {}).get("health_score", 100.0) or 100.0)
+        except (TypeError, ValueError):
+            health_score = 100.0
+        config = {
+            "max_posterior_total": 400.0,
+            "min_mean": 0.08,
+            "max_mean": 0.92,
+            "shrink_ratio": 0.35,
+        }
+        # Under degraded conditions, gently increase exploration pressure.
+        if paused or open_issues > 0 or health_score < 70.0:
+            config.update(
+                {
+                    "max_posterior_total": 260.0,
+                    "min_mean": 0.12,
+                    "max_mean": 0.88,
+                    "shrink_ratio": 0.45,
+                }
+            )
+        summary = apply_policy_drift_guard(config)
+        if int(summary.get("arms_adjusted", 0) or 0) > 0:
+            self._append_rnd_note(
+                note_type="policy_drift_guard_applied",
+                severity="warning" if paused else "info",
+                message=(
+                    f"Policy drift guard adjusted {summary.get('arms_adjusted', 0)} arm(s) "
+                    f"across {summary.get('families_adjusted', 0)} family(ies)."
+                ),
+                context={
+                    "v2_guardrail": v2_guardrail if isinstance(v2_guardrail, dict) else {},
+                    "health_score": health_score,
+                    "open_issues": open_issues,
+                    "summary": summary,
+                },
+            )
+        return summary
 
     def _daily_notes_path(self, dt: Optional[datetime] = None) -> Path:
         ts = dt or datetime.now()
@@ -2126,14 +2246,7 @@ class LearningLoop:
                 "paused": True,
                 "pause_reason": pause_reason,
             }
-            if self.enable_policy_bandit:
-                update_learning_policy(
-                    {
-                        "verdict": "loss",
-                        "selected": get_learning_policy_state().get("selected", {}),
-                        "guardrail_penalty": pause_reason,
-                    }
-                )
+            self._apply_guardrail_policy_penalty_if_needed(v2_guardrail)
             results["actions"].append("v2_pipeline_paused")
             self._append_rnd_note(
                 note_type="v2_pipeline_autopaused",
@@ -2160,6 +2273,14 @@ class LearningLoop:
                     recoverable=True,
                 )
                 results["errors"].append({"step": "v2_pipeline", "error": str(e)})
+
+        policy_drift_guard = self._maybe_apply_policy_drift_guard(
+            v2_guardrail=results.get("v2_guardrail", {}),
+            health=results.get("health", {}),
+        )
+        results["policy_drift_guard"] = policy_drift_guard
+        if int(policy_drift_guard.get("arms_adjusted", 0) or 0) > 0:
+            results["actions"].append("policy_drift_guard")
 
         # 3c. Calibrate CAFE model biases from recent evidence.
         if self._should_run_cafe_calibration():
@@ -2403,6 +2524,91 @@ class LearningLoop:
         finally:
             self.stop()
 
+    def start_resilient(
+        self,
+        interval_seconds: int = 60,
+        max_iterations: int = None,
+        max_restarts: Optional[int] = None,
+        restart_delay_seconds: int = 3,
+        restart_delay_max_seconds: int = 120,
+        restart_jitter_seconds: float = 2.0,
+    ):
+        """
+        Start loop with crash recovery (exponential backoff + jitter).
+
+        Args:
+            interval_seconds: Delay between healthy iterations.
+            max_iterations: Max iterations from start point (None = infinite).
+            max_restarts: Max consecutive crash restarts (None = infinite).
+            restart_delay_seconds: Initial backoff after crash.
+            restart_delay_max_seconds: Maximum backoff cap.
+            restart_jitter_seconds: Random jitter added to backoff.
+        """
+        self.running = True
+
+        print("🔄 Learning Loop Started (resilient mode)")
+        print(f"   Interval: {interval_seconds}s")
+        print(f"   Max iterations: {max_iterations or 'infinite'}")
+        print(
+            "   Crash recovery: "
+            f"base={max(1, int(restart_delay_seconds))}s "
+            f"cap={max(1, int(restart_delay_max_seconds))}s "
+            f"jitter={max(0.0, float(restart_jitter_seconds)):.2f}s "
+            f"max_restarts={max_restarts if max_restarts is not None else 'infinite'}"
+        )
+        print("-" * 50)
+        start_iteration = self.iteration
+        restart_count = 0
+        base_delay = max(1, int(restart_delay_seconds))
+        delay_cap = max(base_delay, int(restart_delay_max_seconds))
+        jitter = max(0.0, float(restart_jitter_seconds))
+
+        try:
+            while self.running:
+                if max_iterations and (self.iteration - start_iteration) >= max_iterations:
+                    print(f"✅ Reached max iterations ({max_iterations})")
+                    break
+                try:
+                    results = self.run_iteration()
+                    restart_count = 0
+                    print(f"\n📊 Iteration {results['iteration']}")
+                    print(f"   Health: {results['health']['health_score']}/100")
+                    print(f"   Actions: {', '.join(results['actions'])}")
+                    print(f"   Duration: {results['duration_seconds']:.2f}s")
+                    time.sleep(interval_seconds)
+                except KeyboardInterrupt:
+                    raise
+                except Exception as e:
+                    restart_count += 1
+                    track_error(
+                        "SYSTEM",
+                        "learning_loop_iteration_crash",
+                        str(e),
+                        context={"iteration": self.iteration, "restart_count": restart_count},
+                        recoverable=True,
+                    )
+                    if max_restarts is not None and restart_count > max(0, int(max_restarts)):
+                        print(
+                            f"\n🛑 Resilient runner stopped: exceeded max restarts "
+                            f"({restart_count-1}/{max_restarts})"
+                        )
+                        break
+                    backoff = min(delay_cap, base_delay * (2 ** max(0, restart_count - 1)))
+                    backoff += random.uniform(0.0, jitter) if jitter > 0.0 else 0.0
+                    print(
+                        f"\n⚠️ Iteration crashed ({type(e).__name__}: {e}). "
+                        f"Restarting in {backoff:.1f}s (attempt {restart_count})."
+                    )
+                    try:
+                        self._save_state()
+                    except Exception:
+                        pass
+                    time.sleep(backoff)
+        except KeyboardInterrupt:
+            print("\n⏹️ Learning Loop Stopped by user")
+        finally:
+            self.stop()
+
     def stop(self):
         """Stop the learning loop."""
         self.running = False
@@ -2422,6 +2628,29 @@ class LearningLoop:
         print(f"   Lessons learned: {self.stats['lessons_learned']}")
 
     # ==================== REPORTING ====================
+
+    def get_state(self) -> Dict[str, Any]:
+        """Return a lightweight runtime snapshot for orchestration callers."""
+        execution_guardrail = self._execution_guardrail_snapshot()
+        return {
+            "iteration": self.iteration,
+            "running": self.running,
+            "last_scan": self.last_scan,
+            "last_daily_self_learning": self.last_daily_self_learning,
+            "no_learning_streak": self.no_learning_streak,
+            "no_improvement_streak": self.no_improvement_streak,
+            "stats": dict(self.stats),
+            "execution_guardrail": execution_guardrail,
+            "v2_guardrail": {
+                "enabled": self.anomaly_guard_enabled,
+                "autopause_until": self.anomaly_autopause_until,
+                "autopause_started_at": self.anomaly_autopause_started_at,
+                "policy_penalty_applied": self.anomaly_policy_penalty_applied,
+                "last_reason": self.anomaly_last_reason,
+                "recovery_wins_streak": self.anomaly_recovery_wins_streak,
+                "recovery_wins_required": self.anomaly_recovery_wins_required,
+            },
+        }
 
     def get_status_report(self) -> Dict:
         """Get comprehensive status report."""
@@ -2756,10 +2985,21 @@ class LearningLoop:
             "outcome_quality": outcome_quality,
             "learning_event_quality": learning_event_quality,
             "policy_state": policy_state,
+            "policy_guard": apply_policy_drift_guard(
+                {
+                    "max_posterior_total": 400.0,
+                    "min_mean": 0.08,
+                    "max_mean": 0.92,
+                    "shrink_ratio": 0.35,
+                    "dry_run": True,
+                }
+            ),
             "execution_guardrail": execution_guardrail,
             "v2_guardrail": {
                 "enabled": self.anomaly_guard_enabled,
                 "autopause_until": self.anomaly_autopause_until,
+                "autopause_started_at": self.anomaly_autopause_started_at,
+                "policy_penalty_applied": self.anomaly_policy_penalty_applied,
                 "last_reason": self.anomaly_last_reason,
                 "pressure_scale": self.anomaly_pressure_scale,
                 "recovery_wins_streak": self.anomaly_recovery_wins_streak,
@@ -2880,6 +3120,26 @@ def start_learning(interval: int = 60, max_iterations: int = None):
     """Start the learning loop."""
     loop = get_learning_loop()
     loop.start(interval_seconds=interval, max_iterations=max_iterations)
+
+
+def start_learning_resilient(
+    interval: int = 60,
+    max_iterations: int = None,
+    max_restarts: Optional[int] = None,
+    restart_delay_seconds: int = 3,
+    restart_delay_max_seconds: int = 120,
+    restart_jitter_seconds: float = 2.0,
+):
+    """Start learning loop with automatic crash recovery."""
+    loop = get_learning_loop()
+    loop.start_resilient(
+        interval_seconds=interval,
+        max_iterations=max_iterations,
+        max_restarts=max_restarts,
+        restart_delay_seconds=restart_delay_seconds,
+        restart_delay_max_seconds=restart_delay_max_seconds,
+        restart_jitter_seconds=restart_jitter_seconds,
+    )
 
 
 def learn(interaction: Dict):

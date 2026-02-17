@@ -28,9 +28,9 @@ class Echo(AsyncAgent):
         super().__init__(
             name="Echo",
             role="QA Engineer & Test Specialist",
-            model=os.getenv("TEST_MODEL", "gemini-2.0-flash"),  # Fast and cheap
-            api_key=os.getenv("GOOGLE_API_KEY"),  # Using Gemini
-            api_base="https://generativelanguage.googleapis.com/v1beta"
+            model=os.getenv("TEST_MODEL", os.getenv("GLM_FLASH_MODEL", "glm-4.7")),  # Fast, cheap, and z.ai-safe by default
+            api_key=os.getenv("GOOGLE_API_KEY") or os.getenv("GLM_API_KEY"),
+            api_base=os.getenv("GLM_API_BASE") or os.getenv("ZAI_OPENAI_BASE_URL", "https://api.z.ai/api/openai/v1"),
         )
 
         self.tests_dir = Path("tests")

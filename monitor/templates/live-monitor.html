@@ -763,6 +763,103 @@
             --fs-ui: clamp(10.5px, 0.14vw + 10.1px, 11.5px);
             --fs-micro: clamp(9px, 0.08vw + 8.8px, 10px);
             --fs-metric-value: clamp(18px, 0.7vw + 15.5px, 23px);
+            --muted: color-mix(in srgb, var(--text) 56%, var(--bg));
+            --border: color-mix(in srgb, var(--border) 78%, var(--text) 22%);
+        }
+
+        body[data-experience="pixel"] .topbar {
+            padding-top: 12px;
+            padding-bottom: 12px;
+        }
+
+        body[data-experience="pixel"] .card {
+            border-style: dashed;
+        }
+
+        body[data-experience="pixel"] .card:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 12px 18px rgba(13, 30, 67, 0.12);
+        }
+
+        body[data-experience="pixel"] .view-tab,
+        body[data-experience="pixel"] .pill,
+        body[data-experience="pixel"] .theme-toggle,
+        body[data-experience="pixel"] .palette-toggle,
+        body[data-experience="pixel"] .zen-toggle,
+        body[data-experience="pixel"] .deck-btn,
+        body[data-experience="pixel"] .chat-tool-btn {
+            border-radius: 8px;
+            letter-spacing: 0.15px;
+        }
+
+        body[data-experience="pixel"] .view-tab,
+        body[data-experience="pixel"] .deck-btn,
+        body[data-experience="pixel"] .chat-tool-btn,
+        body[data-experience="pixel"] .deck-chip,
+        body[data-experience="pixel"] .btn {
+            transition-duration: 0.1s;
+        }
+
+        body[data-experience="pixel"] .view-tab:hover,
+        body[data-experience="pixel"] .deck-btn:hover,
+        body[data-experience="pixel"] .chat-tool-btn:hover,
+        body[data-experience="pixel"] .deck-chip:hover,
+        body[data-experience="pixel"] .btn:hover {
+            transform: translateY(-1px);
+            border-color: var(--accent-border);
+        }
+
+        body[data-experience="pixel"] .summary-list li,
+        body[data-experience="pixel"] .feedback-item,
+        body[data-experience="pixel"] .activity-item,
+        body[data-experience="pixel"] .task-item,
+        body[data-experience="pixel"] .tasks-metric,
+        body[data-experience="pixel"] .chart-wrap,
+        body[data-experience="pixel"] .agents-table-wrap,
+        body[data-experience="pixel"] .deck-autocomplete {
+            border-radius: 8px;
+        }
+
+        body[data-experience="pixel"] .summary-tag,
+        body[data-experience="pixel"] .badge {
+            border-radius: 7px;
+            letter-spacing: 0.2px;
+            font-weight: 700;
+        }
+
+        body[data-experience="pixel"] .chart-title,
+        body[data-experience="pixel"] .task-item-meta,
+        body[data-experience="pixel"] .agents-table th,
+        body[data-experience="pixel"] .tiny {
+            color: color-mix(in srgb, var(--muted) 78%, var(--text));
+        }
+
+        body[data-experience="pixel"] .text,
+        body[data-experience="pixel"] .task-item-title,
+        body[data-experience="pixel"] .agents-table td {
+            color: color-mix(in srgb, var(--text) 94%, #fff 6%);
+        }
+
+        body[data-experience="pixel"] .agents-table th,
+        body[data-experience="pixel"] .agents-table td {
+            padding-top: 8px;
+            padding-bottom: 8px;
+        }
+
+        body[data-experience="pixel"] .control-deck {
+            border-radius: 10px;
+            padding: 7px;
+        }
+
+        body[data-experience="pixel"] .deck-input {
+            border-radius: 8px;
+            font-size: 11px;
+        }
+
+        body[data-experience="pixel"] .connection {
+            border-radius: 10px;
+            padding-top: 7px;
+            padding-bottom: 7px;
         }
 
         body[data-density="compact"] {
@@ -821,6 +918,18 @@
             min-height: 320px;
         }
 
+        body[data-simple="on"] .card[data-zen="secondary"] {
+            display: none !important;
+        }
+
+        body[data-simple="on"] .performance-card {
+            display: none !important;
+        }
+
+        body[data-simple="on"] .summary-list li:nth-child(n+3) {
+            display: none;
+        }
+
         @keyframes chatIn {
             from {
                 opacity: 0;
@@ -872,6 +981,198 @@
             display: flex;
             justify-content: space-between;
             gap: 6px;
+        }
+
+        .task-edit-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr auto;
+            gap: 6px;
+            margin-top: 8px;
+        }
+
+        .task-input,
+        .task-select {
+            width: 100%;
+            border: 1px solid var(--border);
+            border-radius: 7px;
+            background: var(--panel-soft);
+            color: var(--text);
+            padding: 6px 7px;
+            font-size: 11px;
+        }
+
+        .task-mini-btn {
+            border: 1px solid var(--accent-border);
+            border-radius: 7px;
+            background: var(--accent-soft);
+            color: var(--accent);
+            font-size: 11px;
+            font-weight: 700;
+            padding: 6px 9px;
+            cursor: pointer;
+        }
+
+        .task-mini-btn:hover {
+            filter: brightness(1.04);
+        }
+
+        /* Priority badges */
+        .priority-badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 9px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .priority-p0 { background: #ef444420; color: #ef4444; border: 1px solid #ef444450; }
+        .priority-p1 { background: #f9731620; color: #f97316; border: 1px solid #f9731650; }
+        .priority-p2 { background: #eab30820; color: #eab308; border: 1px solid #eab30850; }
+        .priority-p3 { background: #22c55e20; color: #22c55e; border: 1px solid #22c55e50; }
+
+        /* Task filters */
+        .task-filters {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+        }
+        .task-filter-select {
+            padding: 6px 10px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--panel);
+            color: var(--text);
+            font-size: 12px;
+            min-width: 120px;
+        }
+        .task-filter-btn {
+            padding: 6px 12px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--panel);
+            color: var(--muted);
+            font-size: 11px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .task-filter-btn.active {
+            background: var(--accent-soft);
+            color: var(--accent);
+            border-color: var(--accent-border);
+        }
+        .task-filter-btn:hover {
+            filter: brightness(1.05);
+        }
+
+        /* Workload card */
+        .workload-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+        }
+        .workload-item {
+            background: var(--panel-soft);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 12px;
+        }
+        .workload-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .workload-name {
+            font-weight: 600;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .workload-status {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+        .workload-status.online { background: #22c55e; box-shadow: 0 0 6px #22c55e60; }
+        .workload-status.offline { background: #6b7280; }
+        .workload-tasks {
+            display: flex;
+            gap: 8px;
+            font-size: 11px;
+            margin-bottom: 8px;
+        }
+        .workload-mini-stat {
+            padding: 3px 8px;
+            background: var(--panel);
+            border-radius: 6px;
+        }
+        .workload-mini-stat strong { color: var(--accent); }
+        .workload-task-list {
+            max-height: 80px;
+            overflow-y: auto;
+            font-size: 11px;
+        }
+        .workload-task-item {
+            padding: 4px 0;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+        }
+        .workload-task-item:last-child { border-bottom: none; }
+
+        /* Priority summary */
+        .priority-summary {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+        .priority-stat {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: var(--panel-soft);
+            border-radius: 8px;
+            font-size: 12px;
+        }
+        .priority-stat .count { font-weight: 700; }
+
+        .intervention-actions {
+            margin-top: 8px;
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        .intervention-btn {
+            border: 1px solid var(--border);
+            border-radius: 7px;
+            background: var(--panel-soft);
+            color: var(--text);
+            font-size: 10px;
+            font-weight: 700;
+            padding: 5px 8px;
+            cursor: pointer;
+        }
+
+        .intervention-btn.approve {
+            border-color: color-mix(in srgb, var(--ok) 60%, var(--border));
+            color: var(--ok);
+        }
+
+        .intervention-btn.defer {
+            border-color: color-mix(in srgb, var(--warn) 60%, var(--border));
+            color: var(--warn);
+        }
+
+        .intervention-btn.decline {
+            border-color: color-mix(in srgb, var(--danger) 60%, var(--border));
+            color: var(--danger);
         }
 
         .tasks-metrics {
@@ -1316,7 +1617,7 @@
         }
     </style>
 </head>
-<body data-theme="light" data-experience="balanced" data-density="comfortable" data-zen="off" data-active-view="workspace">
+<body data-theme="light" data-experience="balanced" data-density="comfortable" data-zen="off" data-simple="off" data-active-view="workspace">
     <header class="topbar">
         <div class="brand">
             <div class="brand-mark">N</div>
@@ -1327,11 +1628,12 @@
         </div>
         <div class="topbar-right">
             <div class="view-nav" id="view-nav">
-                <button class="view-tab active" type="button" data-view="workspace">Workspace</button>
-                <button class="view-tab" type="button" data-view="ops">Ops</button>
-                <button class="view-tab" type="button" data-view="activity">Activity</button>
+                <button class="view-tab active" type="button" data-view="workspace">Tong Quan</button>
+                <button class="view-tab" type="button" data-view="ops">Van Hanh</button>
+                <button class="view-tab" type="button" data-view="activity">Su Kien</button>
                 <button class="view-tab" type="button" data-view="chat">Chat</button>
-                <button class="view-tab" type="button" data-view="tasks">Tasks</button>
+                <button class="view-tab" type="button" data-view="tasks">Cong Viec</button>
+                <button class="view-tab" type="button" data-view="interventions">Can Thiep</button>
             </div>
             <div class="pill">Iteration<strong id="iteration-counter">#0000</strong></div>
             <div class="pill">Status<strong id="run-state">--</strong></div>
@@ -1346,6 +1648,7 @@
                 <button class="density-btn" type="button" data-density="compact">Compact</button>
             </div>
             <button id="zen-toggle" class="zen-toggle" type="button" title="Focus on core cards">Zen</button>
+            <button id="simple-toggle" class="zen-toggle" type="button" title="Show simplified dashboard">Simple</button>
             <button id="palette-toggle" class="palette-toggle" type="button" title="Open command palette">Cmd K</button>
             <button id="theme-toggle" class="theme-toggle" type="button">Theme</button>
         </div>
@@ -1414,6 +1717,32 @@
                 </div>
             </article>
 
+            <article class="card" data-view="workspace ops" data-zen="secondary">
+                <h2>Agent Coordination</h2>
+                <div class="metric-grid">
+                    <div class="metric">
+                        <div class="metric-label">Members</div>
+                        <div class="metric-value" id="team-members-count">0</div>
+                        <div class="metric-sub" id="team-interactions-count">interactions 0</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Compact Plan</div>
+                        <div class="metric-value" id="coord-agents-count">0</div>
+                        <div class="metric-sub" id="coord-instances-count">instances 0</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Token Saved</div>
+                        <div class="metric-value" id="coord-tokens-saved">0</div>
+                        <div class="metric-sub" id="coord-token-ratio">ratio 0%</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Last Dispatch</div>
+                        <div class="metric-value" id="coord-dispatch-sent">0</div>
+                        <div class="metric-sub" id="coord-dispatch-result">success 0</div>
+                    </div>
+                </div>
+            </article>
+
             <article class="card performance-card" data-view="workspace ops" data-zen="secondary">
                 <h2>Performance</h2>
                 <div class="charts">
@@ -1448,7 +1777,33 @@
             </article>
 
             <article class="card" data-view="workspace tasks">
-                <h2>Task Workspace</h2>
+                <h2>Task Workspace (Editable)</h2>
+                <div class="priority-summary" id="priority-summary">
+                    <div class="priority-stat"><span class="priority-badge priority-p0">P0</span><span class="count" id="p0-count">0</span></div>
+                    <div class="priority-stat"><span class="priority-badge priority-p1">P1</span><span class="count" id="p1-count">0</span></div>
+                    <div class="priority-stat"><span class="priority-badge priority-p2">P2</span><span class="count" id="p2-count">0</span></div>
+                    <div class="priority-stat"><span class="priority-badge priority-p3">P3</span><span class="count" id="p3-count">0</span></div>
+                </div>
+                <div class="task-filters">
+                    <select class="task-filter-select" id="task-filter-assignee">
+                        <option value="">All Assignees</option>
+                    </select>
+                    <select class="task-filter-select" id="task-filter-priority">
+                        <option value="">All Priorities</option>
+                        <option value="p0">P0 - Critical</option>
+                        <option value="p1">P1 - High</option>
+                        <option value="p2">P2 - Medium</option>
+                        <option value="p3">P3 - Low</option>
+                    </select>
+                    <select class="task-filter-select" id="task-filter-status">
+                        <option value="">All Status</option>
+                        <option value="todo">Todo</option>
+                        <option value="in_progress">In Progress</option>
+                        <option value="done">Done</option>
+                        <option value="blocked">Blocked</option>
+                    </select>
+                    <button class="task-filter-btn" id="task-filter-clear">Clear</button>
+                </div>
                 <div class="tasks-metrics" id="tasks-metrics">
                     <div class="tasks-metric"><strong>0</strong><span>Total</span></div>
                     <div class="tasks-metric"><strong>0</strong><span>In Progress</span></div>
@@ -1458,6 +1813,24 @@
                 <div class="tasks-board" id="tasks-board">
                     <div class="task-column"><h3>Loading...</h3></div>
                 </div>
+            </article>
+
+            <article class="card" data-view="workspace tasks" data-zen="secondary">
+                <h2>Agent Workload</h2>
+                <div class="workload-grid" id="workload-grid">
+                    <div class="workload-item"><div class="workload-name">Loading...</div></div>
+                </div>
+            </article>
+            </article>
+
+            <article class="card" data-view="workspace interventions" data-zen="focus">
+                <div class="row">
+                    <h2>Intervention Queue</h2>
+                    <span class="tiny" id="interventions-summary">0 pending</span>
+                </div>
+                <ul id="interventions-list" class="activity-list">
+                    <li class="activity-item"><div class="text">Loading interventions...</div></li>
+                </ul>
             </article>
         </section>
 
@@ -1483,6 +1856,8 @@
                     <h2>Unified Chat</h2>
                     <div class="chat-toolbar">
                         <span class="tiny" id="chat-instance-label">orion-1</span>
+                        <input id="chat-member-id" type="text" value="owner" style="width:86px;padding:4px 6px;border:1px solid var(--border);border-radius:8px;background:var(--panel);color:var(--text);font-size:11px;" title="Member profile id for persona adaptation" />
+                        <button class="chat-tool-btn" id="chat-coordinate" type="button" title="Dispatch compact multi-agent coordination">Coord</button>
                         <button class="chat-tool-btn" id="chat-font-down" type="button" title="Thu nhỏ chữ">A-</button>
                         <button class="chat-tool-btn" id="chat-font-up" type="button" title="Phóng to chữ">A+</button>
                         <button class="chat-tool-btn" id="chat-height-down" type="button" title="Thu nhỏ panel">-H</button>
@@ -1510,7 +1885,7 @@
                         <button type="button" class="chat-chip" data-prompt="đánh giá nhanh UI/UX hiện tại và đề xuất nâng cấp ngay">UI/UX critique</button>
                         <button type="button" class="chat-chip" data-prompt="chạy 1 vòng Orion rồi báo kết quả ngắn gọn">Run one cycle</button>
                     </div>
-                    <div class="chat-time">Trong chat: `1/2/3` = summary/control/unstick, `/nexus_rules` = nhắc rules. Ngoài input: `1..5` đổi view, `Z` bật Zen, `/` focus Deck.</div>
+                    <div class="chat-time">Trong chat: `1/2/3` = summary/control/unstick, `/nexus_rules` = nhắc rules. Ngoài input: `1..6` đổi view, `Z` bật Zen, `/` focus Deck.</div>
                 </div>
             </article>
 
@@ -1524,6 +1899,7 @@
                     <button class="btn" id="quick-spawn" onclick="spawnOrion()">Spawn Orion</button>
                     <button class="btn" id="quick-chat" onclick="openChat()">Focus Chat</button>
                     <button class="btn" id="quick-tasks" onclick="setView('tasks', true)">Open Tasks</button>
+                    <button class="btn" id="quick-interventions" onclick="setView('interventions', true)">Interventions</button>
                 </div>
             </article>
         </aside>
@@ -1531,11 +1907,12 @@
 
         <div class="control-deck" id="control-deck">
         <div class="deck-group" id="deck-view-group">
-            <button class="deck-btn deck-view-btn active" type="button" data-deck-view="workspace">WS</button>
+            <button class="deck-btn deck-view-btn active" type="button" data-deck-view="workspace">Tong Quan</button>
             <button class="deck-btn deck-view-btn" type="button" data-deck-view="ops">Ops</button>
-            <button class="deck-btn deck-view-btn" type="button" data-deck-view="activity">Activity</button>
+            <button class="deck-btn deck-view-btn" type="button" data-deck-view="activity">Su Kien</button>
             <button class="deck-btn deck-view-btn" type="button" data-deck-view="chat">Chat</button>
             <button class="deck-btn deck-view-btn" type="button" data-deck-view="tasks">Tasks</button>
+            <button class="deck-btn deck-view-btn" type="button" data-deck-view="interventions">Can Thiep</button>
         </div>
         <div class="deck-group" id="deck-action-group">
             <button class="deck-btn" id="deck-refresh" type="button">Refresh</button>
@@ -1591,7 +1968,9 @@
         const EXPERIENCE_STORAGE_KEY = 'autodev-experience-mode';
         const DENSITY_STORAGE_KEY = 'autodev-density-mode';
         const ZEN_STORAGE_KEY = 'autodev-zen-mode';
+        const SIMPLE_STORAGE_KEY = 'autodev-simple-mode';
         const DECK_HISTORY_STORAGE_KEY = 'autodev-deck-history';
+        const MEMBER_ID_STORAGE_KEY = 'autodev-member-id';
         const chatUiState = { fontScale: 1, panelHeight: 320, maximized: false };
         const paletteState = { open: false, query: '', selectedIndex: 0, items: [] };
         const deckState = { history: [], historyIndex: -1 };
@@ -1600,9 +1979,12 @@
         const actionLocks = { refresh: false, pause: false, resume: false, spawn: false, improve: false };
         let deckSuggestedCommand = '';
         let deckPrefillLast = '';
+        let lastCoordinationPayload = null;
         const cardHideTimers = new WeakMap();
         let lastVisualPulseIteration = -1;
         const PIXEL_AUTO_STORAGE_KEY = 'autodev-pixel-auto-enabled';
+        const PIXEL_BUSY_STORAGE_KEY = 'autodev-pixel-busy-enabled';
+        let lastPixelDensityClass = '';
 
         const refs = {
             iterationCounter: document.getElementById('iteration-counter'),
@@ -1625,6 +2007,14 @@
             learningLossRate: document.getElementById('learning-loss-rate'),
             learningConfidence: document.getElementById('learning-confidence'),
             learningInconclusive: document.getElementById('learning-inconclusive'),
+            teamMembersCount: document.getElementById('team-members-count'),
+            teamInteractionsCount: document.getElementById('team-interactions-count'),
+            coordAgentsCount: document.getElementById('coord-agents-count'),
+            coordInstancesCount: document.getElementById('coord-instances-count'),
+            coordTokensSaved: document.getElementById('coord-tokens-saved'),
+            coordTokenRatio: document.getElementById('coord-token-ratio'),
+            coordDispatchSent: document.getElementById('coord-dispatch-sent'),
+            coordDispatchResult: document.getElementById('coord-dispatch-result'),
             agentsBody: document.getElementById('agents-body'),
             agentsTableWrap: document.querySelector('.agents-table-wrap'),
             performanceCard: document.querySelector('.performance-card'),
@@ -1638,6 +2028,7 @@
             expButtons: Array.from(document.querySelectorAll('.exp-btn')),
             densityButtons: Array.from(document.querySelectorAll('.density-btn')),
             zenToggle: document.getElementById('zen-toggle'),
+            simpleToggle: document.getElementById('simple-toggle'),
             deckViewButtons: Array.from(document.querySelectorAll('.deck-view-btn')),
             deckRefresh: document.getElementById('deck-refresh'),
             deckPause: document.getElementById('deck-pause'),
@@ -1657,6 +2048,7 @@
             quickPause: document.getElementById('quick-pause'),
             quickResume: document.getElementById('quick-resume'),
             quickSpawn: document.getElementById('quick-spawn'),
+            quickInterventions: document.getElementById('quick-interventions'),
             paletteToggle: document.getElementById('palette-toggle'),
             commandPalette: document.getElementById('command-palette'),
             paletteInput: document.getElementById('palette-input'),
@@ -1667,6 +2059,8 @@
             chatResizeHandle: document.getElementById('chat-resize-handle'),
             chatTyping: document.getElementById('chat-typing'),
             chatInstanceLabel: document.getElementById('chat-instance-label'),
+            chatMemberId: document.getElementById('chat-member-id'),
+            chatCoordinate: document.getElementById('chat-coordinate'),
             chatFontDown: document.getElementById('chat-font-down'),
             chatFontUp: document.getElementById('chat-font-up'),
             chatHeightDown: document.getElementById('chat-height-down'),
@@ -1676,9 +2070,20 @@
             chatChips: Array.from(document.querySelectorAll('.chat-chip')),
             tasksBoard: document.getElementById('tasks-board'),
             tasksMetrics: document.getElementById('tasks-metrics'),
+            workloadGrid: document.getElementById('workload-grid'),
+            taskFilterAssignee: document.getElementById('task-filter-assignee'),
+            taskFilterPriority: document.getElementById('task-filter-priority'),
+            taskFilterStatus: document.getElementById('task-filter-status'),
+            taskFilterClear: document.getElementById('task-filter-clear'),
+            p0Count: document.getElementById('p0-count'),
+            p1Count: document.getElementById('p1-count'),
+            p2Count: document.getElementById('p2-count'),
+            p3Count: document.getElementById('p3-count'),
+            interventionsList: document.getElementById('interventions-list'),
+            interventionsSummary: document.getElementById('interventions-summary'),
         };
 
-        const ALLOWED_VIEWS = ['workspace', 'ops', 'activity', 'chat', 'tasks'];
+        const ALLOWED_VIEWS = ['workspace', 'ops', 'activity', 'chat', 'tasks', 'interventions'];
         const VIEW_STORAGE_KEY = 'autodev-live-view';
 
         const TASK_COLUMNS = [
@@ -1705,13 +2110,28 @@
                 .trim();
         }
 
+        function normalizeMemberId(text) {
+            return String(text || '')
+                .trim()
+                .toLowerCase()
+                .replace(/[^a-z0-9._-]+/g, '-')
+                .replace(/-{2,}/g, '-')
+                .replace(/^-+|-+$/g, '')
+                .slice(0, 80);
+        }
+
+        function currentMemberId() {
+            const value = refs.chatMemberId ? normalizeMemberId(refs.chatMemberId.value) : '';
+            return value || 'owner';
+        }
+
         function resolveMenuShortcut(text) {
             const normalized = normalizeIntentText(text, true);
             if (!normalized) return '';
             const compact = normalized.replace(/\s+/g, '');
-            const direct = compact.match(/^([1-5])$/);
+            const direct = compact.match(/^([1-6])$/);
             if (direct) return direct[1];
-            const expanded = normalized.match(/\b(?:option|lua chon|nhom|group|so)\s*([1-5])\b/);
+            const expanded = normalized.match(/\b(?:option|lua chon|nhom|group|so)\s*([1-6])\b/);
             return expanded ? String(expanded[1]) : '';
         }
 
@@ -1947,6 +2367,34 @@
 
             updateAiSummary(data, counts, active, fleet.length);
             renderAgents(fleet);
+            renderCoordinationSnapshot(data);
+        }
+
+        function renderCoordinationSnapshot(data) {
+            const team = (data && typeof data === 'object' && data.team_persona && typeof data.team_persona === 'object')
+                ? data.team_persona
+                : {};
+            const members = Number(team.members || 0);
+            const interactions = Number(team.total_interactions || 0);
+            if (refs.teamMembersCount) refs.teamMembersCount.textContent = String(members);
+            if (refs.teamInteractionsCount) refs.teamInteractionsCount.textContent = `interactions ${interactions}`;
+
+            const payload = (lastCoordinationPayload && typeof lastCoordinationPayload === 'object') ? lastCoordinationPayload : {};
+            const plan = (payload.plan && typeof payload.plan === 'object') ? payload.plan : {};
+            const tokenBudget = (plan.token_budget && typeof plan.token_budget === 'object') ? plan.token_budget : {};
+            const agents = Array.isArray(plan.agents) ? plan.agents.length : 0;
+            const instances = (payload.execution && Array.isArray(payload.execution.instances)) ? payload.execution.instances.length : 0;
+            const saved = Number(tokenBudget.estimated_tokens_saved || 0);
+            const ratio = Math.round(Number(tokenBudget.saving_ratio || 0) * 1000) / 10;
+            const sent = Number((payload.execution && payload.execution.total_sent) || 0);
+            const success = Number((payload.execution && payload.execution.total_success) || 0);
+
+            if (refs.coordAgentsCount) refs.coordAgentsCount.textContent = String(agents);
+            if (refs.coordInstancesCount) refs.coordInstancesCount.textContent = `instances ${instances}`;
+            if (refs.coordTokensSaved) refs.coordTokensSaved.textContent = String(saved);
+            if (refs.coordTokenRatio) refs.coordTokenRatio.textContent = `ratio ${ratio}%`;
+            if (refs.coordDispatchSent) refs.coordDispatchSent.textContent = String(sent);
+            if (refs.coordDispatchResult) refs.coordDispatchResult.textContent = `success ${success}`;
         }
 
         function renderAgents(fleet) {
@@ -2086,6 +2534,8 @@
                 refs.connection.textContent = `Socket connected | routing ${(successRate * 100).toFixed(0)}% | p95 ${p95}ms | oc-q ${queueDepth} | oc-qp95 ${queueP95}ms | workers ${workersAlive}/${workersRegistered} | circuits ${circuits}`;
                 updateDashboard(data);
                 loadKanbanBoard();
+                loadWorkload();
+                loadInterventions();
             } catch (err) {
                 console.error('Failed to load status', err);
                 const now = Date.now();
@@ -2096,10 +2546,66 @@
             }
         }
 
+        let currentTaskBoard = {};
+        let currentAssignees = [];
+
+        function normalizePriority(raw) {
+            const p = String(raw || '').toLowerCase().trim();
+            if (['p0', 'critical', 'urgent', 'highest'].includes(p)) return 'p0';
+            if (['p1', 'high', 'important'].includes(p)) return 'p1';
+            if (['p2', 'medium', 'normal'].includes(p)) return 'p2';
+            return 'p3';
+        }
+
+        function normalizeStatus(raw) {
+            const s = String(raw || '').toLowerCase().trim();
+            if (['in_progress', 'running', 'active', 'claimed', 'doing'].includes(s)) return 'in_progress';
+            if (['done', 'completed', 'resolved', 'closed'].includes(s)) return 'done';
+            if (['blocked', 'stuck', 'waiting', 'hold'].includes(s)) return 'blocked';
+            if (['review', 'reviewing'].includes(s)) return 'review';
+            return 'todo';
+        }
+
         function renderTasks(board, metrics) {
             if (!refs.tasksBoard || !refs.tasksMetrics) return;
             const safeBoard = (board && typeof board === 'object') ? board : {};
             const safeMetrics = (metrics && typeof metrics === 'object') ? metrics : {};
+            currentTaskBoard = safeBoard;
+
+            // Get filters
+            const filterAssignee = refs.taskFilterAssignee ? refs.taskFilterAssignee.value : '';
+            const filterPriority = refs.taskFilterPriority ? refs.taskFilterPriority.value : '';
+            const filterStatus = refs.taskFilterStatus ? refs.taskFilterStatus.value : '';
+
+            // Collect all tasks for priority summary and assignee list
+            let allTasks = [];
+            const assigneeSet = new Set();
+            let priorityCounts = { p0: 0, p1: 0, p2: 0, p3: 0 };
+
+            TASK_COLUMNS.forEach((col) => {
+                const items = Array.isArray(safeBoard[col.id]) ? safeBoard[col.id] : [];
+                items.forEach((task) => {
+                    allTasks.push({ ...task, _columnId: col.id });
+                    const a = String(task.assigned_to || '').trim();
+                    if (a && a !== 'unassigned') assigneeSet.add(a);
+                    const p = normalizePriority(task.priority);
+                    priorityCounts[p]++;
+                });
+            });
+
+            // Update priority summary
+            if (refs.p0Count) refs.p0Count.textContent = priorityCounts.p0;
+            if (refs.p1Count) refs.p1Count.textContent = priorityCounts.p1;
+            if (refs.p2Count) refs.p2Count.textContent = priorityCounts.p2;
+            if (refs.p3Count) refs.p3Count.textContent = priorityCounts.p3;
+
+            // Update assignee filter dropdown
+            currentAssignees = Array.from(assigneeSet).sort();
+            if (refs.taskFilterAssignee) {
+                const currentVal = refs.taskFilterAssignee.value;
+                refs.taskFilterAssignee.innerHTML = '<option value="">All Assignees</option>' +
+                    currentAssignees.map((a) => `<option value="${escapeHtml(a)}" ${a === currentVal ? 'selected' : ''}>${escapeHtml(a)}</option>`).join('');
+            }
 
             refs.tasksMetrics.innerHTML = `
                 <div class="tasks-metric"><strong>${Number(safeMetrics.total_tasks || 0)}</strong><span>Total</span></div>
@@ -2108,21 +2614,87 @@
                 <div class="tasks-metric"><strong>${Number(safeMetrics.completion_rate || 0)}%</strong><span>Complete</span></div>
             `;
 
+            const buildStatusOptions = (selected) => TASK_COLUMNS.map((col) => (
+                `<option value="${escapeHtml(col.id)}" ${col.id === selected ? 'selected' : ''}>${escapeHtml(col.label)}</option>`
+            )).join('');
+
             refs.tasksBoard.innerHTML = TASK_COLUMNS.map((column) => {
-                const items = Array.isArray(safeBoard[column.id]) ? safeBoard[column.id] : [];
-                const cards = items.slice(0, 6).map((task) => {
+                let items = Array.isArray(safeBoard[column.id]) ? safeBoard[column.id] : [];
+
+                // Apply filters
+                if (filterAssignee) {
+                    items = items.filter((t) => String(t.assigned_to || '').toLowerCase() === filterAssignee.toLowerCase());
+                }
+                if (filterPriority) {
+                    items = items.filter((t) => normalizePriority(t.priority) === filterPriority);
+                }
+                if (filterStatus) {
+                    items = items.filter((t) => normalizeStatus(t.status) === filterStatus || t.status === filterStatus);
+                }
+
+                const cards = items.slice(0, 8).map((task) => {
+                    const taskId = String(task.id || '');
                     const title = escapeHtml(String(task.title || 'Untitled'));
-                    const priority = escapeHtml(String(task.priority || 'normal'));
+                    const priorityRaw = String(task.priority || 'normal');
+                    const priorityNorm = normalizePriority(priorityRaw);
+                    const priorityLabel = priorityNorm.toUpperCase();
                     const assignee = escapeHtml(String(task.assigned_to || 'unassigned'));
+                    const status = String(task.status || column.id || 'backlog');
+                    const assigneeValue = assignee === 'unassigned' ? '' : assignee;
                     return `
-                        <div class="task-item">
+                        <div class="task-item" data-task-id="${escapeHtml(taskId)}">
                             <div class="task-item-title">${title}</div>
-                            <div class="task-item-meta"><span>${priority}</span><span>${assignee}</span></div>
+                            <div class="task-item-meta">
+                                <span class="priority-badge priority-${priorityNorm}">${priorityLabel}</span>
+                                <span>${assignee}</span>
+                            </div>
+                            <div class="task-edit-row">
+                                <select class="task-select" data-task-status>${buildStatusOptions(status)}</select>
+                                <input class="task-input" data-task-assignee type="text" placeholder="assignee" value="${escapeHtml(assigneeValue)}" />
+                                <button type="button" class="task-mini-btn" data-task-save>Save</button>
+                            </div>
                         </div>
                     `;
                 }).join('') || '<div class="task-item"><div class="task-item-title">Empty</div></div>';
                 return `<div class="task-column"><h3>${column.label} (${items.length})</h3>${cards}</div>`;
             }).join('');
+
+            Array.from(refs.tasksBoard.querySelectorAll('[data-task-save]')).forEach((button) => {
+                button.addEventListener('click', async () => {
+                    const card = button.closest('.task-item');
+                    if (!card) return;
+                    const taskId = String(card.dataset.taskId || '').trim();
+                    if (!taskId) return;
+                    const statusInput = card.querySelector('[data-task-status]');
+                    const assigneeInput = card.querySelector('[data-task-assignee]');
+                    const status = statusInput ? String(statusInput.value || '').trim() : '';
+                    const assignedTo = assigneeInput ? String(assigneeInput.value || '').trim() : '';
+                    await saveTaskQuick(taskId, status, assignedTo);
+                });
+            });
+        }
+
+        async function saveTaskQuick(taskId, status, assignedTo) {
+            const updates = [{ task_id: taskId }];
+            if (status) updates[0].status = status;
+            updates[0].assigned_to = assignedTo || '';
+            try {
+                const response = await fetch('/api/hub/tasks/batch-update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ updates }),
+                });
+                const payload = await response.json();
+                if (!response.ok || payload.success === false) {
+                    const err = (payload && (payload.error || payload.error_code)) || 'update_failed';
+                    notify(`Task update failed: ${err}`, 'danger', 2200);
+                    return;
+                }
+                notify('Task updated', 'ok', 1200);
+                await loadKanbanBoard();
+            } catch (error) {
+                notify(`Task update error: ${error.message || 'unknown'}`, 'danger', 2200);
+            }
         }
 
         async function loadKanbanBoard() {
@@ -2133,6 +2705,169 @@
                 renderTasks(payload.board || {}, payload.metrics || {});
             } catch (error) {
                 console.error('Failed to load kanban board', error);
+            }
+        }
+
+        async function loadWorkload() {
+            try {
+                const response = await fetch('/api/hub/workload');
+                const payload = await response.json();
+                if (!payload || payload.success === false) return;
+                renderWorkload(payload.workload || [], payload.unassigned || [], payload.priority_breakdown || {});
+            } catch (error) {
+                console.error('Failed to load workload', error);
+            }
+        }
+
+        function renderWorkload(workload, unassigned, priorityBreakdown) {
+            if (!refs.workloadGrid) return;
+
+            if (!workload.length && !unassigned.length) {
+                refs.workloadGrid.innerHTML = '<div class="workload-item"><div class="workload-name">No tasks yet</div></div>';
+                return;
+            }
+
+            const items = workload.map((w) => {
+                const statusClass = w.is_online ? 'online' : 'offline';
+                const statusText = w.is_online ? 'Online' : 'Offline';
+                const byPriority = w.by_priority || {};
+                const byStatus = w.by_status || {};
+                const taskList = (w.tasks || []).slice(0, 4).map((t) => {
+                    const p = normalizePriority(t.priority);
+                    return `<div class="workload-task-item">
+                        <span class="priority-badge priority-${p}">${p.toUpperCase()}</span>
+                        <span>${escapeHtml(String(t.title || '').slice(0, 30))}</span>
+                    </div>`;
+                }).join('');
+
+                return `
+                    <div class="workload-item">
+                        <div class="workload-header">
+                            <div class="workload-name">
+                                <span class="workload-status ${statusClass}" title="${statusText}"></span>
+                                ${escapeHtml(w.assignee || 'Unknown')}
+                            </div>
+                            <span class="tiny">${w.tasks.length} tasks</span>
+                        </div>
+                        <div class="workload-tasks">
+                            <span class="workload-mini-stat"><strong>${byStatus.in_progress || 0}</strong> active</span>
+                            <span class="workload-mini-stat"><strong>${byPriority.p0 || 0}</strong> P0</span>
+                            <span class="workload-mini-stat"><strong>${byPriority.p1 || 0}</strong> P1</span>
+                        </div>
+                        <div class="workload-task-list">${taskList || '<div class="tiny" style="color:var(--muted)">No visible tasks</div>'}</div>
+                    </div>
+                `;
+            }).join('');
+
+            const unassignedItem = unassigned.length ? `
+                <div class="workload-item" style="border-color:var(--warn-border);background:var(--warn-soft)">
+                    <div class="workload-header">
+                        <div class="workload-name">⚠️ Unassigned</div>
+                        <span class="tiny">${unassigned.length} tasks</span>
+                    </div>
+                    <div class="workload-task-list">
+                        ${unassigned.slice(0, 3).map((t) => {
+                            const p = normalizePriority(t.priority);
+                            return `<div class="workload-task-item">
+                                <span class="priority-badge priority-${p}">${p.toUpperCase()}</span>
+                                <span>${escapeHtml(String(t.title || '').slice(0, 30))}</span>
+                            </div>`;
+                        }).join('')}
+                    </div>
+                </div>
+            ` : '';
+
+            refs.workloadGrid.innerHTML = items + unassignedItem;
+        }
+
+        function renderInterventions(queue, summary) {
+            if (!refs.interventionsList || !refs.interventionsSummary) return;
+            const rows = Array.isArray(queue) ? queue : [];
+            const risk = (summary && summary.risk_counts) ? summary.risk_counts : {};
+            refs.interventionsSummary.textContent = `${rows.length} pending | h:${Number(risk.high || 0)} c:${Number(risk.critical || 0)}`;
+            if (!rows.length) {
+                refs.interventionsList.innerHTML = '<li class="activity-item"><div class="text">No pending interventions.</div></li>';
+                return;
+            }
+            refs.interventionsList.innerHTML = rows.slice(0, 16).map((item) => {
+                const id = String(item.id || '');
+                const riskLevel = String(item.risk_level || 'medium');
+                const title = escapeHtml(String(item.title || item.action || 'Intervention'));
+                const details = escapeHtml(String(item.command || ((item.details || {}).reason || '') || '').slice(0, 160));
+                const deferred = item.deferred ? ` | deferred until ${escapeHtml(String(item.deferred_until || ''))}` : '';
+                return `
+                    <li class="activity-item" data-intervention-id="${escapeHtml(id)}">
+                        <div class="row">
+                            <span class="badge ${riskLevel === 'critical' || riskLevel === 'high' ? 'danger' : (riskLevel === 'medium' ? 'warn' : 'ok')}">${escapeHtml(riskLevel)}</span>
+                            <span class="tiny">${formatTime(item.timestamp)}${deferred}</span>
+                        </div>
+                        <div class="text">${title}</div>
+                        <div class="tiny">${details || 'No extra details'}</div>
+                        <div class="intervention-actions">
+                            <button type="button" class="intervention-btn approve" data-int-action="approve">Force Approve</button>
+                            <button type="button" class="intervention-btn defer" data-int-action="defer">Defer 5m</button>
+                            <button type="button" class="intervention-btn decline" data-int-action="decline">Decline</button>
+                        </div>
+                    </li>
+                `;
+            }).join('');
+
+            Array.from(refs.interventionsList.querySelectorAll('[data-int-action]')).forEach((button) => {
+                button.addEventListener('click', async () => {
+                    const row = button.closest('[data-intervention-id]');
+                    if (!row) return;
+                    const id = String(row.dataset.interventionId || '').trim();
+                    const action = String(button.dataset.intAction || '');
+                    if (!id || !action) return;
+                    await runInterventionAction(id, action);
+                });
+            });
+        }
+
+        async function runInterventionAction(id, action) {
+            let url = '';
+            let body = {};
+            let method = 'POST';
+            if (action === 'approve') {
+                url = `/api/interventions/${encodeURIComponent(id)}/force-approve`;
+                body = { actor: 'dashboard', reason: 'live_monitor_force_approve' };
+            } else if (action === 'defer') {
+                url = `/api/interventions/${encodeURIComponent(id)}/defer`;
+                body = { actor: 'dashboard', reason: 'operator_defer', defer_sec: 300 };
+            } else if (action === 'decline') {
+                url = '/api/decision/decline';
+                body = { decision_id: id, actor: 'dashboard' };
+            } else {
+                return;
+            }
+            try {
+                const response = await fetch(url, {
+                    method,
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                const payload = await response.json();
+                if (!response.ok || payload.success === false) {
+                    const err = (payload && (payload.error || payload.error_code)) || 'action_failed';
+                    notify(`Intervention failed: ${err}`, 'danger', 2200);
+                    return;
+                }
+                notify(`Intervention ${action} done`, 'ok', 1300);
+                await loadInterventions();
+                await loadStatus();
+            } catch (error) {
+                notify(`Intervention error: ${error.message || 'unknown'}`, 'danger', 2200);
+            }
+        }
+
+        async function loadInterventions() {
+            try {
+                const response = await fetch('/api/interventions/queue');
+                const payload = await response.json();
+                if (!payload || payload.success === false) return;
+                renderInterventions(payload.queue || [], payload.summary || {});
+            } catch (error) {
+                console.error('Failed to load interventions', error);
             }
         }
 
@@ -2264,6 +2999,42 @@
             });
         }
 
+        async function dispatchCoordination(goalText) {
+            const goal = String(goalText || '').trim();
+            if (!goal) return;
+            const memberId = currentMemberId();
+            try {
+                const response = await fetch('/api/agents/coordination/dispatch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        member_id: memberId,
+                        goal,
+                        compact_mode: true,
+                        max_agents: 4,
+                        execute: true,
+                        multi_instance: true,
+                        create_tasks: true,
+                    }),
+                });
+                const payload = await response.json();
+                if (!payload || payload.success === false) {
+                    notify(`Coordination failed: ${String((payload && payload.error) || 'unknown')}`, 'danger', 2200);
+                    return null;
+                }
+                lastCoordinationPayload = payload;
+                renderCoordinationSnapshot(latestStatusPayload || {});
+                const saved = Number((((payload.plan || {}).token_budget || {}).estimated_tokens_saved) || 0);
+                const sent = Number(((payload.execution || {}).total_sent) || 0);
+                const created = Number(((payload.task_materialization || {}).created) || 0);
+                notify(`Coordination dispatched (${sent} cmds, saved~${saved} tokens, tasks ${created})`, 'ok', 1800);
+                return payload;
+            } catch (error) {
+                notify(`Coordination error: ${error.message || 'unknown'}`, 'danger', 2200);
+                return null;
+            }
+        }
+
         function openChat() {
             setView('chat', true);
             if (refs.chatInput) refs.chatInput.focus();
@@ -2364,13 +3135,16 @@
 
         function getDeckCommandCatalog() {
             return [
-                'workspace', 'ops', 'activity', 'chat', 'tasks',
+                'workspace', 'ops', 'activity', 'chat', 'tasks', 'interventions',
                 'refresh', 'pause', 'resume', 'spawn',
+                'coordinate', 'orchestrate',
                 'zen', 'zen on', 'zen off',
+                'simple', 'simple on', 'simple off',
                 'compact', 'comfort', 'focus', 'balanced', 'studio',
                 'theme', 'palette',
                 '/nexus_rules',
                 'summary',
+                'coordinate release in compact mode',
                 'guardian gỡ kẹt nếu có flow bị stuck',
                 'đánh giá UI UX hiện tại và đề xuất cải thiện',
                 'chạy 1 vòng Orion rồi báo kết quả ngắn gọn',
@@ -2443,12 +3217,21 @@
                 ],
                 tasks: [
                     { label: 'Open Chat', cmd: 'chat' },
+                    { label: 'Coordinate', cmd: 'coordinate tasks execution' },
                     { label: 'Focus Mode', cmd: 'focus' },
                     { label: 'Compact', cmd: 'compact' },
                     { label: 'Summary', cmd: 'summary' },
                 ],
+                interventions: [
+                    { label: 'Approve First', cmd: 'intervention approve first' },
+                    { label: 'Coordinate', cmd: 'coordinate resolve interventions' },
+                    { label: 'Open Tasks', cmd: 'tasks' },
+                    { label: 'Open Chat', cmd: 'chat' },
+                    { label: 'Summary', cmd: 'summary' },
+                ],
                 default: [
                     { label: 'Summary', cmd: 'summary' },
+                    { label: 'Coordinate', cmd: 'coordinate improve workflow' },
                     { label: 'Open Chat', cmd: 'chat' },
                     { label: 'Open Ops', cmd: 'ops' },
                     { label: 'Rules', cmd: '/nexus_rules' },
@@ -2580,12 +3363,13 @@
             const mode = String(document.body.dataset.experience || 'balanced');
             const density = String(document.body.dataset.density || 'comfortable');
             const zen = String(document.body.dataset.zen || 'off');
+            const member = currentMemberId();
             if (refs.deckZen) {
                 refs.deckZen.classList.toggle('active', zen === 'on');
                 refs.deckZen.textContent = zen === 'on' ? 'Zen On' : 'Zen';
             }
             if (refs.deckMeta) {
-                refs.deckMeta.textContent = `view=${currentView} | mode=${mode} | density=${density} | zen=${zen}`;
+                refs.deckMeta.textContent = `view=${currentView} | mode=${mode} | density=${density} | zen=${zen} | member=${member}`;
             }
             renderDeckQuickCommands();
             renderPrioritySuggestion();
@@ -2627,6 +3411,10 @@
                 notify('Switched to Tasks', 'info', 1500);
                 return setView('tasks', true);
             }
+            if (shortcut === '6' || /^(interventions|intervene|queue|manual queue)$/.test(normalized)) {
+                notify('Switched to Interventions', 'info', 1500);
+                return setView('interventions', true);
+            }
             if (/^(refresh|reload|f5|lam moi)$/.test(normalized)) return refreshAll();
             if (/^(pause|tam dung|dung lai|hold)$/.test(normalized)) return pauseSystem();
             if (/^(resume|continue|tiep tuc|chay tiep)$/.test(normalized)) return resumeSystem();
@@ -2651,6 +3439,9 @@
                 return setZen(false, true);
             }
             if (normalized === 'zen') return toggleZen();
+            if (normalized.includes('simple on')) return setSimpleMode(true, true);
+            if (normalized.includes('simple off')) return setSimpleMode(false, true);
+            if (normalized === 'simple') return toggleSimpleMode();
             if (normalized.includes('compact')) {
                 notify('Density: Compact', 'info', 1500);
                 return setDensity('compact', true);
@@ -2686,11 +3477,39 @@
                 notify('Pixel auto mode OFF', 'info', 1500);
                 return;
             }
+            if (normalized.includes('pixel busy on')) {
+                try {
+                    localStorage.setItem(PIXEL_BUSY_STORAGE_KEY, 'on');
+                } catch (_) {}
+                notify('Pixel busy mode ON', 'ok', 1500);
+                maybeAutoEnablePixelMode();
+                return;
+            }
+            if (normalized.includes('pixel busy off')) {
+                try {
+                    localStorage.setItem(PIXEL_BUSY_STORAGE_KEY, 'off');
+                } catch (_) {}
+                notify('Pixel busy mode OFF', 'info', 1500);
+                return;
+            }
             if (normalized.includes('pixel')) {
                 notify('Experience: Pixel', 'info', 1500);
                 return setExperience('pixel', true);
             }
             if (normalized.includes('palette')) return openPalette('');
+            if (normalized.includes('intervention approve first')) {
+                const first = refs.interventionsList ? refs.interventionsList.querySelector('[data-int-action="approve"]') : null;
+                if (first) {
+                    first.click();
+                    return;
+                }
+                notify('No pending intervention', 'warn', 1300);
+                return;
+            }
+            if (normalized.startsWith('coordinate') || normalized.startsWith('orchestrate') || normalized.includes('phoi hop')) {
+                const goal = cmd.replace(/^\s*(coordinate|orchestrate)\s*/i, '').trim() || 'improve workflow throughput';
+                return dispatchCoordination(goal);
+            }
             if (normalized.includes('ui ux') || normalized.includes('uiux')) return sendChatFromDeck('đánh giá UI UX hiện tại và đề xuất cải thiện');
             if (normalized.includes('go ket') || normalized.includes('unstick')) return sendChatFromDeck('guardian gỡ kẹt nếu có flow bị stuck');
             if (normalized.includes('summary') || normalized.includes('tom tat') || normalized.includes('dang chay')) return sendChatFromDeck('còn cái gì đang chạy vậy, tóm giúp mình');
@@ -2758,6 +3577,12 @@
                     enforceChartHeightGuard();
                 }, 30);
             }
+            if (resolved === 'tasks') {
+                loadKanbanBoard();
+            }
+            if (resolved === 'interventions') {
+                loadInterventions();
+            }
         }
 
         function setExperience(mode, persist) {
@@ -2798,13 +3623,32 @@
                 autoState = String(localStorage.getItem(PIXEL_AUTO_STORAGE_KEY) || '').toLowerCase();
             } catch (_) {}
             if (autoState === 'off') return;
-            if (window.matchMedia('(max-width: 1280px)').matches && String(document.body.dataset.experience || '') !== 'pixel') {
+            const currentMode = String(document.body.dataset.experience || 'balanced');
+            const busyEnabled = (() => {
+                try {
+                    const value = String(localStorage.getItem(PIXEL_BUSY_STORAGE_KEY) || '').toLowerCase();
+                    return value !== 'off';
+                } catch (_) {
+                    return true;
+                }
+            })();
+            const cardCount = refs.cards.length;
+            const denseFeed = activeView === 'ops' || activeView === 'workspace';
+            const narrowViewport = window.matchMedia('(max-width: 1280px)').matches;
+            const shouldUsePixel = narrowViewport || (busyEnabled && denseFeed && cardCount >= 7);
+            if (shouldUsePixel && currentMode !== 'pixel') {
                 setExperience('pixel', false);
                 try {
                     localStorage.setItem(PIXEL_AUTO_STORAGE_KEY, 'on');
                     localStorage.setItem(EXPERIENCE_STORAGE_KEY, 'pixel');
                 } catch (_) {}
-                notify('Auto-switched to Pixel mode for compact viewport', 'info', 1800);
+                notify('Auto-switched to Pixel mode for compact/dense realtime view', 'info', 1800);
+            } else if (!shouldUsePixel && currentMode === 'pixel' && autoState === 'on') {
+                setExperience('balanced', false);
+                try {
+                    localStorage.setItem(EXPERIENCE_STORAGE_KEY, 'balanced');
+                } catch (_) {}
+                notify('Returned to Balanced mode for comfortable view', 'info', 1600);
             }
         }
 
@@ -2864,6 +3708,53 @@
             setZen(saved === 'on', false);
         }
 
+        function setSimpleMode(on, persist) {
+            const enabled = Boolean(on);
+            document.body.dataset.simple = enabled ? 'on' : 'off';
+            if (refs.simpleToggle) {
+                refs.simpleToggle.classList.toggle('active', enabled);
+                refs.simpleToggle.textContent = enabled ? 'Simple On' : 'Simple';
+            }
+            if (persist !== false) {
+                try {
+                    localStorage.setItem(SIMPLE_STORAGE_KEY, enabled ? 'on' : 'off');
+                } catch (_) {}
+            }
+        }
+
+        function toggleSimpleMode() {
+            const enabled = String(document.body.dataset.simple || 'off') === 'on';
+            setSimpleMode(!enabled, true);
+            notify(!enabled ? 'Simple mode ON' : 'Simple mode OFF', 'info', 1300);
+        }
+
+        function loadSimpleMode() {
+            let saved = 'off';
+            try {
+                const value = String(localStorage.getItem(SIMPLE_STORAGE_KEY) || '').toLowerCase();
+                if (value === 'on' || value === 'off') saved = value;
+            } catch (_) {}
+            setSimpleMode(saved === 'on', false);
+        }
+
+        function saveMemberId() {
+            const value = currentMemberId();
+            if (refs.chatMemberId) refs.chatMemberId.value = value;
+            try {
+                localStorage.setItem(MEMBER_ID_STORAGE_KEY, value);
+            } catch (_) {}
+            syncControlDeck();
+        }
+
+        function loadMemberId() {
+            let value = 'owner';
+            try {
+                const saved = normalizeMemberId(localStorage.getItem(MEMBER_ID_STORAGE_KEY) || '');
+                if (saved) value = saved;
+            } catch (_) {}
+            if (refs.chatMemberId) refs.chatMemberId.value = value;
+        }
+
         function getPaletteActions() {
             return [
                 { id: 'nav_workspace', title: 'Open Workspace', meta: 'view', keywords: 'workspace home dashboard', run: () => setView('workspace', true) },
@@ -2871,10 +3762,12 @@
                 { id: 'nav_activity', title: 'Open Activity', meta: 'view', keywords: 'activity events feedback', run: () => setView('activity', true) },
                 { id: 'nav_chat', title: 'Open Chat', meta: 'view', keywords: 'chat prompt message', run: () => openChat() },
                 { id: 'nav_tasks', title: 'Open Tasks', meta: 'view', keywords: 'tasks kanban backlog', run: () => setView('tasks', true) },
+                { id: 'nav_interventions', title: 'Open Interventions', meta: 'view', keywords: 'interventions queue approvals manual', run: () => setView('interventions', true) },
                 { id: 'refresh', title: 'Refresh Live Data', meta: 'action', keywords: 'refresh reload sync', run: () => refreshAll() },
                 { id: 'pause', title: 'Pause System', meta: 'action', keywords: 'pause hold stop', run: () => pauseSystem() },
                 { id: 'resume', title: 'Resume System', meta: 'action', keywords: 'resume continue start', run: () => resumeSystem() },
                 { id: 'spawn', title: 'Spawn Orion Instance', meta: 'action', keywords: 'spawn orion instance', run: () => spawnOrion() },
+                { id: 'coord', title: 'Dispatch Agent Coordination', meta: 'action', keywords: 'coordinate orchestrate compact agents tokens', run: () => dispatchCoordination('improve workflow throughput') },
                 { id: 'theme', title: 'Toggle Theme', meta: 'preference', keywords: 'theme dark light', run: () => document.getElementById('theme-toggle').click() },
                 { id: 'exp_focus', title: 'Experience: Focus', meta: 'preference', keywords: 'experience focus minimal', run: () => setExperience('focus', true) },
                 { id: 'exp_balanced', title: 'Experience: Balance', meta: 'preference', keywords: 'experience balanced', run: () => setExperience('balanced', true) },
@@ -2892,10 +3785,25 @@
                     } catch (_) {}
                     notify('Pixel auto mode OFF', 'info', 1500);
                 } },
+                { id: 'pixel_busy_on', title: 'Pixel Busy: On', meta: 'preference', keywords: 'pixel busy dense realtime cards', run: () => {
+                    try {
+                        localStorage.setItem(PIXEL_BUSY_STORAGE_KEY, 'on');
+                    } catch (_) {}
+                    notify('Pixel busy mode ON', 'ok', 1500);
+                    maybeAutoEnablePixelMode();
+                } },
+                { id: 'pixel_busy_off', title: 'Pixel Busy: Off', meta: 'preference', keywords: 'pixel busy disable density trigger', run: () => {
+                    try {
+                        localStorage.setItem(PIXEL_BUSY_STORAGE_KEY, 'off');
+                    } catch (_) {}
+                    notify('Pixel busy mode OFF', 'info', 1500);
+                } },
                 { id: 'density_comfort', title: 'Density: Comfortable', meta: 'preference', keywords: 'density comfortable spacing', run: () => setDensity('comfortable', true) },
                 { id: 'density_compact', title: 'Density: Compact', meta: 'preference', keywords: 'density compact tighter', run: () => setDensity('compact', true) },
                 { id: 'zen_on', title: 'Zen Mode: On', meta: 'preference', keywords: 'zen focus minimal clean', run: () => setZen(true, true) },
                 { id: 'zen_off', title: 'Zen Mode: Off', meta: 'preference', keywords: 'zen off full layout', run: () => setZen(false, true) },
+                { id: 'simple_on', title: 'Simple Mode: On', meta: 'preference', keywords: 'simple clear easy minimal', run: () => setSimpleMode(true, true) },
+                { id: 'simple_off', title: 'Simple Mode: Off', meta: 'preference', keywords: 'simple off full dashboard', run: () => setSimpleMode(false, true) },
                 { id: 'chat_summary', title: 'Chat Prompt: Realtime Summary', meta: 'prompt', keywords: 'chat summary status running', run: () => { openChat(); useChatPrompt('còn cái gì đang chạy vậy, tóm giúp mình'); } },
                 { id: 'chat_uiux', title: 'Chat Prompt: UI/UX Critique', meta: 'prompt', keywords: 'chat ui ux critique improve', run: () => { openChat(); useChatPrompt('đánh giá UI UX hiện tại và đề xuất cải thiện'); } },
                 { id: 'chat_unstick', title: 'Chat Prompt: Guardian Unstick', meta: 'prompt', keywords: 'chat guardian stuck unstick', run: () => { openChat(); useChatPrompt('guardian gỡ kẹt nếu có flow bị stuck'); } },
@@ -3125,8 +4033,26 @@
             if (!input) return;
             const rawMessage = String(input.value || '').trim();
             if (!rawMessage) return;
+            const memberId = currentMemberId();
             appendChatMessage('user', rawMessage);
             input.value = '';
+            const normalizedRaw = normalizeIntentText(rawMessage, true);
+            if (normalizedRaw.startsWith('/coord') || normalizedRaw.startsWith('coord ')) {
+                const goal = rawMessage.replace(/^\/?coord(?:inate)?\s*/i, '').trim() || 'improve workflow throughput';
+                showChatTyping(true, 'Đang phối hợp agents...');
+                const pendingNode = `coord-${Date.now()}`;
+                appendChatMessage('bot', 'Đang dispatch compact coordination...', pendingNode);
+                const payload = await dispatchCoordination(goal);
+                if (payload && payload.success) {
+                    const sent = Number(((payload.execution || {}).total_sent) || 0);
+                    const saved = Number((((payload.plan || {}).token_budget || {}).estimated_tokens_saved) || 0);
+                    appendChatMessage('bot', `Coordination done: sent ${sent} commands, saved ~${saved} tokens.`, pendingNode);
+                } else {
+                    appendChatMessage('bot', 'Coordination failed. Check logs and retry.', pendingNode);
+                }
+                showChatTyping(false);
+                return;
+            }
             const resolved = resolveChatSubmission(rawMessage);
             if (resolved.note) appendChatMessage('system', resolved.note);
             if (resolved.localReply) {
@@ -3143,7 +4069,7 @@
                 const response = await fetch('/api/chat/ask', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: outbound, instance_id: currentInstanceId }),
+                    body: JSON.stringify({ message: outbound, instance_id: currentInstanceId, member_id: memberId }),
                 });
                 const payload = await response.json();
                 if (!payload || payload.success === false) {
@@ -3233,6 +4159,7 @@
             button.addEventListener('click', () => setDensity(button.dataset.density || 'comfortable', true));
         });
         if (refs.zenToggle) refs.zenToggle.addEventListener('click', () => toggleZen());
+        if (refs.simpleToggle) refs.simpleToggle.addEventListener('click', () => toggleSimpleMode());
         if (refs.deckZen) refs.deckZen.addEventListener('click', () => toggleZen());
         if (refs.deckRefresh) refs.deckRefresh.addEventListener('click', () => refreshAll());
         if (refs.deckPause) refs.deckPause.addEventListener('click', () => pauseSystem());
@@ -3332,6 +4259,25 @@
         if (refs.chatFontUp) refs.chatFontUp.addEventListener('click', () => tweakChatFont(0.07));
         if (refs.chatHeightDown) refs.chatHeightDown.addEventListener('click', () => tweakChatHeight(-40));
         if (refs.chatHeightUp) refs.chatHeightUp.addEventListener('click', () => tweakChatHeight(40));
+        if (refs.chatCoordinate) {
+            refs.chatCoordinate.addEventListener('click', async () => {
+                const goal = (refs.chatInput && refs.chatInput.value && refs.chatInput.value.trim())
+                    ? refs.chatInput.value.trim()
+                    : 'improve workflow throughput';
+                await dispatchCoordination(goal);
+            });
+        }
+        if (refs.chatMemberId) {
+            refs.chatMemberId.addEventListener('change', () => saveMemberId());
+            refs.chatMemberId.addEventListener('blur', () => saveMemberId());
+            refs.chatMemberId.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+                    saveMemberId();
+                    if (refs.chatInput) refs.chatInput.focus();
+                }
+            });
+        }
         if (refs.chatMaxToggle) refs.chatMaxToggle.addEventListener('click', () => toggleChatMax());
         if (refs.chatClear) refs.chatClear.addEventListener('click', () => resetChatConversation());
         initChatResizer();
@@ -3391,7 +4337,7 @@
                 toggleZen();
                 return;
             }
-            const map = { '1': 'workspace', '2': 'ops', '3': 'activity', '4': 'chat', '5': 'tasks' };
+            const map = { '1': 'workspace', '2': 'ops', '3': 'activity', '4': 'chat', '5': 'tasks', '6': 'interventions' };
             const next = map[event.key];
             if (next) {
                 event.preventDefault();
@@ -3404,16 +4350,48 @@
             });
         }
 
+        // Task filter handlers
+        function setupTaskFilters() {
+            if (refs.taskFilterAssignee) {
+                refs.taskFilterAssignee.addEventListener('change', () => {
+                    renderTasks(currentTaskBoard, {});
+                });
+            }
+            if (refs.taskFilterPriority) {
+                refs.taskFilterPriority.addEventListener('change', () => {
+                    renderTasks(currentTaskBoard, {});
+                });
+            }
+            if (refs.taskFilterStatus) {
+                refs.taskFilterStatus.addEventListener('change', () => {
+                    renderTasks(currentTaskBoard, {});
+                });
+            }
+            if (refs.taskFilterClear) {
+                refs.taskFilterClear.addEventListener('click', () => {
+                    if (refs.taskFilterAssignee) refs.taskFilterAssignee.value = '';
+                    if (refs.taskFilterPriority) refs.taskFilterPriority.value = '';
+                    if (refs.taskFilterStatus) refs.taskFilterStatus.value = '';
+                    renderTasks(currentTaskBoard, {});
+                });
+            }
+        }
+
         loadExperience();
         loadDensity();
         loadZen();
+        loadSimpleMode();
+        loadMemberId();
         loadDeckHistory();
         loadChatUiState();
         maybeAutoEnablePixelMode();
         setView(parseViewFromUrl(), false);
         initCharts();
+        setupTaskFilters();
         loadStatus();
         loadKanbanBoard();
+        loadWorkload();
+        loadInterventions();
         setInterval(loadStatus, 5000);
     </script>
 </body>

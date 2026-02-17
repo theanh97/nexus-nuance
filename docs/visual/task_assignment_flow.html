@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>Task Assignment Flow - Visual Digest</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #eee;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+
+        h1 {
+            text-align: center;
+            font-size: 2em;
+            margin-bottom: 30px;
+            background: linear-gradient(90deg, #00d4ff, #7b2cbf);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .flow-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 16px;
+            padding: 20px;
+            backdrop-filter: blur(10px);
+        }
+
+        .card h2 {
+            font-size: 1.1em;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .card h2 .icon { font-size: 1.5em; }
+
+        .status-ok { color: #4ade80; }
+        .status-skip { color: #fbbf24; }
+        .status-new { color: #60a5fa; }
+
+        .orion-instance {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 16px;
+            background: rgba(0,0,0,0.3);
+            border-radius: 8px;
+            margin-bottom: 10px;
+        }
+
+        .orion-name {
+            font-weight: 600;
+            font-size: 0.95em;
+        }
+
+        .orion-id {
+            font-size: 0.8em;
+            color: #888;
+        }
+
+        .badge {
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 0.75em;
+            font-weight: 600;
+        }
+
+        .badge-claim { background: #22c55e20; color: #4ade80; }
+        .badge-skip { background: #eab30820; color: #fbbf24; }
+
+        .task-box {
+            background: linear-gradient(135deg, #3b82f620, #8b5cf620);
+            border: 1px solid #3b82f650;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+
+        .task-title { font-weight: 600; margin-bottom: 8px; }
+        .task-meta { font-size: 0.85em; color: #aaa; }
+
+        .arrow {
+            text-align: center;
+            font-size: 2em;
+            color: #3b82f6;
+            padding: 10px 0;
+        }
+
+        .comparison {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-top: 30px;
+        }
+
+        .comparison-card {
+            background: rgba(255,255,255,0.03);
+            border-radius: 12px;
+            padding: 20px;
+        }
+
+        .comparison-card.before { border-left: 4px solid #ef4444; }
+        .comparison-card.after { border-left: 4px solid #22c55e; }
+
+        .comparison-card h3 { margin-bottom: 15px; font-size: 1em; }
+
+        .mini-flow {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 0;
+            font-size: 0.9em;
+        }
+
+        .mini-box {
+            background: rgba(0,0,0,0.4);
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 0.85em;
+        }
+
+        .mini-arrow { color: #666; }
+
+        .code-block {
+            background: #0d1117;
+            border-radius: 8px;
+            padding: 15px;
+            font-family: 'SF Mono', 'Consolas', monospace;
+            font-size: 0.85em;
+            overflow-x: auto;
+            margin-top: 20px;
+        }
+
+        .code-comment { color: #6e7681; }
+        .code-keyword { color: #ff7b72; }
+        .code-func { color: #d2a8ff; }
+        .code-string { color: #a5d6ff; }
+
+        @media (max-width: 768px) {
+            .comparison { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎯 Task Assignment Flow</h1>
+
+        <!-- Main Flow -->
+        <div class="flow-grid">
+            <!-- Task Created -->
+            <div class="card">
+                <h2><span class="icon">📝</span> Task từ Hub</h2>
+                <div class="task-box">
+                    <div class="task-title">Ship workflow v2</div>
+                    <div class="task-meta">
+                        id: task-123<br>
+                        assigned_to: <strong style="color:#4ade80">orion-alpha</strong>
+                    </div>
+                </div>
+                <p style="font-size:0.9em;color:#888;">
+                    Task được tạo từ Coordination dispatch với assignee cụ thể
+                </p>
+            </div>
+
+            <!-- Arrow -->
+            <div class="arrow">→</div>
+
+            <!-- Orion Alpha -->
+            <div class="card">
+                <h2><span class="icon">🟢</span> Orion-Alpha</h2>
+                <div class="orion-instance">
+                    <div>
+                        <div class="orion-name">Orion Alpha</div>
+                        <div class="orion-id">instance_id: alpha</div>
+                    </div>
+                    <span class="badge badge-claim">✓ CLAIM</span>
+                </div>
+                <p style="font-size:0.85em;color:#4ade80;">
+                    "orion-alpha" ∈ aliases → MATCH!
+                </p>
+            </div>
+
+            <!-- Orion Beta -->
+            <div class="card">
+                <h2><span class="icon">🟡</span> Orion-Beta</h2>
+                <div class="orion-instance">
+                    <div>
+                        <div class="orion-name">Orion Beta</div>
+                        <div class="orion-id">instance_id: beta</div>
+                    </div>
+                    <span class="badge badge-skip">✗ SKIP</span>
+                </div>
+                <p style="font-size:0.85em;color:#fbbf24;">
+                    "orion-alpha" ∉ aliases → NO MATCH
+                </p>
+            </div>
+        </div>
+
+        <!-- Before / After -->
+        <div class="comparison">
+            <div class="comparison-card before">
+                <h3>❌ TRƯỚC: Race condition</h3>
+                <div class="mini-flow">
+                    <span class="mini-box">Task A</span>
+                    <span class="mini-arrow">→</span>
+                    <span class="mini-box">Hub</span>
+                    <span class="mini-arrow">→</span>
+                    <span class="mini-box" style="color:#ef4444">Random Orion</span>
+                </div>
+                <p style="font-size:0.85em;color:#aaa;margin-top:10px;">
+                    Bất kỳ Orion nào cũng có thể claim → Task nhầm instance
+                </p>
+            </div>
+
+            <div class="comparison-card after">
+                <h3>✅ SAU: Assignment-aware</h3>
+                <div class="mini-flow">
+                    <span class="mini-box">Task A</span>
+                    <span class="mini-arrow">→</span>
+                    <span class="mini-box">assigned_to: orion-alpha</span>
+                    <span class="mini-arrow">→</span>
+                    <span class="mini-box" style="color:#4ade80">Only Orion-Alpha</span>
+                </div>
+                <p style="font-size:0.85em;color:#aaa;margin-top:10px;">
+                    Chỉ Orion được assign mới claim → Đúng người, đúng việc
+                </p>
+            </div>
+        </div>
+
+        <!-- Code Logic -->
+        <div class="code-block">
+            <span class="code-comment"># Matching aliases được tạo từ instance_id</span><br>
+            <span class="code-keyword">aliases</span> = {<br>
+            &nbsp;&nbsp;<span class="code-string">"alpha"</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="code-comment"># instance_id gốc</span><br>
+            &nbsp;&nbsp;<span class="code-string">"orion"</span>,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="code-comment"># name</span><br>
+            &nbsp;&nbsp;<span class="code-string">"orion-alpha"</span>,&nbsp;&nbsp;&nbsp;&nbsp;<span class="code-comment"># prefix + id</span><br>
+            &nbsp;&nbsp;<span class="code-string">"orion_alpha"</span>.replace(<span class="code-string">"_"</span>,<span class="code-string">"-"</span>),&nbsp;&nbsp;<span class="code-comment"># normalize</span><br>
+            }<br><br>
+            <span class="code-comment"># Check: assigned_to có trong aliases không?</span><br>
+            <span class="code-keyword">if</span> task[<span class="code-string">"assigned_to"</span>] <span class="code-keyword">in</span> aliases:<br>
+            &nbsp;&nbsp;<span class="code-func">claim_task</span>(task)&nbsp;&nbsp;<span class="code-comment"># ✓ Nhận task</span><br>
+            <span class="code-keyword">else</span>:<br>
+            &nbsp;&nbsp;<span class="code-func">skip</span>()&nbsp;&nbsp;<span class="code-comment"># ✗ Bỏ qua</span>
+        </div>
+    </div>
+</body>
+</html>

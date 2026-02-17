@@ -148,7 +148,7 @@ MODELS: Dict[str, ModelConfig] = {
         speed_tier=2,
     ),
     "glm-4-flash": ModelConfig(
-        name="glm-4-flash",
+        name=os.getenv("GLM_FLASH_MODEL", "glm-4-flash").strip() or "glm-4-flash",
         api_source="glm",
         api_key_env="GLM_API_KEY",
         api_base=DEFAULT_GLM_API_BASE,

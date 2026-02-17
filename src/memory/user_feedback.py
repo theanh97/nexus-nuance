@@ -125,6 +125,16 @@ class UserFeedbackManager:
                     "stats": self.stats,
                     "last_updated": datetime.now().isoformat()
                 }, f, indent=2, ensure_ascii=False)
+            # Save preferences
+            with open(self.preferences_file, 'w', encoding='utf-8') as f:
+                json.dump(self.user_preferences, f, indent=2, ensure_ascii=False)
+            # Save learning rules
+            with open(self.learning_file, 'w', encoding='utf-8') as f:
+                json.dump({
+                    "rules": self.learning_rules,
+                    "patterns": self.preference_patterns,
+                    "last_updated": datetime.now().isoformat()
+                }, f, indent=2, ensure_ascii=False)
 
     def _emit_learning_event(self, event_type: str, content: str, value: float, risk: float, context: Optional[Dict] = None):
         try:
@@ -143,18 +153,6 @@ class UserFeedbackManager:
             )
         except Exception:
             return
-
-            # Save preferences
-            with open(self.preferences_file, 'w', encoding='utf-8') as f:
-                json.dump(self.user_preferences, f, indent=2, ensure_ascii=False)
-
-            # Save learning rules
-            with open(self.learning_file, 'w', encoding='utf-8') as f:
-                json.dump({
-                    "rules": self.learning_rules,
-                    "patterns": self.preference_patterns,
-                    "last_updated": datetime.now().isoformat()
-                }, f, indent=2, ensure_ascii=False)
 
     # ==================== FEEDBACK COLLECTION ====================
 
