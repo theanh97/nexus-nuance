@@ -1,6 +1,6 @@
 # Nexus Progress Snapshot
 
-Last updated: 2026-02-18T00:19:18.751849
+Last updated: 2026-02-18T00:21:18.761929
 
 ## Project
 - name: Nexus
@@ -14,11 +14,11 @@ Last updated: 2026-02-18T00:19:18.751849
 - running: True
 - paused: False
 - pause_reason: 
-- iteration: 8
-- active_flows: 3
-- last_progress_at: 2026-02-18T00:19:16.348794
-- last_cycle_started_at: 2026-02-18T00:19:16.269993
-- last_cycle_finished_at: 2026-02-18T00:19:16.337280
+- iteration: 10
+- active_flows: 2
+- last_progress_at: 2026-02-18T00:19:44.980492
+- last_cycle_started_at: 2026-02-18T00:19:45.003450
+- last_cycle_finished_at: 2026-02-18T00:19:30.711043
 
 ## Monitor
 - autopilot_enabled: True
@@ -35,9 +35,9 @@ Last updated: 2026-02-18T00:19:18.751849
 - provider: pyautogui
 
 ## Signals (last window)
-- counts: {'error': 5, 'warning': 10, 'success': 11, 'info': 94}
+- counts: {'error': 6, 'warning': 10, 'success': 8, 'info': 96}
 - top_agent: orion
-- latest_event: Self-improvement complete: 0 applied, 0 pending
+- latest_event: Routing attempt 2/4 -> MiniMax-M2.5
 
 ## Pending
 - pending_decisions: 0
