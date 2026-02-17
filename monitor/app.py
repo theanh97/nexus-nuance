@@ -23,6 +23,7 @@ import logging
 import threading
 from collections import defaultdict, deque
 from urllib import request as urllib_request, error as urllib_error
+from urllib.parse import urlparse
 
 from flask import Flask, render_template, jsonify, request, Response, redirect, url_for
 from flask_cors import CORS
@@ -107,6 +108,10 @@ _openclaw_metrics: Dict[str, int] = {
     "token_missing": 0,
     "health_error": 0,
     "cli_failures": 0,
+    "gateway_restarts": 0,
+    "self_heal_runs": 0,
+    "self_heal_success": 0,
+    "self_heal_fail": 0,
     "attach_attempts": 0,
     "attach_success": 0,
     "attach_failed": 0,
@@ -167,6 +172,18 @@ MONITOR_COMPUTER_CONTROL_ENABLED_DEFAULT = _env_bool("MONITOR_COMPUTER_CONTROL_E
 OPENCLAW_BROWSER_AUTO_START = _env_bool("OPENCLAW_BROWSER_AUTO_START", True)
 OPENCLAW_BROWSER_TIMEOUT_MS = max(5000, int(os.getenv("OPENCLAW_BROWSER_TIMEOUT_MS", "30000")))
 OPENCLAW_DASHBOARD_URL = os.getenv("OPENCLAW_DASHBOARD_URL", "http://127.0.0.1:5050/")
+OPENCLAW_SELF_HEAL_ENABLED = _env_bool("OPENCLAW_SELF_HEAL_ENABLED", True)
+OPENCLAW_SELF_HEAL_INTERVAL_SEC = max(5, int(os.getenv("OPENCLAW_SELF_HEAL_INTERVAL_SEC", "20")))
+OPENCLAW_SELF_HEAL_FALLBACK = _env_bool("OPENCLAW_SELF_HEAL_FALLBACK", True)
+OPENCLAW_SELF_HEAL_FLOW_COMMAND = os.getenv("OPENCLAW_SELF_HEAL_FLOW_COMMAND", "auto unstick run one cycle resume")
+OPENCLAW_SELF_HEAL_BOOTSTRAP = _env_bool("OPENCLAW_SELF_HEAL_BOOTSTRAP", False)
+OPENCLAW_SELF_HEAL_OPEN_DASHBOARD = _env_bool("OPENCLAW_SELF_HEAL_OPEN_DASHBOARD", False)
+OPENCLAW_SELF_HEAL_OPEN_COOLDOWN_SEC = max(30, int(os.getenv("OPENCLAW_SELF_HEAL_OPEN_COOLDOWN_SEC", "300")))
+OPENCLAW_SELF_HEAL_FALLBACK_COOLDOWN_SEC = max(15, int(os.getenv("OPENCLAW_SELF_HEAL_FALLBACK_COOLDOWN_SEC", "90")))
+OPENCLAW_FLOW_OPEN_COOLDOWN_SEC = max(5, int(os.getenv("OPENCLAW_FLOW_OPEN_COOLDOWN_SEC", "20")))
+OPENCLAW_ACTION_DEBOUNCE_SEC = max(2.0, float(os.getenv("OPENCLAW_ACTION_DEBOUNCE_SEC", "6")))
+OPENCLAW_AUTO_IDEMPOTENCY_ENABLED = _env_bool("OPENCLAW_AUTO_IDEMPOTENCY_ENABLED", True)
+OPENCLAW_AUTO_IDEMPOTENCY_WINDOW_SEC = max(3, int(os.getenv("OPENCLAW_AUTO_IDEMPOTENCY_WINDOW_SEC", "8")))
 OPENCLAW_FLOW_CHAT_PLACEHOLDERS = [
     "nhập lệnh",
     "nhập yêu cầu",
@@ -175,6 +192,11 @@ OPENCLAW_FLOW_CHAT_PLACEHOLDERS = [
     "status / pause",
     "lệnh tùy chỉnh",
     "lệnh cho các agent",
+    "nhập tự nhiên",
+    "nhập tự nhiên hoặc gõ",
+    "type natural command",
+    "type natural command...",
+    "type natural command... e.g.",
 ]
 OPENCLAW_AUTO_ATTACH_ENABLED = _env_bool("OPENCLAW_AUTO_ATTACH_ENABLED", True)
 OPENCLAW_AUTO_ATTACH_RETRIES = max(1, int(os.getenv("OPENCLAW_AUTO_ATTACH_RETRIES", "2")))
@@ -272,6 +294,18 @@ _monitor_process_started_at = datetime.now()
 _runtime_heartbeat_thread: Optional[threading.Thread] = None
 _runtime_heartbeat_stop_event = threading.Event()
 _runtime_heartbeat_lock = threading.RLock()
+_openclaw_self_heal_thread: Optional[threading.Thread] = None
+_openclaw_self_heal_stop_event = threading.Event()
+_openclaw_self_heal_lock = threading.RLock()
+_openclaw_self_heal_last_run: Optional[datetime] = None
+_openclaw_self_heal_last_error: Optional[str] = None
+_openclaw_self_heal_last_success: Optional[datetime] = None
+_openclaw_self_heal_last_open: Optional[datetime] = None
+_openclaw_self_heal_last_fallback: Optional[datetime] = None
+_openclaw_flow_last_open: Optional[datetime] = None
+_OPENCLAW_FLOW_LOCK = threading.Lock()
+_OPENCLAW_ACTION_DEBOUNCE_LOCK = threading.Lock()
+_openclaw_action_last_seen: Dict[str, float] = {}
 _API_RATE_LIMIT_LOCK = threading.Lock()
 _api_rate_buckets: Dict[str, Dict[str, Any]] = defaultdict(dict)
 _api_rate_limit_blocked_total = 0
@@ -2270,8 +2304,12 @@ def _build_learning_v2_snapshot() -> Dict[str, Any]:
         verdict_counts = {"win": 0, "loss": 0, "inconclusive": 0}
         pending_recheck_runs = 0
         retry_exhausted_runs = 0
+        holdout_pending_runs = 0
         for run in runs:
             verification = run.get("verification", {}) if isinstance(run.get("verification"), dict) else {}
+            if bool(verification.get("holdout_pending", False)):
+                holdout_pending_runs += 1
+                continue
             verdict = str(verification.get("verdict", "")).strip().lower()
             if verdict in verdict_counts:
                 verdict_counts[verdict] += 1
@@ -2299,7 +2337,7 @@ def _build_learning_v2_snapshot() -> Dict[str, Any]:
                     ts_dt = datetime.fromisoformat(str(ts))
                 except Exception:
                     ts_dt = None
-            if verdict in trend_24h and ts_dt:
+            if verdict in trend_24h and ts_dt and not bool(evd.get("holdout_pending", False)):
                 age_sec = (now_dt - ts_dt).total_seconds()
                 if age_sec <= 24 * 3600:
                     trend_24h[verdict] += 1
@@ -2344,6 +2382,7 @@ def _build_learning_v2_snapshot() -> Dict[str, Any]:
             "avg_error_delta": _avg(error_delta_values),
             "evidence_samples": len(evidences),
             "pending_recheck_runs": pending_recheck_runs,
+            "holdout_pending_runs": holdout_pending_runs,
             "retry_exhausted_runs": retry_exhausted_runs,
             "trend_24h": trend_24h,
             "trend_7d": trend_7d,
@@ -2390,11 +2429,22 @@ def _build_learning_v2_snapshot() -> Dict[str, Any]:
         except Exception:
             policy_state = {}
 
+        cafe_state = {}
+        try:
+            from src.memory.cafe_calibrator import get_cafe_calibrator
+            cafe_state = get_cafe_calibrator().get_state()
+        except Exception:
+            cafe_state = {}
+
         return {
             "enabled": True,
             "proposal_funnel": proposal_funnel,
             "outcome_quality": quality,
             "learning_event_quality": learning_event_quality,
+            "cafe": {
+                "model_bias": cafe_state.get("model_bias", {}) if isinstance(cafe_state, dict) else {},
+                "last_updated": cafe_state.get("last_updated") if isinstance(cafe_state, dict) else None,
+            },
             "policy_state": policy_state if isinstance(policy_state, dict) else {},
             "updated_at": datetime.now().isoformat(),
         }
@@ -2859,6 +2909,36 @@ def _ensure_monitor_supervisor_started() -> None:
         _monitor_supervisor_thread.start()
 
 
+def _openclaw_self_heal_loop() -> None:
+    while not _openclaw_self_heal_stop_event.is_set():
+        try:
+            if OPENCLAW_SELF_HEAL_ENABLED:
+                result = _openclaw_self_heal_once()
+                if result.get("success"):
+                    state.add_agent_log("guardian", "🧩 OpenClaw self-heal OK.", "success")
+                    logger.info("OpenClaw self-heal OK", extra={"detail": result})
+                else:
+                    state.add_agent_log("guardian", "🧩 OpenClaw self-heal failed; fallback attempted.", "warning")
+                    logger.warning("OpenClaw self-heal failed", extra={"detail": result})
+        except Exception as exc:
+            logger.error(f"OpenClaw self-heal loop error: {exc}")
+        _openclaw_self_heal_stop_event.wait(OPENCLAW_SELF_HEAL_INTERVAL_SEC)
+
+
+def _ensure_openclaw_self_heal_started() -> None:
+    global _openclaw_self_heal_thread
+    with _openclaw_self_heal_lock:
+        if _openclaw_self_heal_thread and _openclaw_self_heal_thread.is_alive():
+            return
+        _openclaw_self_heal_stop_event.clear()
+        _openclaw_self_heal_thread = threading.Thread(
+            target=_openclaw_self_heal_loop,
+            name="openclaw-self-heal",
+            daemon=True,
+        )
+        _openclaw_self_heal_thread.start()
+
+
 def _build_ops_snapshot() -> Dict[str, Any]:
     events = state.get_event_feed(limit=120, include_routing=True)
     filtered_events = [
@@ -3134,6 +3214,7 @@ def _build_openclaw_metrics_snapshot(include_events: bool = False, event_limit: 
         "counters": counters,
         "attach_success_rate": round(float(counters.get("attach_success", 0)) / attach_attempts, 4),
         "flow_success_rate": round(float(counters.get("flow_success", 0)) / flow_runs, 4),
+        "self_heal": _openclaw_self_heal_status(),
         "policy": {
             "auto_approved": policy_auto,
             "manual_required": policy_manual,
@@ -3329,6 +3410,82 @@ def _parse_json_loose(text: str) -> Optional[Any]:
     return None
 
 
+_OPENCLAW_GATEWAY_ERROR_TOKENS = (
+    "gateway closed",
+    "abnormal closure",
+    "no close frame",
+    "econnrefused",
+    "connection refused",
+    "socket hang up",
+)
+_OPENCLAW_NO_TAB_TOKENS = (
+    "no tab is connected",
+    "extension relay",
+    "chrome extension",
+)
+
+
+def _text_contains_any(text: str, tokens: Tuple[str, ...]) -> bool:
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(token in lowered for token in tokens)
+
+
+def _is_openclaw_gateway_error(text: str) -> bool:
+    return _text_contains_any(text, _OPENCLAW_GATEWAY_ERROR_TOKENS)
+
+
+def _is_openclaw_no_tab_error(text: str) -> bool:
+    return _text_contains_any(text, _OPENCLAW_NO_TAB_TOKENS)
+
+
+def _restart_openclaw_gateway() -> Dict[str, Any]:
+    try:
+        completed = subprocess.run(
+            ["openclaw", "gateway", "start"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+        payload = {
+            "success": completed.returncode == 0,
+            "returncode": completed.returncode,
+            "stdout": (completed.stdout or "").strip(),
+            "stderr": (completed.stderr or "").strip(),
+            "command": "openclaw gateway start",
+        }
+        if payload["success"]:
+            _openclaw_metrics_inc("gateway_restarts")
+            _openclaw_metrics_event("gateway_restart", {"result": "ok"})
+        else:
+            _openclaw_metrics_event("gateway_restart", {"result": "failed", "stderr": payload["stderr"]})
+        return payload
+    except Exception as exc:
+        _openclaw_metrics_event("gateway_restart", {"result": "error", "error": str(exc)})
+        return {"success": False, "error": str(exc)}
+
+
+def _wait_for_openclaw_gateway_ready(max_wait_sec: float = 6.0, interval_sec: float = 0.6) -> bool:
+    deadline = time.time() + max_wait_sec
+    while time.time() < deadline:
+        try:
+            completed = subprocess.run(
+                ["openclaw", "gateway", "probe"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if completed.returncode == 0 and "Reachable: yes" in (completed.stdout or ""):
+                return True
+        except Exception:
+            pass
+        time.sleep(interval_sec)
+    return False
+
+
 def _run_openclaw_cli(args: List[str], timeout_ms: int = OPENCLAW_BROWSER_TIMEOUT_MS, retries: int = OPENCLAW_CLI_MAX_RETRIES) -> Dict[str, Any]:
     attempt = 0
     last_error: Optional[str] = None
@@ -3360,6 +3517,10 @@ def _run_openclaw_cli(args: List[str], timeout_ms: int = OPENCLAW_BROWSER_TIMEOU
             if payload["success"] or attempt >= retries:
                 payload["retries"] = attempt
                 return payload
+            error_text = "\n".join([stderr, stdout]).strip()
+            if _is_openclaw_gateway_error(error_text):
+                _restart_openclaw_gateway()
+                _wait_for_openclaw_gateway_ready()
             last_error = stderr or payload.get("error")
         except subprocess.TimeoutExpired:
             last_error = "openclaw command timeout"
@@ -3378,6 +3539,8 @@ def _openclaw_browser_cmd(
     expect_json: bool = True,
     timeout_ms: int = OPENCLAW_BROWSER_TIMEOUT_MS,
     require_token: bool = True,
+    auto_attach: bool = True,
+    auto_recover: bool = True,
 ) -> Dict[str, Any]:
     token_info = _collect_token_info()
     if require_token and not token_info.token:
@@ -3408,6 +3571,39 @@ def _openclaw_browser_cmd(
         "health_error": token_info.health_error,
         "checked_at": token_info.checked_at.isoformat() if token_info.checked_at else None,
     }
+    if auto_recover and not result.get("success"):
+        error_text = "\n".join(
+            str(result.get(key, "") or "") for key in ("error", "stderr", "stdout", "message")
+        ).strip()
+        if _is_openclaw_gateway_error(error_text):
+            _restart_openclaw_gateway()
+            _wait_for_openclaw_gateway_ready()
+            retry = _openclaw_browser_cmd(
+                args,
+                expect_json=expect_json,
+                timeout_ms=timeout_ms,
+                require_token=require_token,
+                auto_attach=auto_attach,
+                auto_recover=False,
+            )
+            return retry
+    if auto_attach and OPENCLAW_AUTO_ATTACH_ENABLED and not result.get("success"):
+        error_text = "\n".join(
+            str(result.get(key, "") or "") for key in ("error", "stderr", "stdout", "message")
+        ).strip()
+        if _is_openclaw_no_tab_error(error_text):
+            attach_result = _openclaw_attempt_attach(force=True)
+            result["attach"] = attach_result
+            if attach_result.get("success"):
+                retry = _openclaw_browser_cmd(
+                    args,
+                    expect_json=expect_json,
+                    timeout_ms=timeout_ms,
+                    require_token=require_token,
+                    auto_attach=False,
+                )
+                retry.setdefault("attach", attach_result)
+                return retry
     return result
 
 
@@ -3861,6 +4057,59 @@ def _record_flow_step(action: str, result: Dict[str, Any], fatal: bool = True, d
     return step
 
 
+def _openclaw_flow_fallback(chat_text: str) -> Optional[Dict[str, Any]]:
+    if not chat_text:
+        return None
+    normalized = "".join(
+        ch for ch in unicodedata.normalize("NFD", str(chat_text).lower()) if unicodedata.category(ch) != "Mn"
+    )
+    actions: List[Dict[str, Any]] = []
+    instance_id = LOCAL_INSTANCE_ID
+    runtime_ready = callable(_runtime_bridge.get("command_handler"))
+
+    def dispatch(target: str, command: str, options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        if runtime_ready:
+            return _call_runtime_command(target, command, "high", options or {})
+        return _call_instance_command(instance_id, target, command, "high", options or {})
+
+    def record(action: str, result: Dict[str, Any]) -> None:
+        actions.append({
+            "action": action,
+            "success": bool(result.get("success", True)),
+            "result": result,
+        })
+
+    if any(token in normalized for token in ("go ket", "gỡ ket", "gỡ kẹt", "unstick")):
+        result = dispatch("guardian", "unstick_orion", {"source": "openclaw_flow_fallback"})
+        record("unstick_orion", result)
+
+    if any(token in normalized for token in ("chay 1 vong", "chạy 1 vòng", "run one cycle", "run_cycle")):
+        result = dispatch("orion", "run_cycle", {"control_mode": "interrupt", "resume_after": True})
+        record("run_cycle", result)
+
+    if any(token in normalized for token in ("tam dung", "tạm dừng", "pause")):
+        result = dispatch("orion", "pause", {"control_mode": "strict", "reason": "openclaw_flow_fallback"})
+        record("pause", result)
+
+    if any(token in normalized for token in ("tiep tuc", "tiếp tục", "resume")):
+        result = dispatch("orion", "resume", {"control_mode": "strict", "reason": "openclaw_flow_fallback"})
+        record("resume", result)
+
+    if any(token in normalized for token in ("trang thai", "tóm tắt", "tom tat", "status", "summary")):
+        snapshot = _build_ops_snapshot()
+        actions.append({
+            "action": "status_snapshot",
+            "success": True,
+            "result": snapshot,
+        })
+
+    if not actions:
+        return None
+
+    success = any(item.get("success") for item in actions)
+    return {"success": success, "actions": actions}
+
+
 def _create_token_status(info: _OpenClawTokenInfo) -> Dict[str, Any]:
     return {
         "token_present": bool(info.token),
@@ -3871,7 +4120,165 @@ def _create_token_status(info: _OpenClawTokenInfo) -> Dict[str, Any]:
     }
 
 
+def _openclaw_is_loopback_dashboard_url(url: str) -> bool:
+    try:
+        parsed = urlparse(str(url or "").strip())
+        if parsed.scheme not in {"http", "https"}:
+            return False
+        host = (parsed.hostname or "").strip().lower()
+        return host in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}
+    except Exception:
+        return False
+
+
+def _probe_http_url(url: str, timeout_sec: float = 1.2) -> Dict[str, Any]:
+    target = str(url or "").strip()
+    if not target:
+        return {"success": False, "error": "Missing URL"}
+    try:
+        req = urllib_request.Request(target, headers={"User-Agent": "nexus-openclaw-probe/1.0"})
+        with urllib_request.urlopen(req, timeout=max(0.6, float(timeout_sec))) as resp:
+            status = int(getattr(resp, "status", 200) or 200)
+            return {"success": status < 500, "status_code": status}
+    except urllib_error.HTTPError as exc:
+        code = int(getattr(exc, "code", 0) or 0)
+        # 4xx still proves endpoint is reachable; we only care about service availability here.
+        return {"success": code > 0 and code < 500, "status_code": code, "error": str(exc)}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+def _openclaw_action_debounced(signature: str, cooldown_sec: float = OPENCLAW_ACTION_DEBOUNCE_SEC) -> Tuple[bool, float]:
+    key = str(signature or "").strip().lower()
+    if not key:
+        return False, 0.0
+    now = time.time()
+    cooldown = max(0.5, float(cooldown_sec))
+    with _OPENCLAW_ACTION_DEBOUNCE_LOCK:
+        stale_before = now - max(60.0, cooldown * 6.0)
+        stale = [item for item, seen in _openclaw_action_last_seen.items() if seen < stale_before]
+        for item in stale:
+            _openclaw_action_last_seen.pop(item, None)
+        seen_at = _openclaw_action_last_seen.get(key)
+        if seen_at is not None:
+            elapsed = now - seen_at
+            if elapsed < cooldown:
+                return True, round(max(0.0, cooldown - elapsed), 2)
+        _openclaw_action_last_seen[key] = now
+    return False, 0.0
+
+
+def _openclaw_self_heal_status() -> Dict[str, Any]:
+    with _openclaw_self_heal_lock:
+        return {
+            "enabled": bool(OPENCLAW_SELF_HEAL_ENABLED),
+            "interval_sec": OPENCLAW_SELF_HEAL_INTERVAL_SEC,
+            "open_dashboard_enabled": bool(OPENCLAW_SELF_HEAL_OPEN_DASHBOARD),
+            "open_dashboard_cooldown_sec": OPENCLAW_SELF_HEAL_OPEN_COOLDOWN_SEC,
+            "fallback_cooldown_sec": OPENCLAW_SELF_HEAL_FALLBACK_COOLDOWN_SEC,
+            "action_debounce_sec": OPENCLAW_ACTION_DEBOUNCE_SEC,
+            "flow_open_cooldown_sec": OPENCLAW_FLOW_OPEN_COOLDOWN_SEC,
+            "last_run": _openclaw_self_heal_last_run.isoformat() if _openclaw_self_heal_last_run else None,
+            "last_success": _openclaw_self_heal_last_success.isoformat() if _openclaw_self_heal_last_success else None,
+            "last_open": _openclaw_self_heal_last_open.isoformat() if _openclaw_self_heal_last_open else None,
+            "last_fallback": _openclaw_self_heal_last_fallback.isoformat() if _openclaw_self_heal_last_fallback else None,
+            "last_error": _openclaw_self_heal_last_error,
+        }
+
+
+def _openclaw_self_heal_once() -> Dict[str, Any]:
+    global _openclaw_self_heal_last_run, _openclaw_self_heal_last_error, _openclaw_self_heal_last_success, _openclaw_self_heal_last_open, _openclaw_self_heal_last_fallback
+    _openclaw_metrics_inc("self_heal_runs")
+    _openclaw_self_heal_last_run = datetime.now()
+    detail: Dict[str, Any] = {"steps": []}
+
+    def record(step: str, payload: Dict[str, Any]) -> None:
+        detail["steps"].append({"action": step, "result": payload})
+
+    ok = False
+    last_error = None
+    def runtime_bridge_ready() -> bool:
+        return callable(_runtime_bridge.get("command_handler"))
+
+    def allow_open_dashboard() -> bool:
+        if not OPENCLAW_SELF_HEAL_OPEN_DASHBOARD:
+            return False
+        with _openclaw_self_heal_lock:
+            if not _openclaw_self_heal_last_open:
+                return True
+            age_sec = (datetime.now() - _openclaw_self_heal_last_open).total_seconds()
+            return age_sec >= OPENCLAW_SELF_HEAL_OPEN_COOLDOWN_SEC
+
+    def allow_fallback() -> bool:
+        if not OPENCLAW_SELF_HEAL_FALLBACK:
+            return False
+        with _openclaw_self_heal_lock:
+            if not _openclaw_self_heal_last_fallback:
+                return True
+            age_sec = (datetime.now() - _openclaw_self_heal_last_fallback).total_seconds()
+            return age_sec >= OPENCLAW_SELF_HEAL_FALLBACK_COOLDOWN_SEC
+
+    try:
+        if not _wait_for_openclaw_gateway_ready(max_wait_sec=1.6, interval_sec=0.4):
+            record("gateway_restart", _restart_openclaw_gateway())
+            _wait_for_openclaw_gateway_ready(max_wait_sec=3.0, interval_sec=0.5)
+        start_result = _openclaw_browser_cmd(["start"])
+        record("browser_start", start_result)
+        if start_result.get("success"):
+            snapshot_result = _openclaw_browser_cmd(["snapshot", "--format", "ai", "--labels", "--limit", "120"])
+            record("snapshot", snapshot_result)
+            ok = bool(snapshot_result.get("success"))
+            if not ok and allow_open_dashboard():
+                open_result = _openclaw_browser_cmd(["open", OPENCLAW_DASHBOARD_URL])
+                record("browser_open", open_result)
+                if open_result.get("success"):
+                    with _openclaw_self_heal_lock:
+                        _openclaw_self_heal_last_open = datetime.now()
+                    snapshot_retry = _openclaw_browser_cmd(["snapshot", "--format", "ai", "--labels", "--limit", "120"])
+                    record("snapshot_retry", snapshot_retry)
+                    ok = bool(snapshot_retry.get("success"))
+        else:
+            ok = False
+
+        if not ok and runtime_bridge_ready():
+            if allow_fallback():
+                fallback = _openclaw_flow_fallback(OPENCLAW_SELF_HEAL_FLOW_COMMAND)
+                if fallback:
+                    record("fallback", fallback)
+                    with _openclaw_self_heal_lock:
+                        _openclaw_self_heal_last_fallback = datetime.now()
+                    ok = bool(fallback.get("success"))
+            else:
+                record(
+                    "fallback_skipped",
+                    {
+                        "success": True,
+                        "reason": "cooldown",
+                        "cooldown_sec": OPENCLAW_SELF_HEAL_FALLBACK_COOLDOWN_SEC,
+                    },
+                )
+
+    except Exception as exc:
+        last_error = str(exc)
+
+    with _openclaw_self_heal_lock:
+        _openclaw_self_heal_last_error = last_error or None if ok else last_error or "openclaw_self_heal_failed"
+        if ok:
+            _openclaw_self_heal_last_success = datetime.now()
+
+    if ok:
+        _openclaw_metrics_inc("self_heal_success")
+    else:
+        _openclaw_metrics_inc("self_heal_fail")
+
+    if last_error:
+        detail["error"] = last_error
+    detail["success"] = ok
+    return detail
+
+
 def _openclaw_dashboard_flow(chat_text: str = "", approve: bool = True, deny: bool = False) -> Dict[str, Any]:
+    global _openclaw_flow_last_open
     steps: List[Dict[str, Any]] = []
     _openclaw_metrics_inc("flow_runs")
     token_info = _collect_token_info()
@@ -3881,6 +4288,27 @@ def _openclaw_dashboard_flow(chat_text: str = "", approve: bool = True, deny: bo
         _openclaw_metrics_event(event, detail)
         return result
 
+    def attempt_fallback(reason: str) -> Optional[Dict[str, Any]]:
+        fallback = _openclaw_flow_fallback(chat_text)
+        if not fallback:
+            return None
+        steps.append({
+            "action": "fallback_command",
+            "success": bool(fallback.get("success")),
+            "result": fallback,
+            "detail": reason,
+        })
+        if fallback.get("success"):
+            _openclaw_metrics_inc("flow_success")
+            return {
+                "success": True,
+                "steps": steps,
+                "token_status": token_status,
+                "fallback": fallback,
+                "note": "Flow completed via fallback",
+            }
+        return None
+
     if not token_info.token:
         steps.append({
             "action": "token_check",
@@ -3889,6 +4317,8 @@ def _openclaw_dashboard_flow(chat_text: str = "", approve: bool = True, deny: bo
             "token_status": token_status,
         })
         _openclaw_metrics_inc("token_missing")
+        if fallback := attempt_fallback("token_missing"):
+            return fallback
         return _fail_flow(
             {"success": False, "steps": steps, "token_status": token_status},
             "flow_token_missing",
@@ -3902,6 +4332,8 @@ def _openclaw_dashboard_flow(chat_text: str = "", approve: bool = True, deny: bo
             "token_status": token_status,
         })
         _openclaw_metrics_inc("health_error")
+        if fallback := attempt_fallback("health_unavailable"):
+            return fallback
         return _fail_flow(
             {"success": False, "steps": steps, "token_status": token_status},
             "flow_health_error",
@@ -3927,6 +4359,13 @@ def _openclaw_dashboard_flow(chat_text: str = "", approve: bool = True, deny: bo
         steps.append(_record_flow_step("auto_attach", attach_result, detail=detail))
         return bool(attach_result.get("success"))
 
+    def allow_open_dashboard() -> bool:
+        with _OPENCLAW_FLOW_LOCK:
+            if not _openclaw_flow_last_open:
+                return True
+            age_sec = (datetime.now() - _openclaw_flow_last_open).total_seconds()
+            return age_sec >= OPENCLAW_FLOW_OPEN_COOLDOWN_SEC
+
     if OPENCLAW_BROWSER_AUTO_START:
         start_step = run_step("start", ["start"])
         if not start_step["success"]:
@@ -3935,22 +4374,50 @@ def _openclaw_dashboard_flow(chat_text: str = "", approve: bool = True, deny: bo
                 if start_retry["success"]:
                     start_step = start_retry
             if not start_step["success"]:
+                if fallback := attempt_fallback("start_failed"):
+                    return fallback
                 return _fail_flow({"success": False, "steps": steps, "token_status": token_status}, "flow_step_failed", {"action": "start"})
 
-    open_step = run_step("open", ["open", OPENCLAW_DASHBOARD_URL])
-    if not open_step["success"]:
-        if needs_attach(open_step.get("result", {})) and attempt_attach("open_failed"):
-            open_retry = run_step("open_retry", ["open", OPENCLAW_DASHBOARD_URL])
-            if open_retry["success"]:
-                open_step = open_retry
-        if not open_step["success"]:
-            return _fail_flow({"success": False, "steps": steps, "token_status": token_status}, "flow_step_failed", {"action": "open"})
+    did_open_dashboard = False
+    if allow_open_dashboard():
+        if _openclaw_is_loopback_dashboard_url(OPENCLAW_DASHBOARD_URL):
+            probe_result = _probe_http_url(OPENCLAW_DASHBOARD_URL, timeout_sec=1.2)
+            steps.append(_record_flow_step("dashboard_probe", probe_result))
+            if not probe_result.get("success"):
+                if fallback := attempt_fallback("dashboard_unreachable"):
+                    return fallback
+                return _fail_flow(
+                    {"success": False, "steps": steps, "token_status": token_status},
+                    "flow_dashboard_probe_failed",
+                    {"url": OPENCLAW_DASHBOARD_URL, "error": probe_result.get("error")},
+                )
 
-    time.sleep(1.2)
-    key = "Meta+Shift+R" if sys.platform == "darwin" else "Control+Shift+R"
-    refresh_step = run_step("hard_refresh", ["press", key], expect_json=False)
-    if not refresh_step["success"]:
-        return _fail_flow({"success": False, "steps": steps, "token_status": token_status}, "flow_step_failed", {"action": "hard_refresh"})
+        open_step = run_step("open", ["open", OPENCLAW_DASHBOARD_URL])
+        if not open_step["success"]:
+            if needs_attach(open_step.get("result", {})) and attempt_attach("open_failed"):
+                open_retry = run_step("open_retry", ["open", OPENCLAW_DASHBOARD_URL])
+                if open_retry["success"]:
+                    open_step = open_retry
+            if not open_step["success"]:
+                if fallback := attempt_fallback("open_failed"):
+                    return fallback
+                return _fail_flow({"success": False, "steps": steps, "token_status": token_status}, "flow_step_failed", {"action": "open"})
+        did_open_dashboard = True
+        with _OPENCLAW_FLOW_LOCK:
+            _openclaw_flow_last_open = datetime.now()
+    else:
+        steps.append({
+            "action": "open_skipped",
+            "success": True,
+            "detail": f"cooldown {OPENCLAW_FLOW_OPEN_COOLDOWN_SEC}s",
+        })
+
+    if did_open_dashboard:
+        time.sleep(1.2)
+        key = "Meta+Shift+R" if sys.platform == "darwin" else "Control+Shift+R"
+        refresh_step = run_step("hard_refresh", ["press", key], expect_json=False)
+        if not refresh_step["success"]:
+            return _fail_flow({"success": False, "steps": steps, "token_status": token_status}, "flow_step_failed", {"action": "hard_refresh"})
 
     normalized_text = ""
     if chat_text:
@@ -3969,6 +4436,8 @@ def _openclaw_dashboard_flow(chat_text: str = "", approve: bool = True, deny: bo
             if snapshot_retry["success"] and snapshot_retry.get("result", {}).get("json"):
                 snapshot = snapshot_retry
         if not snapshot["success"] or not snapshot.get("result", {}).get("json"):
+            if fallback := attempt_fallback("snapshot_failed"):
+                return fallback
             return _fail_flow({"success": False, "steps": steps, "token_status": token_status}, "flow_step_failed", {"action": "snapshot"})
     snapshot_payload = snapshot["result"].get("json") or {}
 
@@ -3997,35 +4466,50 @@ def _openclaw_dashboard_flow(chat_text: str = "", approve: bool = True, deny: bo
         else:
             steps.append({"action": "click_deny", "success": False, "error": "Deny button not found"})
 
-    if normalized_text and any(token in normalized_text for token in ("trang thai", "tom tat", "status")):
-        status_ref = _find_openclaw_ref_by_role_and_text(snapshot_payload, ["button"], ["status", "trạng thái"])
-        if status_ref:
-            click_status = run_step("click_status", ["click", str(status_ref)])
-            if not click_status["success"]:
-                return _fail_flow({"success": False, "steps": steps, "token_status": token_status}, "flow_step_failed", {"action": "click_status"})
+    def click_flow_button(action: str, labels: List[str]) -> bool:
+        ref = _find_openclaw_ref_by_role_and_text(snapshot_payload, ["button"], labels)
+        if not ref:
+            return False
+        click_step = run_step(action, ["click", str(ref)])
+        if not click_step["success"]:
+            return False
+        return True
 
-    if chat_text:
-        command_candidates = {"status", "pause", "resume", "run_cycle", "shutdown"}
+    action_clicked = False
+    if normalized_text:
+        if any(token in normalized_text for token in ("go ket", "gỡ kẹt", "gỡ kẹt", "unstick")):
+            action_clicked = click_flow_button("click_unstick", ["auto unstick", "gỡ kẹt", "guardian gỡ kẹt"])
+        if any(token in normalized_text for token in ("chay 1 vong", "chạy 1 vòng", "run one cycle", "run_cycle")):
+            action_clicked = click_flow_button("click_run_cycle", ["run one cycle", "chạy 1 vòng", "run cycle"]) or action_clicked
+        if any(token in normalized_text for token in ("tiep tuc", "tiếp tục", "resume")):
+            action_clicked = click_flow_button("click_resume", ["resume", "tiếp tục"]) or action_clicked
+        if any(token in normalized_text for token in ("tam dung", "tạm dừng", "pause")):
+            action_clicked = click_flow_button("click_pause", ["pause", "tạm dừng"]) or action_clicked
+        if any(token in normalized_text for token in ("trang thai", "tóm tắt", "tom tat", "status", "summary", "realtime summary")):
+            action_clicked = click_flow_button("click_summary", ["realtime summary", "summary", "trạng thái", "status"]) or action_clicked
+
+    if chat_text and not action_clicked:
+        command_candidates = {"status", "pause", "resume", "run_cycle", "shutdown", "unstick"}
         maybe_command = chat_text.strip().lower()
-        if maybe_command in command_candidates:
-            chat_snapshot = run_step("snapshot_chat", ["snapshot", "--format", "ai", "--labels", "--limit", "240"])
-            if not chat_snapshot["success"] or not chat_snapshot.get("result", {}).get("json"):
-                return _fail_flow({"success": False, "steps": steps, "token_status": token_status}, "flow_step_failed", {"action": "snapshot_chat"})
-            chat_payload = chat_snapshot["result"].get("json") or {}
-            ref = _find_openclaw_textbox(chat_payload, OPENCLAW_FLOW_CHAT_PLACEHOLDERS, allow_fallback=False)
-            if ref:
-                type_step = run_step("type_command", ["type", str(ref), maybe_command])
-                if not type_step["success"]:
-                    return _fail_flow({"success": False, "steps": steps, "token_status": token_status}, "flow_step_failed", {"action": "type_command"})
-                send_ref = _find_openclaw_ref_by_role_and_text(chat_payload, ["button"], ["gửi lệnh", "send"])
-                if send_ref:
-                    send_step = run_step("send_command", ["click", str(send_ref)])
-                else:
-                    send_step = run_step("send_command", ["press", "Enter"], expect_json=False)
-                if not send_step["success"]:
-                    return _fail_flow({"success": False, "steps": steps, "token_status": token_status}, "flow_step_failed", {"action": "send_command"})
+        chat_snapshot = run_step("snapshot_chat", ["snapshot", "--format", "ai", "--labels", "--limit", "240"])
+        if not chat_snapshot["success"] or not chat_snapshot.get("result", {}).get("json"):
+            return _fail_flow({"success": False, "steps": steps, "token_status": token_status}, "flow_step_failed", {"action": "snapshot_chat"})
+        chat_payload = chat_snapshot["result"].get("json") or {}
+        ref = _find_openclaw_textbox(chat_payload, OPENCLAW_FLOW_CHAT_PLACEHOLDERS, allow_fallback=True)
+        if ref:
+            text_to_send = maybe_command if maybe_command in command_candidates else chat_text
+            type_step = run_step("type_command", ["type", str(ref), text_to_send])
+            if not type_step["success"]:
+                return _fail_flow({"success": False, "steps": steps, "token_status": token_status}, "flow_step_failed", {"action": "type_command"})
+            send_ref = _find_openclaw_ref_by_role_and_text(chat_payload, ["button"], ["gửi lệnh", "send"])
+            if send_ref:
+                send_step = run_step("send_command", ["click", str(send_ref)])
             else:
-                steps.append({"action": "type_command", "success": False, "error": "Command input not found"})
+                send_step = run_step("send_command", ["press", "Enter"], expect_json=False)
+            if not send_step["success"]:
+                return _fail_flow({"success": False, "steps": steps, "token_status": token_status}, "flow_step_failed", {"action": "send_command"})
+        else:
+            steps.append({"action": "type_command", "success": False, "error": "Command input not found"})
 
     _openclaw_metrics_inc("flow_success")
     return {
@@ -4292,6 +4776,7 @@ def _execute_openclaw_browser_action(data: Dict[str, Any]) -> Dict[str, Any]:
     action = str(data.get("action", "")).strip().lower()
     if not action:
         return {"success": False, "error": "Missing action"}
+    session_id = str(data.get("session_id", "default")).strip() or "default"
 
     attach = None
     if action == "start":
@@ -4308,12 +4793,47 @@ def _execute_openclaw_browser_action(data: Dict[str, Any]) -> Dict[str, Any]:
         url = str(data.get("url", "")).strip()
         if not url:
             return {"success": False, "error": "Missing url"}
-        result = _openclaw_browser_cmd(["open", url])
+        debounce_sig = f"{session_id}:browser:open:{url.lower()}"
+        debounced, retry_after = _openclaw_action_debounced(debounce_sig, OPENCLAW_ACTION_DEBOUNCE_SEC)
+        if debounced:
+            result = {
+                "success": True,
+                "skipped": True,
+                "reason": "debounced",
+                "retry_after_sec": retry_after,
+                "url": url,
+            }
+        else:
+            if _openclaw_is_loopback_dashboard_url(url):
+                probe = _probe_http_url(url, timeout_sec=1.0)
+                if not probe.get("success"):
+                    result = {
+                        "success": False,
+                        "error": "Target dashboard is unreachable",
+                        "error_code": "DASHBOARD_UNREACHABLE",
+                        "url": url,
+                        "probe": probe,
+                    }
+                else:
+                    result = _openclaw_browser_cmd(["open", url])
+            else:
+                result = _openclaw_browser_cmd(["open", url])
     elif action == "navigate":
         url = str(data.get("url", "")).strip()
         if not url:
             return {"success": False, "error": "Missing url"}
-        result = _openclaw_browser_cmd(["navigate", url])
+        debounce_sig = f"{session_id}:browser:navigate:{url.lower()}"
+        debounced, retry_after = _openclaw_action_debounced(debounce_sig, OPENCLAW_ACTION_DEBOUNCE_SEC)
+        if debounced:
+            result = {
+                "success": True,
+                "skipped": True,
+                "reason": "debounced",
+                "retry_after_sec": retry_after,
+                "url": url,
+            }
+        else:
+            result = _openclaw_browser_cmd(["navigate", url])
     elif action == "snapshot":
         result = _openclaw_browser_cmd(["snapshot", "--format", "ai", "--labels", "--limit", "240"])
     elif action == "click":
@@ -4333,8 +4853,18 @@ def _execute_openclaw_browser_action(data: Dict[str, Any]) -> Dict[str, Any]:
             return {"success": False, "error": "Missing key"}
         result = _openclaw_browser_cmd(["press", key], expect_json=False)
     elif action == "hard_refresh":
-        key = "Meta+Shift+R" if sys.platform == "darwin" else "Control+Shift+R"
-        result = _openclaw_browser_cmd(["press", key], expect_json=False)
+        debounce_sig = f"{session_id}:browser:hard_refresh"
+        debounced, retry_after = _openclaw_action_debounced(debounce_sig, OPENCLAW_ACTION_DEBOUNCE_SEC)
+        if debounced:
+            result = {
+                "success": True,
+                "skipped": True,
+                "reason": "debounced",
+                "retry_after_sec": retry_after,
+            }
+        else:
+            key = "Meta+Shift+R" if sys.platform == "darwin" else "Control+Shift+R"
+            result = _openclaw_browser_cmd(["press", key], expect_json=False)
     else:
         return {"success": False, "error": f"Unsupported action '{action}'"}
 
@@ -4461,7 +4991,55 @@ def _openclaw_queue_executor(command_type: str, payload: Dict[str, Any]) -> Dict
     return local_result
 
 
-def _parse_openclaw_queue_context(data: Dict[str, Any]) -> Dict[str, Any]:
+def _idempotency_text(value: Any, max_len: int = 84) -> str:
+    normalized = " ".join(str(value or "").strip().lower().split())
+    normalized = "".join(
+        ch for ch in unicodedata.normalize("NFD", normalized)
+        if unicodedata.category(ch) != "Mn"
+    )
+    safe = re.sub(r"[^a-z0-9._:/+-]+", "-", normalized).strip("-")
+    if len(safe) > max_len:
+        safe = safe[:max_len].rstrip("-")
+    return safe or "none"
+
+
+def _derive_openclaw_idempotency_key(command_type: str, data: Dict[str, Any], source: str) -> str:
+    if not OPENCLAW_AUTO_IDEMPOTENCY_ENABLED:
+        return ""
+    ctype = str(command_type or "").strip().lower()
+    src = str(source or "manual").strip().lower() or "manual"
+    action = str(data.get("action", "")).strip().lower()
+    manual_allowed_actions = {"open", "navigate", "hard_refresh"}
+    if src == "manual":
+        if ctype == "flow":
+            pass
+        elif ctype == "browser" and action in manual_allowed_actions:
+            pass
+        else:
+            return ""
+    if src not in {"manual", "autopilot", "system"}:
+        return ""
+
+    bucket = int(time.time() // max(1, OPENCLAW_AUTO_IDEMPOTENCY_WINDOW_SEC))
+    if ctype == "flow":
+        chat_text = _idempotency_text(data.get("chat_text", ""), max_len=96)
+        approve = "1" if bool(data.get("approve", True)) else "0"
+        deny = "1" if bool(data.get("deny", False)) else "0"
+        return f"auto:{bucket}:flow:{approve}:{deny}:{chat_text}"
+    if ctype == "browser":
+        if action in {"open", "navigate"}:
+            target = _idempotency_text(data.get("url", ""), max_len=96)
+        elif action == "hard_refresh":
+            target = "tab"
+        else:
+            target = _idempotency_text(data.get("ref", "") or data.get("key", "") or "", max_len=64)
+        return f"auto:{bucket}:browser:{_idempotency_text(action, max_len=20)}:{target}"
+    if ctype == "attach":
+        return f"auto:{bucket}:attach"
+    return ""
+
+
+def _parse_openclaw_queue_context(command_type: str, data: Dict[str, Any]) -> Dict[str, Any]:
     source = str(data.get("source", "manual")).strip().lower() or "manual"
     if source not in {"manual", "autopilot", "system"}:
         source = "manual"
@@ -4472,6 +5050,8 @@ def _parse_openclaw_queue_context(data: Dict[str, Any]) -> Dict[str, Any]:
     timeout_ms = max(1000, int(data.get("timeout_ms") or OPENCLAW_BROWSER_TIMEOUT_MS))
     priority = int(data.get("priority", 0) or 0)
     idempotency_key = str(data.get("idempotency_key", "") or "").strip()
+    if not idempotency_key:
+        idempotency_key = _derive_openclaw_idempotency_key(command_type, data, source)
     route_mode = str(data.get("route_mode", "auto")).strip().lower() or "auto"
     if route_mode not in {"auto", "direct"}:
         route_mode = "auto"
@@ -4491,7 +5071,7 @@ def _parse_openclaw_queue_context(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _enqueue_openclaw_command(command_type: str, data: Dict[str, Any]) -> Dict[str, Any]:
-    context = _parse_openclaw_queue_context(data)
+    context = _parse_openclaw_queue_context(command_type, data)
     policy = _evaluate_openclaw_policy(command_type, data, context)
     if not policy.get("allowed"):
         decision = str(policy.get("decision", "manual_required"))
@@ -4879,12 +5459,15 @@ def _infer_flexible_chat_request(text: str) -> Optional[str]:
     if not normalized:
         return None
 
+    if normalized in {"rules", "rule", "nexus rules", "project rules", "nguyen tac", "quy tac"}:
+        return "nexus rules"
+
     # Quick numeric shortcuts and verbal forms.
-    if normalized in {"1", "mot", "so 1", "lua chon 1", "option 1"}:
+    if normalized in {"1", "mot", "so 1", "lua chon 1", "option 1", "first", "first option"}:
         return "tóm tắt dự án"
-    if normalized in {"2", "hai", "so 2", "lua chon 2", "option 2"}:
+    if normalized in {"2", "hai", "so 2", "lua chon 2", "option 2", "second", "second option"}:
         return "điều khiển flow"
-    if normalized in {"3", "ba", "so 3", "lua chon 3", "option 3"}:
+    if normalized in {"3", "ba", "so 3", "lua chon 3", "option 3", "third", "third option"}:
         return "guardian gỡ kẹt"
 
     summary_signals = [
@@ -4938,6 +5521,33 @@ def _infer_flexible_chat_request(text: str) -> Optional[str]:
     if _contains_any(normalized, summary_signals):
         return "tóm tắt dự án"
     return None
+
+
+def _build_nexus_rules_text(
+    instance_label: str,
+    runtime_line: str,
+    feedback_recent: List[Dict[str, Any]],
+) -> str:
+    feedback_lines: List[str] = []
+    for idx, item in enumerate(feedback_recent[:3], start=1):
+        if not isinstance(item, dict):
+            continue
+        category = str(item.get("category", "general") or "general")
+        text = _ascii_safe(item.get("text"), 120)
+        feedback_lines.append(f"{idx}. {category}: {text or '(no detail)'}")
+    if not feedback_lines:
+        feedback_lines = ["1. none"]
+
+    return (
+        f"[{instance_label}] NEXUS_RULES active:\n"
+        "1. Full-auto first: ưu tiên tự xử lý, chỉ escalate khi thật sự blocked/risk cao.\n"
+        "2. Unified workspace: monitor + control + chat gom tại /live, hạn chế nhảy trang.\n"
+        "3. UI/UX chuẩn: đơn giản, professional, đọc nhanh; Light/Dark phải đồng nhất.\n"
+        "4. Feedback loop bắt buộc: feedback mới phải được phản ánh ở vòng cập nhật tiếp theo.\n"
+        f"5. Runtime hiện tại: {runtime_line}\n"
+        "6. Feedback trọng tâm gần nhất:\n"
+        + "\n".join(f"   - {line}" for line in feedback_lines)
+    )
 
 
 def _build_chat_report(
@@ -5073,6 +5683,19 @@ def _build_project_chat_reply(message: str, instance_id: Optional[str] = None) -
             f"Feedback gần nhất: {feedback_tags or ['none']}\n"
             f"{suggestion}"
         )
+
+    if normalized_intent in {"nexus rules", "project rules", "rules", "rule"}:
+        runtime_line = str(activity.get("summary") or _runtime_status_text(runtime))
+        return {
+            "intent": "nexus_rules",
+            "executed": False,
+            "result": _with_context({
+                "ai_summary": ai_summary,
+                "reasoning": reasoning,
+                "feedback_recent": feedback_recent,
+            }),
+            "reply": _build_nexus_rules_text(instance_label, runtime_line, feedback_recent),
+        }
 
     if re.search(r"(khong hoi|khong can hoi|khong xac nhan|hoi lien tuc|confirm lien tuc|qua nhieu hoi)", normalized_intent):
         _monitor_set_supervisor_enabled(True)
@@ -7195,6 +7818,18 @@ def run_dashboard(host: str = "localhost", port: int = 5001):
     print(f"🚀 Dashboard running at http://{host}:{port}")
     print(f"📊 Real-time updates enabled via Socket.IO")
     _ensure_monitor_supervisor_started()
+    _ensure_openclaw_self_heal_started()
+    if OPENCLAW_SELF_HEAL_BOOTSTRAP:
+        try:
+            bootstrap = _openclaw_self_heal_once()
+            logger.info("OpenClaw self-heal bootstrap", extra={"detail": bootstrap})
+            print(f"🧩 OpenClaw self-heal bootstrap: {'OK' if bootstrap.get('success') else 'FAILED'}")
+            if not bootstrap.get("success"):
+                err = bootstrap.get("error") or "see openclaw metrics"
+                print(f"🧩 OpenClaw self-heal detail: {err}")
+        except Exception as exc:
+            logger.warning(f"OpenClaw self-heal bootstrap failed: {exc}")
+            print(f"🧩 OpenClaw self-heal bootstrap failed: {exc}")
     _ensure_progress_snapshot_started()
     _ensure_runtime_heartbeat_started()
     print(

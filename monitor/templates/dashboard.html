@@ -6496,6 +6496,23 @@
             dashboard: null,
             metrics: null,
         };
+        let openclawLastToastAt = 0;
+        let openclawLastToastKey = '';
+        let openclawOpenInFlight = false;
+        let openclawLastWindowOpenAt = 0;
+        let openclawLastWindowUrl = '';
+
+        const showOpenClawToastOnce = (type, message, key, cooldownMs = 30000) => {
+            const now = Date.now();
+            const normalizedKey = String(key || '').trim() || String(message || '').trim();
+            if (!normalizedKey) return;
+            if (openclawLastToastKey === normalizedKey && now - openclawLastToastAt < cooldownMs) {
+                return;
+            }
+            openclawLastToastKey = normalizedKey;
+            openclawLastToastAt = now;
+            showToast(type, message);
+        };
 
         const renderOpenClawStatus = (dashboardPayload, metricsPayload) => {
             const statusElement = document.getElementById('computer-control-chip');
@@ -6519,41 +6536,59 @@
 
         const refreshOpenClawStatus = () => {
             Promise.all([
-                fetch('/api/openclaw/dashboard').then((response) => response.json()),
+                fetch('/api/openclaw/dashboard').then(async (response) => ({ ok: response.ok, data: await response.json().catch(() => ({})) })),
                 fetch('/api/openclaw/metrics').then((response) => response.json()),
             ])
-                .then(([dashboardData, metricsData]) => {
+                .then(([dashboardResp, metricsData]) => {
+                    const dashboardData = dashboardResp?.data || {};
                     openclawStatus.url = dashboardData?.url || openclawStatus.url;
                     openclawStatus.status = dashboardData?.success ? 'ready' : 'missing';
                     openclawStatus.error = dashboardData?.error;
                     openclawStatus.dashboard = dashboardData || null;
                     openclawStatus.metrics = metricsData?.metrics || null;
                     renderOpenClawStatus(openclawStatus.dashboard, openclawStatus.metrics);
-                    if (!dashboardData?.success) {
-                        showToast('warning', dashboardData?.error || 'OpenClaw gateway chưa sẵn sàng.');
+                    if (!dashboardResp?.ok || !dashboardData?.success) {
+                        const msg = dashboardData?.error || 'OpenClaw gateway chưa sẵn sàng.';
+                        showOpenClawToastOnce('warning', msg, `status:${msg}`, 45000);
                     }
                 })
                 .catch((error) => {
                     console.error('Failed to fetch OpenClaw status:', error);
-                    showToast('error', 'Không thể kiểm tra OpenClaw.');
+                    showOpenClawToastOnce('error', 'Không thể kiểm tra OpenClaw.', 'status-network', 45000);
                 });
         };
 
         function openOpenClaw() {
-            refreshOpenClawStatus();
+            if (openclawOpenInFlight) return;
+            openclawOpenInFlight = true;
             fetch('/api/openclaw/dashboard?refresh=1')
-                .then((response) => response.json())
-                .then((data) => {
+                .then(async (response) => ({ ok: response.ok, data: await response.json().catch(() => ({})) }))
+                .then(({ ok, data }) => {
                     const url = data?.url || 'http://127.0.0.1:18789/';
-                    if (!data?.success) {
-                        showToast('warning', data?.error || 'OpenClaw chưa sẵn sàng. Xem logs.');
+                    openclawStatus.url = url;
+                    openclawStatus.status = data?.success ? 'ready' : 'missing';
+                    openclawStatus.error = data?.error || null;
+                    openclawStatus.dashboard = data || null;
+                    renderOpenClawStatus(openclawStatus.dashboard, openclawStatus.metrics);
+                    if (!ok || !data?.success) {
+                        showOpenClawToastOnce('error', data?.error || 'OpenClaw chưa sẵn sàng. Không mở tab mới.', `open:${data?.error || 'not_ready'}`, 8000);
+                        return;
                     }
+                    const now = Date.now();
+                    if (openclawLastWindowUrl === url && (now - openclawLastWindowOpenAt) < 4000) {
+                        showOpenClawToastOnce('info', 'OpenClaw vừa được mở, bỏ qua thao tác lặp.', `open-debounce:${url}`, 2500);
+                        return;
+                    }
+                    openclawLastWindowUrl = url;
+                    openclawLastWindowOpenAt = now;
                     window.open(url, '_blank', 'noopener');
                 })
                 .catch((error) => {
                     console.error('Failed to open OpenClaw:', error);
-                    showToast('error', 'Không mở được OpenClaw. Hãy kiểm tra gateway.');
-                    window.open('http://127.0.0.1:18789/', '_blank', 'noopener');
+                    showOpenClawToastOnce('error', 'Không mở được OpenClaw. Hãy kiểm tra gateway.', 'open-network', 8000);
+                })
+                .finally(() => {
+                    openclawOpenInFlight = false;
                 });
         }
 
