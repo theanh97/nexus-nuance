@@ -11206,6 +11206,167 @@ except ImportError as e:
 
 
 # ============================================
+# BRIDGE API (for Unified Dashboard)
+# ============================================
+
+# Bridge state for tracking JACK OS integration
+_bridge_state = {
+    "jackos_connected": False,
+    "last_sync": None,
+    "synced_contacts": 0,
+    "synced_sessions": 0,
+    "notifications_received": 0,
+}
+
+
+@app.route('/api/bridge/status')
+def bridge_status():
+    """Get bridge status between JACK OS and NEXUS."""
+    return jsonify({
+        "success": True,
+        "bridge": {
+            "status": "active",
+            "jackos_connected": _bridge_state["jackos_connected"],
+            "last_sync": _bridge_state["last_sync"],
+            "stats": {
+                "synced_contacts": _bridge_state["synced_contacts"],
+                "synced_sessions": _bridge_state["synced_sessions"],
+                "notifications_received": _bridge_state["notifications_received"],
+            },
+        },
+        "nexus": {
+            "status": "running",
+            "agents": len(state.known_agents) if hasattr(state, 'known_agents') else 6,
+            "uptime": str(datetime.now() - datetime.fromtimestamp(state.start_time)) if hasattr(state, 'start_time') else "unknown",
+        },
+        "timestamp": datetime.now().isoformat(),
+    })
+
+
+@app.route('/api/bridge/notify', methods=['POST'])
+def receive_bridge_notification():
+    """Receive notifications from JACK OS via bridge."""
+    data = request.get_json(silent=True) or {}
+
+    notification_type = data.get("type", "unknown")
+    source = data.get("source", "jackos")
+    payload = data.get("data", {})
+
+    _bridge_state["notifications_received"] += 1
+
+    # Log the notification
+    logger.info(f"Bridge notification from {source}: {notification_type}")
+
+    # Broadcast to connected clients
+    socketio.emit("bridge_notification", {
+        "type": notification_type,
+        "source": source,
+        "data": payload,
+        "timestamp": datetime.now().isoformat(),
+    })
+
+    # Handle specific notification types
+    if notification_type == "contact_created":
+        state.add_agent_log("bridge", f"📥 New contact synced: {payload.get('name', 'Unknown')}", "info")
+    elif notification_type == "chat_message":
+        state.add_agent_log("bridge", f"💬 Chat message from JACK OS", "info")
+    elif notification_type == "session_update":
+        _bridge_state["synced_sessions"] += 1
+
+    return jsonify({
+        "success": True,
+        "message": "Notification received",
+        "notification_id": str(uuid.uuid4()),
+    })
+
+
+@app.route('/api/bridge/sync/contacts', methods=['POST'])
+def sync_contacts_from_jackos():
+    """Sync contacts from JACK OS to NEXUS memory."""
+    data = request.get_json(silent=True) or {}
+
+    contacts = data.get("contacts", [])
+    source = data.get("source", "jackos")
+
+    _bridge_state["synced_contacts"] = len(contacts)
+    _bridge_state["last_sync"] = datetime.now().isoformat()
+
+    # Store in NEXUS memory (simplified - in production would use actual memory system)
+    memory_contacts_path = Path(__file__).parent.parent / "memory" / "synced_contacts.json"
+    try:
+        memory_contacts_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(memory_contacts_path, 'w') as f:
+            json.dump({
+                "source": source,
+                "contacts": contacts,
+                "synced_at": _bridge_state["last_sync"],
+            }, f, indent=2)
+    except Exception as e:
+        logger.error(f"Failed to sync contacts: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    # Broadcast update
+    socketio.emit("contacts_synced", {
+        "count": len(contacts),
+        "source": source,
+        "timestamp": _bridge_state["last_sync"],
+    })
+
+    state.add_agent_log("bridge", f"🔄 Synced {len(contacts)} contacts from {source}", "success")
+
+    return jsonify({
+        "success": True,
+        "synced": len(contacts),
+        "timestamp": _bridge_state["last_sync"],
+    })
+
+
+@app.route('/api/bridge/sync/sessions', methods=['POST'])
+def sync_sessions_from_jackos():
+    """Sync chat sessions from JACK OS."""
+    data = request.get_json(silent=True) or {}
+
+    sessions = data.get("sessions", [])
+    source = data.get("source", "jackos")
+
+    _bridge_state["synced_sessions"] = len(sessions)
+    _bridge_state["last_sync"] = datetime.now().isoformat()
+
+    # Broadcast update
+    socketio.emit("sessions_synced", {
+        "count": len(sessions),
+        "source": source,
+        "timestamp": _bridge_state["last_sync"],
+    })
+
+    return jsonify({
+        "success": True,
+        "synced": len(sessions),
+        "timestamp": _bridge_state["last_sync"],
+    })
+
+
+@app.route('/api/bridge/jackos-status', methods=['POST'])
+def update_jackos_status():
+    """Update JACK OS connection status."""
+    data = request.get_json(silent=True) or {}
+
+    _bridge_state["jackos_connected"] = data.get("connected", False)
+    _bridge_state["last_sync"] = datetime.now().isoformat()
+
+    # Broadcast status change
+    socketio.emit("jackos_status", {
+        "connected": _bridge_state["jackos_connected"],
+        "timestamp": _bridge_state["last_sync"],
+    })
+
+    status_text = "connected" if _bridge_state["jackos_connected"] else "disconnected"
+    state.add_agent_log("bridge", f"🔗 JACK OS {status_text}", "info")
+
+    return jsonify({"success": True, "connected": _bridge_state["jackos_connected"]})
+
+
+# ============================================
 # SOCKET.IO
 # ============================================
 

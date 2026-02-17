@@ -2785,21 +2785,58 @@
         const ALLOWED_VIEWS = ['workspace', 'ops', 'activity', 'chat', 'tasks', 'interventions', 'automation'];
         const VIEW_STORAGE_KEY = 'autodev-live-view';
 
-        // ==================== ONBOARDING TOUR ====================
+        // ==================== COMPREHENSIVE ONBOARDING TOUR ====================
         const TOUR_STEPS = {
             vi: [
-                { element: '#view-nav', title: 'Điều Hướng Chính', content: 'Chuyển đổi giữa các màn hình: Tổng quan, Vận hành, Sự kiện, Chat, Công việc, Can thiệp, Tự động hóa' },
-                { element: '.chat-panel', title: '💬 Chat Điều Khiển', content: 'Đây là trung tâm điều khiển! Gõ câu hỏi để tương tác với Agents. Ví dụ: "đang làm gì?", "task hiện tại là gì?"' },
-                { element: '#chat-suggestions', title: 'Gợi Ý Nhanh', content: 'Click vào các chip để thực hiện nhanh: Realtime summary, Auto unstick, UI/UX critique, Run one cycle' },
-                { element: '[data-view="automation"]', title: '🤖 Tự Động Hóa', content: 'Điều khiển máy tính: Terminal, Apps, Browser, Mouse, Clipboard, Mail, Messages, Files' },
-                { element: '.topbar-right', title: 'Cài Đặt', content: 'Chuyển đổi theme (sáng/tối), chế độ xem (Focus/Balance/Studio), mật độ hiển thị' },
+                // Step 1: Welcome
+                { view: null, title: '🎉 Chào Mừng!', content: 'Đây là Jack - Hệ thống Tự động hóa AI của bạn. Tour này sẽ hướng dẫn bạn cách sử dụng mọi tính năng. Nhấn "Tiếp theo" để bắt đầu!', position: 'center' },
+
+                // Step 2: Navigation
+                { view: null, element: '#view-nav', title: '1️⃣ Thanh Điều Hướng', content: 'Đây là thanh menu chính để chuyển đổi giữa các màn hình:\n\n• 💼 TỔNG QUAN: Xem tổng thể hệ thống\n• ⚙️ VẬN HÀNH: Giám sát hoạt động\n• 📡 SỰ KIỆN: Xem logs và activity\n• 💬 CHAT: Điều khiển bằng text\n• 📋 CÔNG VIỆC: Quản lý tasks\n• 🛡️ CAN THIỆP: Xử lý exceptions\n• 🤖 TỰ ĐỘNG HÓA: Điều khiển máy', position: 'bottom' },
+
+                // Step 3: Workspace
+                { view: 'workspace', title: '💼 Màn Tổng Quan', content: 'Màn hình mặc định hiển thị:\n\n• Trạng thái hệ thống (running/paused)\n• Số lượng agents đang hoạt động\n• Tasks đang chạy\n• Feedback loop - phản hồi từ hệ thống\n• Notifications - thông báo quan trọng\n\n💡 Mẹo: Đây là nơi bạn nhìn thấy "sức khỏe" của toàn bộ hệ thống.', position: 'right' },
+
+                // Step 4: Chat - MOST IMPORTANT
+                { view: 'chat', title: '💬 CHAT - Trung Tâm Điều Khiển (QUAN TRỌNG NHẤT)', content: 'ĐÂY LÀ TÍNH NĂNG QUAN TRỌNG NHẤT!\n\nBạn có thể:\n\n1. Gõ câu hỏi để hỏi Agents:\n   • "đang làm gì?"\n   • "task hiện tại là gì?"\n   • "còn cái gì đang chạy?"\n   • "tóm tắt tình trạng hệ thống"\n\n2. Điều khiển trực tiếp:\n   • "chạy 1 vòng Orion"\n   • "pause hệ thống"\n   • "resume"\n   • "unstick flow"\n\n3. Quick chips (click nhanh):\n   • Realtime summary\n   • Auto unstick\n   • UI/UX critique\n   • Run one cycle\n\n🎯 Chat là nơi bạn TƯƠNG TÁC TRỰC TIẾP với AI Agents!', position: 'right' },
+
+                // Step 5: Chat Suggestions
+                { view: 'chat', element: '#chat-suggestions', title: '🎯 Quick Actions trong Chat', content: 'Các nút gợi ý giúp bạn thao tác nhanh:\n\n• 📊 Realtime summary: Xem tình trạng ngay\n• 🔧 Auto unstick: Gỡ kẹt nếu flow bị stuck\n• 🎨 UI/UX critique: Đánh giá UI/UX hiện tại\n• ▶️ Run one cycle: Chạy 1 vòng Orion\n\nNhấn vào chip nào đó để thử ngay!', position: 'bottom' },
+
+                // Step 6: Operations
+                { view: 'ops', title: '⚙️ Màn Vận Hành', content: 'Theo dõi chi tiết vận hành:\n\n• OpenClaw: Trạng thái browser automation\n• Control Plane: Workers và queues\n• Model Routing: AI models đang dùng\n• Cost Guard: Theo dõi token/budget\n• Memory: Trạng thái learning system\n\n💡 Dùng để debug và xem chi tiết kỹ thuật.', position: 'right' },
+
+                // Step 7: Events
+                { view: 'activity', title: '📡 Màn Sự Kiện', content: 'Xem logs và events thời gian thực:\n\n• Activity Feed: Các hoạt động gần đây\n• Feedback: Phản hồi từ user\n• Notifications: Thông báo hệ thống\n\n💡 Dùng để theo dõi "chuyện gì đang xảy ra".', position: 'right' },
+
+                // Step 8: Tasks
+                { view: 'tasks', title: '📋 Màn Công Việc', content: 'Quản lý tasks và workflow:\n\n• Backlog: Tasks chờ xử lý\n• To Do: Tasks cần làm\n• In Progress: Tasks đang chạy\n• Review: Tasks chờ review\n• Done: Tasks hoàn thành\n\n💡 Kéo thả để sắp xếp tasks!', position: 'right' },
+
+                // Step 9: Interventions
+                { view: 'interventions', title: '🛡️ Màn Can Thiệp', content: 'Xử lý các trường hợp đặc biệt:\n\n• Intervention Queue: Các cần can thiệp\n• Risk levels: low/medium/high/critical\n• Auto-approve: Cho phép tự động\n• Manual review: Cần xác nhận tay\n\n💡 Nơi bạn kiểm soát exceptions!', position: 'right' },
+
+                // Step 10: Automation - Key Feature
+                { view: 'automation', title: '🤖 Tự Động Hóa - Điều Khiển Máy Tính', content: 'Điều khiển máy tính TỰ ĐỘNG:\n\n1. ⚡ THỰC THI TÁC VỤ:\n   • Terminal: Chạy lệnh\n   • App: Mở/điều khiển apps\n   • Browser: Browser automation\n   • Computer: Mouse/keyboard\n\n2. 🚀 THAO TÁC NHANH:\n   • Xem apps đang chạy\n   • Vị trí chuột\n   • Clipboard\n   • Check mail\n   • Screenshot\n\n3. ⏰ TÁC VỤ ĐỊNH KỲ:\n   • Tạo lịch chạy tự động\n\n4. 🔔 THÔNG BÁO:\n   • Gửi notifications\n   • Cấu hình webhooks\n\n💡 Click các nút để thử ngay!', position: 'right' },
+
+                // Step 11: Settings
+                { view: null, element: '.topbar-right', title: '⚙️ Cài Đặt', content: 'Tùy chỉnh giao diện:\n\n• 🌙 Theme: Sáng/Tối\n• 📺 Experience: Focus/Balance/Studio/Pixel\n• 📏 Density: Comfort/Compact\n• 🌐 Language: Tiếng Việt/English\n• ❓ Help: Xem lại tour\n\n💡 Nhấn "Help" để xem lại tour này bất kỳ lúc nào!', position: 'bottom' },
+
+                // Step 12: Summary
+                { view: null, title: '🎉 Hoàn Thành!', content: 'Bạn đã biết cách sử dụng Jack!\n\nTÓM TẮT:\n• 💬 Chat: Điều khiển bằng text\n• 🤖 Automation: Điều khiển máy tính\n• 📊 Workspace: Xem tổng quan\n• ⚙️ Operations: Debug chi tiết\n\nBÂY GIỜ:\n1. Vào 💬 Chat\n2. Hỏi "đang làm gì?"\n3. Thử các tính năng!\n\nChúc bạn sử dụng hiệu quả! 🚀', position: 'center' },
             ],
             en: [
-                { element: '#view-nav', title: 'Main Navigation', content: 'Switch between views: Workspace, Operations, Events, Chat, Tasks, Interventions, Automation' },
-                { element: '.chat-panel', title: '💬 Control Chat', content: 'This is the control center! Type questions to interact with Agents. Example: "what are you doing?", "what is current task?"' },
-                { element: '#chat-suggestions', title: 'Quick Suggestions', content: 'Click chips for quick actions: Realtime summary, Auto unstick, UI/UX critique, Run one cycle' },
-                { element: '[data-view="automation"]', title: '🤖 Automation', content: 'Control your computer: Terminal, Apps, Browser, Mouse, Clipboard, Mail, Messages, Files' },
-                { element: '.topbar-right', title: 'Settings', content: 'Toggle theme (light/dark), view mode (Focus/Balance/Studio), display density' },
+                { view: null, title: '🎉 Welcome!', content: 'This is Jack - Your AI Automation System. This tour will guide you through all features. Click "Next" to start!', position: 'center' },
+                { view: null, element: '#view-nav', title: '1️⃣ Navigation Bar', content: 'Main menu to switch between screens:\n\n• 💼 WORKSPACE: System overview\n• ⚙️ OPERATIONS: Monitor activities\n• 📡 EVENTS: Logs and activity\n• 💬 CHAT: Text control\n• 📋 TASKS: Task management\n• 🛡️ INTERVENTIONS: Handle exceptions\n• 🤖 AUTOMATION: Computer control', position: 'bottom' },
+                { view: 'workspace', title: '💼 Workspace', content: 'Default screen showing:\n\n• System status (running/paused)\n• Active agents count\n• Running tasks\n• Feedback loop\n• Notifications\n\n💡 This is where you see the overall "health" of the system.', position: 'right' },
+                { view: 'chat', title: '💬 CHAT - Control Center (MOST IMPORTANT)', content: 'THIS IS THE MOST IMPORTANT FEATURE!\n\nYou can:\n\n1. Type questions to ask Agents:\n   • "what are you doing?"\n   • "what is current task?"\n   • "summarize system status"\n\n2. Direct control:\n   • "run one cycle Orion"\n   • "pause system"\n   • "resume"\n   • "unstick flow"\n\n3. Quick chips (click):\n   • Realtime summary\n   • Auto unstick\n   • UI/UX critique\n   • Run one cycle\n\n🎯 Chat is where you INTERACT DIRECTLY with AI Agents!', position: 'right' },
+                { view: 'chat', element: '#chat-suggestions', title: '🎯 Quick Actions in Chat', content: 'Quick action buttons:\n\n• 📊 Realtime summary: View current status\n• 🔧 Auto unstick: Unstick if flow is stuck\n• 🎨 UI/UX critique: Evaluate current UI/UX\n• ▶️ Run one cycle: Run Orion cycle\n\nClick any chip to try!', position: 'bottom' },
+                { view: 'ops', title: '⚙️ Operations', content: 'Detailed operational monitoring:\n\n• OpenClaw: Browser automation status\n• Control Plane: Workers and queues\n• Model Routing: AI models in use\n• Cost Guard: Token/budget tracking\n• Memory: Learning system status\n\n💡 Use for debugging and technical details.', position: 'right' },
+                { view: 'activity', title: '📡 Events', content: 'Real-time logs and events:\n\n• Activity Feed: Recent activities\n• Feedback: User feedback\n• Notifications: System alerts\n\n💡 Use to track "what is happening".', position: 'right' },
+                { view: 'tasks', title: '📋 Tasks', content: 'Task and workflow management:\n\n• Backlog: Pending tasks\n• To Do: Tasks to do\n• In Progress: Running tasks\n• Review: Tasks awaiting review\n• Done: Completed tasks\n\n💡 Drag and drop to organize!', position: 'right' },
+                { view: 'interventions', title: '🛡️ Interventions', content: 'Handle special cases:\n\n• Intervention Queue: Needs attention\n• Risk levels: low/medium/high/critical\n• Auto-approve: Allow automatic\n• Manual review: Need manual confirm\n\n💡 Where you control exceptions!', position: 'right' },
+                { view: 'automation', title: '🤖 Automation - Computer Control', content: 'Automate your computer:\n\n1. ⚡ EXECUTE TASKS:\n   • Terminal: Run commands\n   • App: Open/control apps\n   • Browser: Browser automation\n   • Computer: Mouse/keyboard\n\n2. 🚀 QUICK ACTIONS:\n   • View running apps\n   • Mouse position\n   • Clipboard\n   • Check mail\n   • Screenshot\n\n3. ⏰ SCHEDULED TASKS:\n   • Create auto-running schedules\n\n4. 🔔 NOTIFICATIONS:\n   • Send notifications\n   • Configure webhooks\n\n💡 Click buttons to try!', position: 'right' },
+                { view: null, element: '.topbar-right', title: '⚙️ Settings', content: 'Customize interface:\n\n• 🌙 Theme: Light/Dark\n• 📺 Experience: Focus/Balance/Studio/Pixel\n• 📏 Density: Comfort/Compact\n• 🌐 Language: Vietnamese/English\n• ❓ Help: Replay tour\n\n💡 Click "Help" to replay this tour anytime!', position: 'bottom' },
+                { view: null, title: '🎉 Complete!', content: 'You now know how to use Jack!\n\nSUMMARY:\n• 💬 Chat: Control via text\n• 🤖 Automation: Computer control\n• 📊 Workspace: Overview\n• ⚙️ Operations: Detailed debug\n\nNOW:\n1. Go to 💬 Chat\n2. Ask "what are you doing?"\n3. Try features!\n\nHappy automating! 🚀', position: 'center' },
             ]
         };
 
@@ -2821,14 +2858,30 @@
             }
 
             const step = steps[tourStep];
-            const element = document.querySelector(step.element);
-            if (!element) {
-                tourStep++;
-                showTourStep(steps);
-                return;
+
+            // Change view if needed
+            if (step.view && typeof setView === 'function') {
+                setView(step.view, false);
             }
 
-            // Create overlay
+            // Wait for view to render then show tooltip
+            setTimeout(() => {
+                const element = step.element ? document.querySelector(step.element) : null;
+
+                // If no element or center position, show center modal
+                if (step.position === 'center' || !element) {
+                    showTourModal(step, null);
+                    return;
+                }
+
+                // Show tooltip for element
+                showTourTooltip(step, element);
+            }, step.view ? 600 : 100);
+        }
+
+        function showTourModal(step, element) {
+            if (tourOverlay) tourOverlay.remove();
+
             tourOverlay = document.createElement('div');
             tourOverlay.id = 'tour-overlay';
             tourOverlay.style.cssText = `
@@ -2837,11 +2890,113 @@
                 left: 0;
                 width: 100%;
                 height: 100%;
-                background: rgba(0,0,0,0.7);
+                background: rgba(0,0,0,0.8);
                 z-index: 10000;
                 display: flex;
                 justify-content: center;
                 align-items: center;
+            `;
+
+            const card = document.createElement('div');
+            card.style.cssText = `
+                background: linear-gradient(135deg, #1e1e2e 0%, #2d2d44 100%);
+                border-radius: 20px;
+                padding: 32px;
+                max-width: 520px;
+                color: white;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+                border: 1px solid rgba(99, 102, 241, 0.4);
+                text-align: left;
+            `;
+
+            const steps = TOUR_STEPS[localStorage.getItem('autodev-lang') || 'vi'] || TOUR_STEPS.vi;
+
+            card.innerHTML = `
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+                    <h3 style="margin:0;font-size:22px;color:#6366f1;font-weight:700;">${step.title}</h3>
+                    <span style="font-size:13px;color:#888;background:rgba(99,102,241,0.2);padding:4px 12px;border-radius:20px;">${tourStep + 1}/${steps.length}</span>
+                </div>
+                <div style="color:#ddd;line-height:1.8;font-size:14px;white-space:pre-line;margin-bottom:24px;">${step.content}</div>
+                <div style="display:flex;gap:12px;justify-content:space-between;">
+                    <button onclick="skipTour()" style="padding:10px 20px;border:none;background:rgba(255,255,255,0.1);color:#aaa;border-radius:10px;cursor:pointer;font-size:13px;">Bỏ qua</button>
+                    <div style="display:flex;gap:10px;">
+                        ${tourStep > 0 ? '<button onclick="prevTourStep()" style="padding:10px 20px;border:none;background:rgba(255,255,255,0.1);color:#fff;border-radius:10px;cursor:pointer;font-size:13px;">← Trước</button>' : ''}
+                        <button onclick="nextTourStep()" style="padding:10px 28px;border:none;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border-radius:10px;cursor:pointer;font-weight:600;font-size:13px;">${tourStep >= steps.length - 1 ? 'Hoàn thành! 🎉' : 'Tiếp theo →'}</button>
+                    </div>
+                </div>
+            `;
+
+            tourOverlay.appendChild(card);
+            document.body.appendChild(tourOverlay);
+        }
+
+        function showTourTooltip(step, element) {
+            if (tourOverlay) tourOverlay.remove();
+
+            const rect = element.getBoundingClientRect();
+
+            tourOverlay = document.createElement('div');
+            tourOverlay.id = 'tour-overlay';
+            tourOverlay.style.cssText = `
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background: rgba(0,0,0,0.5);
+                z-index: 9999;
+            `;
+
+            // Create hole in overlay for element
+            const hole = document.createElement('div');
+            hole.style.cssText = `
+                position: absolute;
+                top: ${rect.top - 4}px;
+                left: ${rect.left - 4}px;
+                width: ${rect.width + 8}px;
+                height: ${rect.height + 8}px;
+                box-shadow: 0 0 0 9999px rgba(0,0,0,0.5);
+                border-radius: 8px;
+            `;
+            tourOverlay.appendChild(hole);
+
+            // Tooltip card
+            const card = document.createElement('div');
+            const isBottom = step.position === 'bottom';
+            const cardTop = isBottom ? rect.bottom + 16 : rect.top - 200;
+
+            card.style.cssText = `
+                position: absolute;
+                top: ${Math.max(20, cardTop)}px;
+                right: 20px;
+                width: 340px;
+                background: linear-gradient(135deg, #1e1e2e 0%, #2d2d44 100%);
+                border-radius: 16px;
+                padding: 20px;
+                color: white;
+                box-shadow: 0 10px 40px rgba(0,0,0,0.4);
+                border: 1px solid rgba(99, 102, 241, 0.4);
+                z-index: 10000;
+            `;
+
+            const steps = TOUR_STEPS[localStorage.getItem('autodev-lang') || 'vi'] || TOUR_STEPS.vi;
+
+            card.innerHTML = `
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                    <h4 style="margin:0;font-size:16px;color:#6366f1;font-weight:600;">${step.title}</h4>
+                    <span style="font-size:11px;color:#888;">${tourStep + 1}/${steps.length}</span>
+                </div>
+                <div style="color:#ccc;line-height:1.6;font-size:12px;white-space:pre-line;margin-bottom:16px;">${step.content}</div>
+                <div style="display:flex;gap:8px;justify-content:flex-end;">
+                    <button onclick="skipTour()" style="padding:6px 14px;border:none;background:rgba(255,255,255,0.1);color:#aaa;border-radius:6px;cursor:pointer;font-size:11px;">Bỏ qua</button>
+                    ${tourStep > 0 ? '<button onclick="prevTourStep()" style="padding:6px 14px;border:none;background:rgba(255,255,255,0.1);color:#fff;border-radius:6px;cursor:pointer;font-size:11px;">←</button>' : ''}
+                    <button onclick="nextTourStep()" style="padding:6px 18px;border:none;background:#6366f1;color:#fff;border-radius:6px;cursor:pointer;font-weight:500;font-size:11px;">→</button>
+                </div>
+            `;
+
+            tourOverlay.appendChild(card);
+            document.body.appendChild(tourOverlay);
+        }
             `;
 
             const card = document.createElement('div');
@@ -2880,6 +3035,13 @@
             const lang = localStorage.getItem('autodev-lang') || 'vi';
             const steps = TOUR_STEPS[lang] || TOUR_STEPS.vi;
             tourStep++;
+            showTourStep(steps);
+        }
+
+        function prevTourStep() {
+            const lang = localStorage.getItem('autodev-lang') || 'vi';
+            const steps = TOUR_STEPS[lang] || TOUR_STEPS.vi;
+            tourStep = Math.max(0, tourStep - 1);
             showTourStep(steps);
         }
 
