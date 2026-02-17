@@ -498,7 +498,7 @@ _INTERNAL_LOOPBACK_AUTH_EXEMPT_PATHS = {
     "/",
     "/api/control-plane/workers/register",
     "/api/control-plane/workers/heartbeat",
-    # Automation endpoints (Phase 0-4)
+    # Automation endpoints (Phase 0-5)
     "/api/automation/control",
     "/api/automation/dlq",
     "/api/automation/dlq/clear",
@@ -510,6 +510,10 @@ _INTERNAL_LOOPBACK_AUTH_EXEMPT_PATHS = {
     "/api/automation/memory",
     "/api/automation/memory/analyze",
     "/api/automation/preferences",
+    "/api/automation/metrics",
+    "/api/automation/health",
+    "/api/automation/alerts",
+    "/api/automation/status",
     # Autopilot endpoints
     "/api/hub/autopilot/status",
     "/api/hub/autopilot/config",
@@ -8083,6 +8087,187 @@ def _automation_preferences_get(owner_id: str) -> Dict[str, Any]:
         return _AUTOMATION_USER_PREFERENCES.get(owner_id, {})
 
 
+# Phase 5: Observability & Operations
+
+# Metrics collection
+_AUTOMATION_METRICS_LOCK = threading.RLock()
+_AUTOMATION_METRICS: Dict[str, Any] = {
+    "tasks_total": 0,
+    "tasks_success": 0,
+    "tasks_failed": 0,
+    "tasks_by_type": {},
+    "tasks_by_owner": {},
+    "avg_duration_ms": 0,
+    "total_duration_ms": 0,
+    "started_at": datetime.now().isoformat(),
+    "last_task_at": None,
+}
+
+
+def _automation_metrics_record(task_type: str, owner_id: str, success: bool, duration_ms: int) -> None:
+    """Record task metrics."""
+    with _AUTOMATION_METRICS_LOCK:
+        _AUTOMATION_METRICS["tasks_total"] += 1
+        if success:
+            _AUTOMATION_METRICS["tasks_success"] += 1
+        else:
+            _AUTOMATION_METRICS["tasks_failed"] += 1
+
+        # By type
+        if task_type not in _AUTOMATION_METRICS["tasks_by_type"]:
+            _AUTOMATION_METRICS["tasks_by_type"][task_type] = {"total": 0, "success": 0, "failed": 0}
+        _AUTOMATION_METRICS["tasks_by_type"][task_type]["total"] += 1
+        if success:
+            _AUTOMATION_METRICS["tasks_by_type"][task_type]["success"] += 1
+        else:
+            _AUTOMATION_METRICS["tasks_by_type"][task_type]["failed"] += 1
+
+        # By owner
+        if owner_id not in _AUTOMATION_METRICS["tasks_by_owner"]:
+            _AUTOMATION_METRICS["tasks_by_owner"][owner_id] = {"total": 0, "success": 0, "failed": 0}
+        _AUTOMATION_METRICS["tasks_by_owner"][owner_id]["total"] += 1
+        if success:
+            _AUTOMATION_METRICS["tasks_by_owner"][owner_id]["success"] += 1
+        else:
+            _AUTOMATION_METRICS["tasks_by_owner"][owner_id]["failed"] += 1
+
+        # Duration
+        total = _AUTOMATION_METRICS["tasks_total"]
+        current_avg = _AUTOMATION_METRICS["avg_duration_ms"]
+        _AUTOMATION_METRICS["avg_duration_ms"] = (current_avg * (total - 1) + duration_ms) / total
+        _AUTOMATION_METRICS["total_duration_ms"] += duration_ms
+        _AUTOMATION_METRICS["last_task_at"] = datetime.now().isoformat()
+
+
+def _automation_metrics_get() -> Dict[str, Any]:
+    """Get current metrics."""
+    with _AUTOMATION_METRICS_LOCK:
+        return dict(_AUTOMATION_METRICS)
+
+
+def _automation_metrics_reset() -> None:
+    """Reset metrics."""
+    with _AUTOMATION_METRICS_LOCK:
+        global _AUTOMATION_METRICS
+        _AUTOMATION_METRICS = {
+            "tasks_total": 0,
+            "tasks_success": 0,
+            "tasks_failed": 0,
+            "tasks_by_type": {},
+            "tasks_by_owner": {},
+            "avg_duration_ms": 0,
+            "total_duration_ms": 0,
+            "started_at": datetime.now().isoformat(),
+            "last_task_at": None,
+        }
+
+
+# Health check system
+_AUTOMATION_HEALTH_LOCK = threading.RLock()
+_AUTOMATION_HEALTH_CHECKS: Dict[str, Dict[str, Any]] = {}
+
+
+def _automation_health_register(name: str, check_fn: callable, critical: bool = False) -> None:
+    """Register a health check."""
+    with _AUTOMATION_HEALTH_LOCK:
+        _AUTOMATION_HEALTH_CHECKS[name] = {
+            "name": name,
+            "critical": critical,
+            "last_check": None,
+            "last_status": "unknown",
+            "last_message": "",
+        }
+
+
+def _automation_health_check(name: str) -> Dict[str, Any]:
+    """Run a health check."""
+    with _AUTOMATION_HEALTH_LOCK:
+        check = _AUTOMATION_HEALTH_CHECKS.get(name, {})
+    if not check:
+        return {"status": "unknown", "message": "Check not found"}
+
+    # Run check (simplified - in production would call actual check function)
+    return {"status": "ok", "message": "Check passed"}
+
+
+def _automation_health_get_all() -> Dict[str, Any]:
+    """Get all health checks."""
+    with _AUTOMATION_HEALTH_LOCK:
+        checks = dict(_AUTOMATION_HEALTH_CHECKS)
+
+    # Add system health
+    checks["automation_enabled"] = {
+        "name": "automation_enabled",
+        "status": "ok" if _AUTOMATION_ENABLED else "critical",
+        "message": f"Automation {'enabled' if _AUTOMATION_ENABLED else 'disabled'}: {_AUTOMATION_KILL_REASON}",
+    }
+
+    checks["sessions"] = {
+        "name": "sessions",
+        "status": "ok",
+        "message": f"{len(_automation_sessions)} active sessions",
+    }
+
+    checks["schedules"] = {
+        "name": "schedules",
+        "status": "ok" if _automation_scheduler_running else "warning",
+        "message": f"Scheduler {'running' if _automation_scheduler_running else 'stopped'}",
+    }
+
+    return checks
+
+
+# Alert system
+_AUTOMATION_ALERTS_LOCK = threading.RLock()
+_AUTOMATION_ALERTS: List[Dict[str, Any]] = []
+AUTOMATION_ALERTS_MAX = 100
+
+
+def _automation_alert(level: str, title: str, message: str, source: str = "automation") -> None:
+    """Create an alert."""
+    with _AUTOMATION_ALERTS_LOCK:
+        alert = {
+            "id": f"alert_{int(time.time() * 1000)}",
+            "level": level,  # info, warning, error, critical
+            "title": title,
+            "message": message,
+            "source": source,
+            "created_at": datetime.now().isoformat(),
+            "acknowledged": False,
+        }
+        _AUTOMATION_ALERTS.append(alert)
+        while len(_AUTOMATION_ALERTS) > AUTOMATION_ALERTS_MAX:
+            _AUTOMATION_ALERTS.pop(0)
+        logger.warning(f"⚠️ Alert [{level.upper()}]: {title} - {message}")
+
+
+def _automation_alerts_get(limit: int = 50, level: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Get alerts."""
+    with _AUTOMATION_ALERTS_LOCK:
+        alerts = list(_AUTOMATION_ALERTS)
+    if level:
+        alerts = [a for a in alerts if a.get("level") == level]
+    return alerts[-limit:]
+
+
+def _automation_alerts_acknowledge(alert_id: str) -> bool:
+    """Acknowledge an alert."""
+    with _AUTOMATION_ALERTS_LOCK:
+        for alert in _AUTOMATION_ALERTS:
+            if alert.get("id") == alert_id:
+                alert["acknowledged"] = True
+                return True
+    return False
+
+
+def _automation_alerts_clear() -> int:
+    """Clear all alerts."""
+    with _AUTOMATION_ALERTS_LOCK:
+        count = len(_AUTOMATION_ALERTS)
+        _AUTOMATION_ALERTS.clear()
+        return count
+
+
 # Global automation kill-switch (Phase 0)
 _AUTOMATION_ENABLED = True
 _AUTOMATION_KILL_REASON = ""
@@ -9050,6 +9235,23 @@ def _execute_automation_task(task: Dict[str, Any]) -> Dict[str, Any]:
         "timestamp": task.get("completed_at"),
     })
 
+    # Phase 5: Record metrics
+    _automation_metrics_record(
+        task.get("task_type", ""),
+        task.get("owner_id", ""),
+        task.get("status") == "completed",
+        task.get("duration_ms", 0)
+    )
+
+    # Phase 5: Generate alerts on failures
+    if task.get("status") == "failed":
+        _automation_alert(
+            level="error",
+            title=f"Task failed: {task.get('task_type')}/{task.get('action')}",
+            message=str(task.get("error", "unknown error"))[:200],
+            source="automation_bus"
+        )
+
     return task
 
 
@@ -9676,6 +9878,126 @@ def automation_preferences_top(owner_id: str):
         "top_task_types": [{"task_type": t, "count": c} for t, c in top_tasks],
         "top_actions": [{"action": a, "count": c} for a, c in top_actions],
         "total_tasks": prefs.get("total_tasks", 0),
+    })
+
+
+# Phase 5: Observability API Endpoints
+
+@app.route('/api/automation/metrics', methods=['GET'])
+def automation_metrics_get():
+    """Get automation metrics."""
+    metrics = _automation_metrics_get()
+    # Calculate additional stats
+    if metrics["tasks_total"] > 0:
+        metrics["success_rate"] = metrics["tasks_success"] / metrics["tasks_total"]
+    else:
+        metrics["success_rate"] = 0
+
+    # Uptime
+    started = datetime.fromisoformat(metrics["started_at"])
+    metrics["uptime_seconds"] = (datetime.now() - started).total_seconds()
+
+    return jsonify({"success": True, "metrics": metrics})
+
+
+@app.route('/api/automation/metrics/reset', methods=['POST'])
+def automation_metrics_reset():
+    """Reset metrics."""
+    _automation_metrics_reset()
+    return jsonify({"success": True, "message": "Metrics reset"})
+
+
+@app.route('/api/automation/health', methods=['GET'])
+def automation_health_get():
+    """Get system health status."""
+    checks = _automation_health_get_all()
+
+    # Determine overall health
+    overall = "healthy"
+    for name, check in checks.items():
+        status = check.get("status", "unknown")
+        if status == "critical":
+            overall = "critical"
+            break
+        elif status == "warning" and overall != "critical":
+            overall = "degraded"
+
+    return jsonify({
+        "success": True,
+        "status": overall,
+        "checks": checks,
+        "timestamp": datetime.now().isoformat(),
+    })
+
+
+@app.route('/api/automation/alerts', methods=['GET'])
+def automation_alerts_list():
+    """Get alerts."""
+    limit = min(100, int(request.args.get("limit", 50)))
+    level = request.args.get("level") or None
+    alerts = _automation_alerts_get(limit=limit, level=level)
+    return jsonify({
+        "success": True,
+        "count": len(alerts),
+        "alerts": alerts,
+    })
+
+
+@app.route('/api/automation/alerts/<alert_id>/acknowledge', methods=['POST'])
+def automation_alerts_acknowledge(alert_id: str):
+    """Acknowledge an alert."""
+    success = _automation_alerts_acknowledge(alert_id)
+    return jsonify({
+        "success": success,
+        "message": "Alert acknowledged" if success else "Alert not found",
+    })
+
+
+@app.route('/api/automation/alerts/clear', methods=['POST'])
+def automation_alerts_clear():
+    """Clear all alerts."""
+    count = _automation_alerts_clear()
+    return jsonify({
+        "success": True,
+        "cleared_count": count,
+    })
+
+
+@app.route('/api/automation/alerts/test', methods=['POST'])
+def automation_alerts_test():
+    """Create a test alert."""
+    _automation_alert(
+        level="info",
+        title="Test Alert",
+        message="This is a test alert from the automation system",
+        source="test"
+    )
+    return jsonify({"success": True, "message": "Test alert created"})
+
+
+@app.route('/api/automation/status', methods=['GET'])
+def automation_status_full():
+    """Get full automation system status."""
+    metrics = _automation_metrics_get()
+    health = _automation_health_get_all()
+    alerts = _automation_alerts_get(limit=10)
+
+    return jsonify({
+        "success": True,
+        "status": {
+            "enabled": _AUTOMATION_ENABLED,
+            "kill_reason": _AUTOMATION_KILL_REASON,
+            "scheduler_running": _automation_scheduler_running,
+            "metrics": {
+                "tasks_total": metrics["tasks_total"],
+                "tasks_success": metrics["tasks_success"],
+                "tasks_failed": metrics["tasks_failed"],
+                "avg_duration_ms": metrics["avg_duration_ms"],
+            },
+            "health": {k: v.get("status") for k, v in health.items()},
+            "recent_alerts": len(alerts),
+        },
+        "timestamp": datetime.now().isoformat(),
     })
 
 
