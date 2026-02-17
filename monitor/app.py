@@ -7972,6 +7972,141 @@ def _automation_check_rate_limit(task_type: str, owner_id: str) -> Tuple[bool, s
         return True, ""
 
 
+# Phase 2: Circuit Breaker for automation tasks
+_AUTOMATION_CIRCUIT_BREAKER_LOCK = threading.Lock()
+_AUTOMATION_CIRCUIT_STATE: Dict[str, Dict[str, Any]] = {}  # {task_type: {failures, last_failure, state, failures_in_window}}
+
+# Circuit breaker config
+AUTOMATION_CIRCUIT_FAILURE_THRESHOLD = 5  # Open circuit after 5 failures
+AUTOMATION_CIRCUIT_RECOVERY_TIMEOUT_SEC = 60  # Try again after 60 seconds
+AUTOMATION_CIRCUIT_WINDOW_SEC = 300  # 5 minute window for counting failures
+
+
+def _automation_get_task_class(task_type: str) -> str:
+    """Determine task class for rate limiting and circuit breaker."""
+    for cls, types in AUTOMATION_TASK_CLASSES.items():
+        if task_type in types:
+            return cls
+    return "active_control"
+
+
+def _automation_circuit_check(task_type: str) -> Tuple[bool, str]:
+    """Check if circuit is open for task_type. Returns (allowed, reason)."""
+    with _AUTOMATION_CIRCUIT_BREAKER_LOCK:
+        state = _AUTOMATION_CIRCUIT_STATE.get(task_type, {})
+        circuit_state = state.get("state", "closed")
+
+        if circuit_state == "open":
+            last_failure = state.get("last_failure", 0)
+            if time.time() - last_failure > AUTOMATION_CIRCUIT_RECOVERY_TIMEOUT_SEC:
+                # Try half-open
+                _AUTOMATION_CIRCUIT_STATE[task_type] = {
+                    "state": "half_open",
+                    "failures": 0,
+                    "failures_in_window": 0,
+                    "window_start": time.time(),
+                    "last_failure": last_failure,
+                }
+                return True, "Circuit half-open: attempting recovery"
+            return False, f"Circuit open: too many failures ({state.get('failures_in_window', 0)} in {AUTOMATION_CIRCUIT_WINDOW_SEC}s)"
+
+        if circuit_state == "half_open":
+            # Allow one test request
+            return True, "Circuit half-open: test request"
+
+        return True, ""  # closed
+
+
+def _automation_circuit_record_failure(task_type: str) -> None:
+    """Record a failure for circuit breaker."""
+    now = time.time()
+    with _AUTOMATION_CIRCUIT_BREAKER_LOCK:
+        state = _AUTOMATION_CIRCUIT_STATE.get(task_type, {
+            "failures": 0,
+            "failures_in_window": 0,
+            "window_start": now,
+            "state": "closed",
+        })
+
+        # Reset window if expired
+        if now - state.get("window_start", 0) > AUTOMATION_CIRCUIT_WINDOW_SEC:
+            state["failures_in_window"] = 0
+            state["window_start"] = now
+
+        state["failures"] = state.get("failures", 0) + 1
+        state["failures_in_window"] = state.get("failures_in_window", 0) + 1
+        state["last_failure"] = now
+
+        # Open circuit if threshold exceeded
+        if state["failures_in_window"] >= AUTOMATION_CIRCUIT_FAILURE_THRESHOLD:
+            state["state"] = "open"
+            logger.warning(f"⚡ Circuit opened for {task_type}: {state['failures_in_window']} failures")
+
+        _AUTOMATION_CIRCUIT_STATE[task_type] = state
+
+
+def _automation_circuit_record_success(task_type: str) -> None:
+    """Record a success, potentially closing circuit."""
+    with _AUTOMATION_CIRCUIT_BREAKER_LOCK:
+        state = _AUTOMATION_CIRCUIT_STATE.get(task_type, {})
+        if state.get("state") == "half_open":
+            # Success in half-open state: close circuit
+            _AUTOMATION_CIRCUIT_STATE[task_type] = {
+                "state": "closed",
+                "failures": 0,
+                "failures_in_window": 0,
+                "window_start": time.time(),
+                "last_failure": 0,
+            }
+            logger.info(f"⚡ Circuit closed for {task_type}: recovery successful")
+
+
+# Phase 2: Dead Letter Queue for failed tasks
+_AUTOMATION_DLQ_LOCK = threading.Lock()
+_AUTOMATION_DLQ: List[Dict[str, Any]] = []
+AUTOMATION_DLQ_MAX_SIZE = 1000
+
+
+def _automation_dlq_add(task: Dict[str, Any], error: str, error_code: str) -> None:
+    """Add failed task to dead letter queue."""
+    with _AUTOMATION_DLQ_LOCK:
+        dlq_entry = {
+            "task": dict(task),
+            "error": error,
+            "error_code": error_code,
+            "failed_at": datetime.now().isoformat(),
+            "task_type": task.get("task_type", "unknown"),
+            "action": task.get("action", "unknown"),
+            "owner_id": task.get("owner_id", "unknown"),
+        }
+        _AUTOMATION_DLQ.append(dlq_entry)
+        # Trim if too large
+        while len(_AUTOMATION_DLQ) > AUTOMATION_DLQ_MAX_SIZE:
+            _AUTOMATION_DLQ.pop(0)
+        logger.warning(f"📬 Task added to DLQ: {task.get('task_type')}/{task.get('action')} - {error}")
+
+
+def _automation_dlq_get(limit: int = 50, task_type: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Get tasks from dead letter queue."""
+    with _AUTOMATION_DLQ_LOCK:
+        entries = list(_AUTOMATION_DLQ)
+    if task_type:
+        entries = [e for e in entries if e.get("task_type") == task_type]
+    return entries[-limit:]
+
+
+def _automation_dlq_clear(owner_id: Optional[str] = None) -> int:
+    """Clear dead letter queue. Returns count cleared."""
+    with _AUTOMATION_DLQ_LOCK:
+        if owner_id:
+            before = len(_AUTOMATION_DLQ)
+            _AUTOMATION_DLQ[:] = [e for e in _AUTOMATION_DLQ if e.get("owner_id") != owner_id]
+            return before - len(_AUTOMATION_DLQ)
+        count = len(_AUTOMATION_DLQ)
+        _AUTOMATION_DLQ.clear()
+        return count
+
+
 def _automation_safe_path(path_value: str, create_parent: bool = False) -> Path:
     candidate = Path(path_value).expanduser()
     resolved = candidate.resolve() if candidate.is_absolute() else (AUTOMATION_ROOT / candidate).resolve()
@@ -8560,6 +8695,16 @@ def automation_execute():
             "automation_enabled": _AUTOMATION_ENABLED,
         }), 429
 
+    # Phase 2: Circuit breaker check
+    circuit_allowed, circuit_reason = _automation_circuit_check(task_type)
+    if not circuit_allowed:
+        return jsonify({
+            "success": False,
+            "error": circuit_reason,
+            "error_code": "CIRCUIT_OPEN",
+            "task_type": task_type,
+        }), 503
+
     lease = _automation_assert_session_lease(session_id, owner_id, lease_token)
     if not lease.get("allowed"):
         return jsonify({"success": False, "error": lease.get("error"), "error_code": lease.get("error_code")}), 409
@@ -8596,6 +8741,12 @@ def automation_execute():
         _automation_sessions[session_id] = current
 
     if result_task.get("status") == "failed":
+        # Phase 2: Record failure to circuit breaker
+        _automation_circuit_record_failure(task_type)
+
+        # Phase 2: Add to dead letter queue
+        _automation_dlq_add(task, result_task.get("error", ""), result_task.get("error_code", ""))
+
         _add_notification(
             level=NOTIFY_WARNING,
             category="automation",
@@ -8604,6 +8755,10 @@ def automation_execute():
             data={"task_id": result_task.get("task_id"), "error_code": result_task.get("error_code")},
             source="automation_bus",
         )
+    else:
+        # Phase 2: Record success to circuit breaker
+        _automation_circuit_record_success(task_type)
+
     return jsonify(
         {
             "success": result_task.get("status") == "completed",
