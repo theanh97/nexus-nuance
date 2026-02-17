@@ -872,6 +872,22 @@
             background: var(--accent-soft);
         }
 
+        .deck-chip.ok {
+            border-color: color-mix(in srgb, var(--ok) 55%, var(--border));
+            color: var(--ok);
+        }
+
+        .deck-chip.warn {
+            border-color: color-mix(in srgb, var(--warn) 60%, var(--border));
+            color: var(--warn);
+        }
+
+        .deck-chip.danger {
+            border-color: color-mix(in srgb, var(--danger) 62%, var(--border));
+            color: var(--danger);
+            background: color-mix(in srgb, var(--danger-soft) 55%, var(--panel));
+        }
+
         .deck-group {
             display: flex;
             align-items: center;
@@ -904,6 +920,11 @@
             color: #fff;
         }
 
+        .deck-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
         .deck-input-wrap {
             display: flex;
             align-items: center;
@@ -923,6 +944,61 @@
 
         .deck-input::placeholder {
             color: var(--muted);
+        }
+
+        .deck-input.attn {
+            border-color: var(--warn);
+            box-shadow: 0 0 0 2px color-mix(in srgb, var(--warn-soft) 40%, transparent);
+        }
+
+        .deck-suggest {
+            grid-column: 1 / -1;
+            border: 1px dashed var(--border);
+            border-radius: 10px;
+            background: var(--panel-soft);
+            padding: 7px 9px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+
+        .deck-suggest.ok {
+            border-color: color-mix(in srgb, var(--ok) 70%, var(--border));
+        }
+
+        .deck-suggest.warn {
+            border-color: color-mix(in srgb, var(--warn) 75%, var(--border));
+            background: color-mix(in srgb, var(--warn-soft) 28%, var(--panel-soft));
+        }
+
+        .deck-suggest.danger {
+            border-color: color-mix(in srgb, var(--danger) 78%, var(--border));
+            background: color-mix(in srgb, var(--danger-soft) 32%, var(--panel-soft));
+        }
+
+        .deck-suggest-main {
+            min-width: 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .deck-suggest-label {
+            font-size: 10px;
+            color: var(--muted);
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            white-space: nowrap;
+        }
+
+        .deck-suggest-text {
+            font-size: 12px;
+            color: var(--text);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
         .deck-meta {
@@ -1290,7 +1366,7 @@
                         <button type="button" class="chat-chip" data-prompt="đánh giá nhanh UI/UX hiện tại và đề xuất nâng cấp ngay">UI/UX critique</button>
                         <button type="button" class="chat-chip" data-prompt="chạy 1 vòng Orion rồi báo kết quả ngắn gọn">Run one cycle</button>
                     </div>
-                    <div class="chat-time">Bạn có thể chat tự nhiên; `1/2/3` đổi view, `Z` bật Zen, `/` focus Deck, `↑/↓` duyệt history lệnh.</div>
+                    <div class="chat-time">Bạn có thể chat tự nhiên; `1/2/3` đổi view, `Z` bật Zen, `/` focus Deck, `↑/↓` history, `Shift+Enter` chạy Auto Priority.</div>
                 </div>
             </article>
 
@@ -1327,7 +1403,15 @@
             <input id="deck-command-input" class="deck-input" type="text" placeholder="Type natural command... e.g. gỡ kẹt Orion, open tasks, compact mode" />
             <button class="deck-btn primary" id="deck-send" type="button">Run</button>
         </div>
+        <div class="deck-suggest" id="deck-suggest">
+            <div class="deck-suggest-main">
+                <span class="deck-suggest-label">Auto Priority</span>
+                <span class="deck-suggest-text" id="deck-suggest-text">No urgent action</span>
+            </div>
+            <button class="deck-btn" id="deck-apply-suggest" type="button">Apply</button>
+        </div>
         <div class="deck-meta" id="deck-meta">view=workspace | mode=balanced | density=comfortable | zen=off</div>
+        <div class="deck-quick" id="deck-quick"></div>
     </div>
 
     <div class="command-palette" id="command-palette" aria-hidden="true">
@@ -1337,7 +1421,6 @@
             </div>
             <ul id="palette-list" class="palette-list"></ul>
         </div>
-        <div class="deck-quick" id="deck-quick"></div>
     </div>
 
     <div class="connection" id="connection-state">Connecting...</div>
@@ -1354,6 +1437,7 @@
         const pendingChatSeedReplies = {};
         let openclawMetrics = null;
         let latestSlo = null;
+        let latestStatusPayload = null;
         let lastStatusRenderAt = 0;
         let statusRenderTimer = null;
         let pendingStatusPayload = null;
@@ -1366,6 +1450,8 @@
         const chatUiState = { fontScale: 1, panelHeight: 320, maximized: false };
         const paletteState = { open: false, query: '', selectedIndex: 0, items: [] };
         const deckState = { history: [], historyIndex: -1 };
+        let deckSuggestedCommand = '';
+        let deckPrefillLast = '';
 
         const refs = {
             iterationCounter: document.getElementById('iteration-counter'),
@@ -1406,6 +1492,9 @@
             deckZen: document.getElementById('deck-zen'),
             deckInput: document.getElementById('deck-command-input'),
             deckSend: document.getElementById('deck-send'),
+            deckSuggest: document.getElementById('deck-suggest'),
+            deckSuggestText: document.getElementById('deck-suggest-text'),
+            deckApplySuggest: document.getElementById('deck-apply-suggest'),
             deckMeta: document.getElementById('deck-meta'),
             deckQuick: document.getElementById('deck-quick'),
             toastStack: document.getElementById('toast-stack'),
@@ -1703,10 +1792,13 @@
 
         function updateDashboard(data) {
             if (!data || typeof data !== 'object') return;
+            latestStatusPayload = data;
             updateMetrics(data, openclawMetrics);
             renderFeedback(data.feedback_recent || []);
             renderActivity(buildActivityRows(data));
             enforceChartHeightGuard();
+            renderDeckQuickCommands();
+            renderPrioritySuggestion();
             const stamp = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
             refs.connection.textContent = `${refs.connection.textContent.split('|')[0].trim()} | updated ${stamp}`;
         }
@@ -1961,47 +2053,147 @@
 
         function getDeckQuickCommands(view) {
             const v = String(view || activeView || 'workspace');
-            if (v === 'chat') {
-                return [
+            const baseByView = {
+                chat: [
                     { label: 'Summary', cmd: 'còn cái gì đang chạy vậy, tóm giúp mình' },
                     { label: 'Unstick', cmd: 'guardian gỡ kẹt nếu có flow bị stuck' },
                     { label: 'UI/UX', cmd: 'đánh giá UI UX hiện tại và đề xuất cải thiện' },
                     { label: 'Run Cycle', cmd: 'chạy 1 vòng Orion rồi báo kết quả ngắn gọn' },
-                ];
-            }
-            if (v === 'ops') {
-                return [
+                ],
+                ops: [
                     { label: 'Refresh', cmd: 'refresh' },
                     { label: 'Pause', cmd: 'pause' },
                     { label: 'Resume', cmd: 'resume' },
                     { label: 'Spawn', cmd: 'spawn' },
-                ];
-            }
-            if (v === 'tasks') {
-                return [
+                ],
+                tasks: [
                     { label: 'Open Chat', cmd: 'chat' },
                     { label: 'Focus Mode', cmd: 'focus' },
                     { label: 'Compact', cmd: 'compact' },
                     { label: 'Summary', cmd: 'summary' },
-                ];
+                ],
+                default: [
+                    { label: 'Summary', cmd: 'summary' },
+                    { label: 'Open Chat', cmd: 'chat' },
+                    { label: 'Open Ops', cmd: 'ops' },
+                    { label: 'Zen', cmd: 'zen' },
+                ],
+            };
+
+            const payload = (latestStatusPayload && typeof latestStatusPayload === 'object') ? latestStatusPayload : {};
+            const runtime = payload.runtime || {};
+            const summary = payload.ai_summary || {};
+            const signals = summary.signals || ((payload.ops_snapshot || {}).counts || {});
+            const errors = Number(signals.error || 0);
+            const warnings = Number(signals.warning || 0);
+            const queueDepth = Number((latestSlo && latestSlo.openclaw_queue && latestSlo.openclaw_queue.total_queue_depth) || 0);
+            const circuits = Number((latestSlo && latestSlo.control_plane && latestSlo.control_plane.open_circuits) || 0);
+            const running = Boolean(runtime.running);
+            const paused = Boolean(runtime.paused);
+
+            const assist = [];
+            if (errors > 0) {
+                assist.push({ label: `Fix Errors (${errors})`, cmd: 'guardian gỡ kẹt nếu có flow bị stuck', tone: 'danger', hint: 'High-priority remediation' });
             }
-            return [
-                { label: 'Summary', cmd: 'summary' },
-                { label: 'Open Chat', cmd: 'chat' },
-                { label: 'Open Ops', cmd: 'ops' },
-                { label: 'Zen', cmd: 'zen' },
-            ];
+            if (circuits > 0) {
+                assist.push({ label: `Circuits ${circuits}`, cmd: 'refresh', tone: 'warn', hint: 'Control-plane degraded' });
+            }
+            if (queueDepth >= 10) {
+                assist.push({ label: `Queue ${queueDepth}`, cmd: 'pause', tone: 'warn', hint: 'Queue pressure high' });
+            }
+            if (warnings >= 6 && errors === 0) {
+                assist.push({ label: `Warnings ${warnings}`, cmd: 'đánh giá UI UX hiện tại và đề xuất cải thiện', tone: 'warn', hint: 'Signal noise is high' });
+            }
+            if (paused) {
+                assist.push({ label: 'Resume Loop', cmd: 'resume', tone: 'ok', hint: 'System is paused' });
+            } else if (!running) {
+                assist.push({ label: 'Start Loop', cmd: 'resume', tone: 'ok', hint: 'System idle' });
+            }
+            if (Array.isArray(payload.feedback_recent) && payload.feedback_recent.length > 0) {
+                const category = String((payload.feedback_recent[0] || {}).category || 'feedback');
+                if (category.includes('ui')) {
+                    assist.push({ label: 'Apply UI Feedback', cmd: 'đánh giá UI UX hiện tại và đề xuất cải thiện', tone: 'ok', hint: 'Latest feedback mentions UI/UX' });
+                }
+            }
+
+            const base = baseByView[v] || baseByView.default;
+            const merged = assist.concat(base);
+            const seen = new Set();
+            const unique = [];
+            for (const item of merged) {
+                const key = String(item.cmd || '').trim().toLowerCase();
+                if (!key || seen.has(key)) continue;
+                seen.add(key);
+                unique.push(item);
+                if (unique.length >= 7) break;
+            }
+            return unique;
         }
 
         function renderDeckQuickCommands() {
             if (!refs.deckQuick) return;
             const items = getDeckQuickCommands(activeView);
             refs.deckQuick.innerHTML = items.map((item) => (
-                `<button class="deck-chip" type="button" data-deck-cmd="${escapeHtml(item.cmd)}">${escapeHtml(item.label)}</button>`
+                `<button class="deck-chip ${escapeHtml(item.tone || '')}" type="button" title="${escapeHtml(item.hint || '')}" data-deck-cmd="${escapeHtml(item.cmd)}">${escapeHtml(item.label)}</button>`
             )).join('');
             Array.from(refs.deckQuick.querySelectorAll('[data-deck-cmd]')).forEach((node) => {
                 node.addEventListener('click', () => runDeckCommand(String(node.dataset.deckCmd || '')));
             });
+        }
+
+        function getPrioritySuggestion() {
+            const payload = (latestStatusPayload && typeof latestStatusPayload === 'object') ? latestStatusPayload : {};
+            const runtime = payload.runtime || {};
+            const summary = payload.ai_summary || {};
+            const signals = summary.signals || ((payload.ops_snapshot || {}).counts || {});
+            const errors = Number(signals.error || 0);
+            const warnings = Number(signals.warning || 0);
+            const queueDepth = Number((latestSlo && latestSlo.openclaw_queue && latestSlo.openclaw_queue.total_queue_depth) || 0);
+            const circuits = Number((latestSlo && latestSlo.control_plane && latestSlo.control_plane.open_circuits) || 0);
+            const running = Boolean(runtime.running);
+            const paused = Boolean(runtime.paused);
+
+            if (errors > 0) {
+                return { cmd: 'guardian gỡ kẹt nếu có flow bị stuck', text: `Errors=${errors}: ưu tiên tự gỡ kẹt`, tone: 'danger' };
+            }
+            if (circuits > 0) {
+                return { cmd: 'refresh', text: `Circuits=${circuits}: kiểm tra control-plane`, tone: 'warn' };
+            }
+            if (queueDepth >= 12) {
+                return { cmd: 'pause', text: `Queue=${queueDepth}: giảm tải tạm thời`, tone: 'warn' };
+            }
+            if (paused) {
+                return { cmd: 'resume', text: 'System đang paused: có thể resume', tone: 'ok' };
+            }
+            if (!running) {
+                return { cmd: 'resume', text: 'System idle: có thể start loop', tone: 'ok' };
+            }
+            if (warnings >= 8) {
+                return { cmd: 'đánh giá UI UX hiện tại và đề xuất cải thiện', text: `Warnings=${warnings}: giảm nhiễu UX/signal`, tone: 'warn' };
+            }
+            return { cmd: 'còn cái gì đang chạy vậy, tóm giúp mình', text: 'Không có cảnh báo lớn: xem tóm tắt realtime', tone: 'info' };
+        }
+
+        function renderPrioritySuggestion() {
+            if (!refs.deckSuggest || !refs.deckSuggestText) return;
+            const suggestion = getPrioritySuggestion();
+            deckSuggestedCommand = String((suggestion && suggestion.cmd) || '').trim();
+            refs.deckSuggestText.textContent = String((suggestion && suggestion.text) || 'No urgent action');
+            const tone = String((suggestion && suggestion.tone) || 'info');
+            refs.deckSuggest.classList.remove('ok', 'warn', 'danger');
+            if (tone === 'ok' || tone === 'warn' || tone === 'danger') refs.deckSuggest.classList.add(tone);
+            if (refs.deckApplySuggest) {
+                refs.deckApplySuggest.disabled = !deckSuggestedCommand;
+                refs.deckApplySuggest.textContent = deckSuggestedCommand ? 'Apply' : 'N/A';
+            }
+            if (!refs.deckInput) return;
+            const shouldPrefill = (tone === 'warn' || tone === 'danger') && deckSuggestedCommand;
+            const inputIdle = !refs.deckInput.value && document.activeElement !== refs.deckInput;
+            if (shouldPrefill && inputIdle && deckSuggestedCommand !== deckPrefillLast) {
+                refs.deckInput.value = deckSuggestedCommand;
+                refs.deckInput.classList.add('attn');
+                deckPrefillLast = deckSuggestedCommand;
+            }
         }
 
         function syncControlDeck() {
@@ -2020,6 +2212,7 @@
                 refs.deckMeta.textContent = `view=${currentView} | mode=${mode} | density=${density} | zen=${zen}`;
             }
             renderDeckQuickCommands();
+            renderPrioritySuggestion();
         }
 
         function sendChatFromDeck(text) {
@@ -2542,6 +2735,13 @@
                 if (refs.deckInput) refs.deckInput.value = '';
             });
         }
+        if (refs.deckApplySuggest) {
+            refs.deckApplySuggest.addEventListener('click', () => {
+                if (!deckSuggestedCommand) return;
+                runDeckCommand(deckSuggestedCommand);
+                notify('Applied auto-priority command', 'ok', 1300);
+            });
+        }
         if (refs.deckInput) {
             refs.deckInput.addEventListener('keydown', (event) => {
                 if (event.key === 'ArrowUp') {
@@ -2552,6 +2752,14 @@
                 if (event.key === 'ArrowDown') {
                     event.preventDefault();
                     cycleDeckHistory(1);
+                    return;
+                }
+                if (event.key === 'Enter' && event.shiftKey) {
+                    event.preventDefault();
+                    if (deckSuggestedCommand) {
+                        runDeckCommand(deckSuggestedCommand);
+                        notify('Applied auto-priority command', 'ok', 1300);
+                    }
                     return;
                 }
                 if (event.key === 'Enter') {
