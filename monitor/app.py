@@ -32,6 +32,7 @@ from urllib.parse import urlparse
 from flask import Flask, render_template, jsonify, request, Response, redirect, url_for
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
+import requests
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -48,6 +49,10 @@ try:
     from src.core.runtime_guard import ProcessSingleton
     from src.core.prompt_system import get_prompt_system
     from src.core.provider_profile import ProviderProfileStore
+    from src.core.official_model_registry import (
+        load_model_registry_snapshot,
+        refresh_model_registry_from_profile,
+    )
     from src.memory.user_profile import get_user_profile, update_user_profile
     from src.memory.team_persona import get_team_persona_store, normalize_member_id
 except Exception:
@@ -62,6 +67,10 @@ except Exception:
     from core.runtime_guard import ProcessSingleton  # type: ignore
     from core.prompt_system import get_prompt_system  # type: ignore
     from core.provider_profile import ProviderProfileStore  # type: ignore
+    from core.official_model_registry import (  # type: ignore
+        load_model_registry_snapshot,
+        refresh_model_registry_from_profile,
+    )
     from memory.user_profile import get_user_profile, update_user_profile  # type: ignore
     from memory.team_persona import get_team_persona_store, normalize_member_id  # type: ignore
 
@@ -189,6 +198,13 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+OPENCLAW_EXECUTION_MODE = str(os.getenv("OPENCLAW_EXECUTION_MODE", "headless") or "headless").strip().lower()
+if OPENCLAW_EXECUTION_MODE not in {"headless", "hybrid", "browser"}:
+    OPENCLAW_EXECUTION_MODE = "headless"
+_OPENCLAW_BROWSER_MODE_ENABLED = OPENCLAW_EXECUTION_MODE in {"hybrid", "browser"}
+_OPENCLAW_FLOW_MODE_ENABLED = OPENCLAW_EXECUTION_MODE == "browser"
+
+
 MONITOR_AUTOPILOT_ENABLED_DEFAULT = _env_bool("MONITOR_AUTOPILOT_ENABLED", True)
 MONITOR_AUTOPILOT_INTERVAL_SEC = max(4, int(os.getenv("MONITOR_AUTOPILOT_INTERVAL_SEC", "10")))
 MONITOR_STUCK_THRESHOLD_SEC = max(20, int(os.getenv("MONITOR_STUCK_THRESHOLD_SEC", "90")))
@@ -199,7 +215,8 @@ MONITOR_AUTO_APPROVE_ALL_DECISIONS = _env_bool("MONITOR_AUTO_APPROVE_ALL_DECISIO
 MONITOR_AUTO_EXECUTE_COMMANDS = _env_bool("MONITOR_AUTO_EXECUTE_COMMANDS", True)
 MONITOR_ALLOW_UNSAFE_COMMANDS = _env_bool("MONITOR_ALLOW_UNSAFE_COMMANDS", False)
 MONITOR_COMPUTER_CONTROL_ENABLED_DEFAULT = _env_bool("MONITOR_COMPUTER_CONTROL_ENABLED", True)
-MONITOR_AUTOPILOT_OPENCLAW_FLOW_ENABLED = _env_bool("MONITOR_AUTOPILOT_OPENCLAW_FLOW_ENABLED", True)
+OPENCLAW_AUTONOMOUS_UI_ENABLED = _env_bool("OPENCLAW_AUTONOMOUS_UI_ENABLED", False)
+MONITOR_AUTOPILOT_OPENCLAW_FLOW_ENABLED = _env_bool("MONITOR_AUTOPILOT_OPENCLAW_FLOW_ENABLED", False)
 MONITOR_AUTOPILOT_OPENCLAW_FLOW_COOLDOWN_SEC = max(
     20,
     int(os.getenv("MONITOR_AUTOPILOT_OPENCLAW_FLOW_COOLDOWN_SEC", "120")),
@@ -207,10 +224,10 @@ MONITOR_AUTOPILOT_OPENCLAW_FLOW_COOLDOWN_SEC = max(
 MONITOR_AUTOPILOT_OPENCLAW_FLOW_CHAT = str(
     os.getenv("MONITOR_AUTOPILOT_OPENCLAW_FLOW_CHAT", "auto unstick run one cycle resume") or ""
 ).strip()
-OPENCLAW_BROWSER_AUTO_START = _env_bool("OPENCLAW_BROWSER_AUTO_START", True)
+OPENCLAW_BROWSER_AUTO_START = _env_bool("OPENCLAW_BROWSER_AUTO_START", False)
 OPENCLAW_BROWSER_TIMEOUT_MS = max(5000, int(os.getenv("OPENCLAW_BROWSER_TIMEOUT_MS", "30000")))
 OPENCLAW_DASHBOARD_URL = os.getenv("OPENCLAW_DASHBOARD_URL", "http://127.0.0.1:5050/")
-OPENCLAW_SELF_HEAL_ENABLED = _env_bool("OPENCLAW_SELF_HEAL_ENABLED", True)
+OPENCLAW_SELF_HEAL_ENABLED = _env_bool("OPENCLAW_SELF_HEAL_ENABLED", False)
 OPENCLAW_SELF_HEAL_INTERVAL_SEC = max(5, int(os.getenv("OPENCLAW_SELF_HEAL_INTERVAL_SEC", "20")))
 OPENCLAW_SELF_HEAL_FALLBACK = _env_bool("OPENCLAW_SELF_HEAL_FALLBACK", True)
 OPENCLAW_SELF_HEAL_FLOW_COMMAND = os.getenv("OPENCLAW_SELF_HEAL_FLOW_COMMAND", "auto unstick run one cycle resume")
@@ -236,14 +253,14 @@ OPENCLAW_FLOW_CHAT_PLACEHOLDERS = [
     "type natural command...",
     "type natural command... e.g.",
 ]
-OPENCLAW_AUTO_ATTACH_ENABLED = _env_bool("OPENCLAW_AUTO_ATTACH_ENABLED", True)
+OPENCLAW_AUTO_ATTACH_ENABLED = _env_bool("OPENCLAW_AUTO_ATTACH_ENABLED", _OPENCLAW_FLOW_MODE_ENABLED)
 OPENCLAW_AUTO_ATTACH_RETRIES = max(1, int(os.getenv("OPENCLAW_AUTO_ATTACH_RETRIES", "2")))
 OPENCLAW_AUTO_ATTACH_DELAY_SEC = float(os.getenv("OPENCLAW_AUTO_ATTACH_DELAY_SEC", "1.2"))
 OPENCLAW_AUTO_ATTACH_HEURISTIC = _env_bool("OPENCLAW_AUTO_ATTACH_HEURISTIC", True)
 OPENCLAW_AUTO_ATTACH_ICON_MATCH = _env_bool("OPENCLAW_AUTO_ATTACH_ICON_MATCH", True)
 OPENCLAW_CHROME_APP = os.getenv("OPENCLAW_CHROME_APP", "Google Chrome")
-OPENCLAW_LAUNCH_WITH_EXTENSION = _env_bool("OPENCLAW_LAUNCH_WITH_EXTENSION", True)
-OPENCLAW_FORCE_NEW_CHROME_INSTANCE = _env_bool("OPENCLAW_FORCE_NEW_CHROME_INSTANCE", True)
+OPENCLAW_LAUNCH_WITH_EXTENSION = _env_bool("OPENCLAW_LAUNCH_WITH_EXTENSION", _OPENCLAW_FLOW_MODE_ENABLED)
+OPENCLAW_FORCE_NEW_CHROME_INSTANCE = _env_bool("OPENCLAW_FORCE_NEW_CHROME_INSTANCE", _OPENCLAW_FLOW_MODE_ENABLED)
 OPENCLAW_CHROME_BOUNDS = os.getenv("OPENCLAW_CHROME_BOUNDS", "0,24,1440,900")
 OPENCLAW_CLI_MAX_RETRIES = max(1, int(os.getenv("OPENCLAW_CLI_MAX_RETRIES", "2")))
 OPENCLAW_CLI_RETRY_DELAY_SEC = float(os.getenv("OPENCLAW_CLI_RETRY_DELAY_SEC", "0.4"))
@@ -310,6 +327,7 @@ AUTOMATION_EMAIL_IMAP_USERNAME = str(os.getenv("AUTOMATION_EMAIL_IMAP_USERNAME",
 AUTOMATION_EMAIL_IMAP_PASSWORD = str(os.getenv("AUTOMATION_EMAIL_IMAP_PASSWORD", "") or "").strip()
 AUTOMATION_EMAIL_IMAP_FOLDER = str(os.getenv("AUTOMATION_EMAIL_IMAP_FOLDER", "INBOX") or "INBOX").strip() or "INBOX"
 AUTOMATION_EMAIL_IMAP_SSL = _env_bool("AUTOMATION_EMAIL_IMAP_SSL", True)
+AUTOMATION_PASSIVE_POLL_COOLDOWN_SEC = max(0.0, float(os.getenv("AUTOMATION_PASSIVE_POLL_COOLDOWN_SEC", "3")))
 OPENCLAW_HIGH_RISK_ALLOWLIST = {
     token.strip().lower()
     for token in os.getenv(
@@ -348,6 +366,17 @@ AGENT_COORDINATION_DEDUP_WINDOW_SEC = max(
     1.0,
     float(os.getenv("AGENT_COORDINATION_DEDUP_WINDOW_SEC", "12")),
 )
+HUB_NEXT_ACTION_AUTOPILOT_ENABLED = _env_bool("HUB_NEXT_ACTION_AUTOPILOT_ENABLED", True)
+HUB_NEXT_ACTION_AUTOPILOT_INTERVAL_SEC = max(5, int(os.getenv("HUB_NEXT_ACTION_AUTOPILOT_INTERVAL_SEC", "20")))
+HUB_NEXT_ACTION_AUTOPILOT_MAX_PER_TICK = max(1, min(8, int(os.getenv("HUB_NEXT_ACTION_AUTOPILOT_MAX_PER_TICK", "2"))))
+HUB_NEXT_ACTION_AUTOPILOT_ALLOW_TYPES = {
+    token.strip().lower()
+    for token in os.getenv(
+        "HUB_NEXT_ACTION_AUTOPILOT_ALLOW_TYPES",
+        "dispatch_task,assign_then_dispatch,reassign_or_bring_online,inspect_terminal_error,check_stale_terminal,reclaim_stale_lease",
+    ).split(",")
+    if token.strip()
+}
 
 _monitor_supervisor_thread: Optional[threading.Thread] = None
 _monitor_supervisor_stop_event = threading.Event()
@@ -366,6 +395,11 @@ _monitor_process_started_at = datetime.now()
 _runtime_heartbeat_thread: Optional[threading.Thread] = None
 _runtime_heartbeat_stop_event = threading.Event()
 _runtime_heartbeat_lock = threading.RLock()
+_hub_next_action_autopilot_thread: Optional[threading.Thread] = None
+_hub_next_action_autopilot_stop_event = threading.Event()
+_hub_next_action_autopilot_lock = threading.RLock()
+_hub_next_action_autopilot_last_run: Optional[datetime] = None
+_hub_next_action_autopilot_last_error: Optional[str] = None
 _openclaw_self_heal_thread: Optional[threading.Thread] = None
 _openclaw_self_heal_stop_event = threading.Event()
 _openclaw_self_heal_lock = threading.RLock()
@@ -389,6 +423,10 @@ _AGENT_COORDINATION_DEDUP_LOCK = threading.Lock()
 _agent_coordination_recent: Dict[str, float] = {}
 _AUTOMATION_TASKS_LOCK = threading.Lock()
 _automation_recent_tasks: deque = deque(maxlen=AUTOMATION_TASK_HISTORY_MAX)
+_INTERNAL_LOOPBACK_AUTH_EXEMPT_PATHS = {
+    "/api/control-plane/workers/register",
+    "/api/control-plane/workers/heartbeat",
+}
 
 
 def _extract_dashboard_token() -> str:
@@ -406,6 +444,10 @@ def _extract_dashboard_token() -> str:
 
 def _dashboard_request_authorized() -> bool:
     if not DASHBOARD_ACCESS_TOKEN:
+        return True
+    remote_ip = str(request.remote_addr or "").strip()
+    req_path = str(request.path or "/")
+    if remote_ip in {"127.0.0.1", "::1", "localhost"} and req_path in _INTERNAL_LOOPBACK_AUTH_EXEMPT_PATHS:
         return True
     token = _extract_dashboard_token()
     return bool(token and token == DASHBOARD_ACCESS_TOKEN)
@@ -3411,6 +3453,7 @@ def _monitor_supervisor_status() -> Dict[str, Any]:
             "autopilot_pause_until": pause_until,
             "full_auto_user_pause_max_sec": MONITOR_FULL_AUTO_USER_PAUSE_MAX_SEC,
             "full_auto_maintenance_lease_sec": MONITOR_FULL_AUTO_MAINTENANCE_LEASE_SEC,
+            "openclaw_execution_mode": OPENCLAW_EXECUTION_MODE,
             "openclaw_autopilot_flow_enabled": MONITOR_AUTOPILOT_OPENCLAW_FLOW_ENABLED,
             "openclaw_autopilot_flow_cooldown_sec": MONITOR_AUTOPILOT_OPENCLAW_FLOW_COOLDOWN_SEC,
             "last_openclaw_flow": {key: value.isoformat() for key, value in _monitor_last_openclaw_flow_at.items()},
@@ -3440,6 +3483,10 @@ def _monitor_pause_supervisor_temporarily(duration_sec: int) -> str:
 def _monitor_maybe_enqueue_openclaw_flow(instance_id: str, reason: str) -> Dict[str, Any]:
     if not MONITOR_AUTOPILOT_OPENCLAW_FLOW_ENABLED:
         return {"attempted": False, "success": False, "reason": "disabled"}
+    if not OPENCLAW_AUTONOMOUS_UI_ENABLED:
+        return {"attempted": False, "success": False, "reason": "autonomous_ui_disabled"}
+    if not _openclaw_dashboard_flow_enabled():
+        return {"attempted": False, "success": False, "reason": f"execution_mode_{OPENCLAW_EXECUTION_MODE}"}
     if OPENCLAW_REQUIRE_TASK_LEASE:
         return {"attempted": False, "success": False, "reason": "lease_enforcement_enabled"}
     normalized_reason = str(reason or "").strip().lower()
@@ -3914,6 +3961,11 @@ def _build_openclaw_metrics_snapshot(include_events: bool = False, event_limit: 
     policy_denied = int(counters.get("policy_denied", 0) or 0)
     policy_total = max(1, policy_auto + policy_manual + policy_denied)
     payload: Dict[str, Any] = {
+        "execution_mode": OPENCLAW_EXECUTION_MODE,
+        "mode_capabilities": {
+            "browser_actions_enabled": _openclaw_browser_actions_enabled(),
+            "dashboard_flow_enabled": _openclaw_dashboard_flow_enabled(),
+        },
         "counters": counters,
         "attach_success_rate": round(float(counters.get("attach_success", 0)) / attach_attempts, 4),
         "flow_success_rate": round(float(counters.get("flow_success", 0)) / flow_runs, 4),
@@ -4828,6 +4880,40 @@ def _create_token_status(info: _OpenClawTokenInfo) -> Dict[str, Any]:
     }
 
 
+def _openclaw_browser_actions_enabled() -> bool:
+    return OPENCLAW_EXECUTION_MODE in {"hybrid", "browser"}
+
+
+def _openclaw_dashboard_flow_enabled() -> bool:
+    return OPENCLAW_EXECUTION_MODE == "browser"
+
+
+def _openclaw_mode_gate(command_type: str) -> Dict[str, Any]:
+    ctype = str(command_type or "").strip().lower()
+    if ctype == "browser" and not _openclaw_browser_actions_enabled():
+        return {
+            "allowed": False,
+            "error_code": "BROWSER_MODE_DISABLED",
+            "error": "OpenClaw browser actions are disabled in headless mode",
+            "reason": "execution_mode_headless",
+        }
+    if ctype == "flow" and not _openclaw_dashboard_flow_enabled():
+        return {
+            "allowed": False,
+            "error_code": "FLOW_MODE_DISABLED",
+            "error": "OpenClaw dashboard flow requires OPENCLAW_EXECUTION_MODE=browser",
+            "reason": f"execution_mode_{OPENCLAW_EXECUTION_MODE}",
+        }
+    if ctype == "attach" and OPENCLAW_EXECUTION_MODE != "browser":
+        return {
+            "allowed": False,
+            "error_code": "ATTACH_MODE_DISABLED",
+            "error": "OpenClaw extension attach requires OPENCLAW_EXECUTION_MODE=browser",
+            "reason": f"execution_mode_{OPENCLAW_EXECUTION_MODE}",
+        }
+    return {"allowed": True}
+
+
 def _openclaw_is_loopback_dashboard_url(url: str) -> bool:
     try:
         parsed = urlparse(str(url or "").strip())
@@ -4879,7 +4965,11 @@ def _openclaw_action_debounced(signature: str, cooldown_sec: float = OPENCLAW_AC
 def _openclaw_self_heal_status() -> Dict[str, Any]:
     with _openclaw_self_heal_lock:
         return {
+            "execution_mode": OPENCLAW_EXECUTION_MODE,
             "enabled": bool(OPENCLAW_SELF_HEAL_ENABLED),
+            "autonomous_ui_enabled": bool(OPENCLAW_AUTONOMOUS_UI_ENABLED),
+            "browser_actions_enabled": _openclaw_browser_actions_enabled(),
+            "dashboard_flow_enabled": _openclaw_dashboard_flow_enabled(),
             "interval_sec": OPENCLAW_SELF_HEAL_INTERVAL_SEC,
             "open_dashboard_enabled": bool(OPENCLAW_SELF_HEAL_OPEN_DASHBOARD),
             "open_dashboard_cooldown_sec": OPENCLAW_SELF_HEAL_OPEN_COOLDOWN_SEC,
@@ -4899,6 +4989,46 @@ def _openclaw_self_heal_once() -> Dict[str, Any]:
     _openclaw_metrics_inc("self_heal_runs")
     _openclaw_self_heal_last_run = datetime.now()
     detail: Dict[str, Any] = {"steps": []}
+
+    mode_gate = _openclaw_mode_gate("browser")
+    if not mode_gate.get("allowed"):
+        detail["steps"].append(
+            {
+                "action": "mode_gate",
+                "result": {
+                    "success": True,
+                    "skipped": True,
+                    "reason": mode_gate.get("reason"),
+                    "error_code": mode_gate.get("error_code"),
+                    "execution_mode": OPENCLAW_EXECUTION_MODE,
+                },
+            }
+        )
+        with _openclaw_self_heal_lock:
+            _openclaw_self_heal_last_error = None
+            _openclaw_self_heal_last_success = datetime.now()
+        _openclaw_metrics_inc("self_heal_success")
+        detail["success"] = True
+        detail["skipped"] = True
+        return detail
+    if not OPENCLAW_AUTONOMOUS_UI_ENABLED:
+        detail["steps"].append(
+            {
+                "action": "autonomous_ui_guard",
+                "result": {
+                    "success": True,
+                    "skipped": True,
+                    "reason": "autonomous_ui_disabled",
+                },
+            }
+        )
+        with _openclaw_self_heal_lock:
+            _openclaw_self_heal_last_error = None
+            _openclaw_self_heal_last_success = datetime.now()
+        _openclaw_metrics_inc("self_heal_success")
+        detail["success"] = True
+        detail["skipped"] = True
+        return detail
 
     def record(step: str, payload: Dict[str, Any]) -> None:
         detail["steps"].append({"action": step, "result": payload})
@@ -5293,6 +5423,8 @@ def _classify_openclaw_failure(result: Any) -> str:
         return "health"
     if error_code in {"ATTACH_FAILED", "ATTACH_THROTTLED"}:
         return "attach"
+    if error_code in {"BROWSER_MODE_DISABLED", "FLOW_MODE_DISABLED", "ATTACH_MODE_DISABLED"}:
+        return "policy"
     if error_code in {"MANUAL_REQUIRED", "POLICY_DENIED", "FAILURE_CLASS_BLOCKED"}:
         return "policy"
     if error_code in {"WORKER_UNAVAILABLE", "WORKER_UNHEALTHY", "WORKER_NOT_FOUND", "CIRCUIT_OPEN"}:
@@ -5488,6 +5620,15 @@ def _dispatch_openclaw_remote(worker: Dict[str, Any], command_type: str, payload
 
 
 def _execute_openclaw_browser_action(data: Dict[str, Any]) -> Dict[str, Any]:
+    mode_gate = _openclaw_mode_gate("browser")
+    if not mode_gate.get("allowed"):
+        return {
+            "success": False,
+            "error": mode_gate.get("error"),
+            "error_code": mode_gate.get("error_code"),
+            "execution_mode": OPENCLAW_EXECUTION_MODE,
+        }
+
     action = str(data.get("action", "")).strip().lower()
     if not action:
         return {"success": False, "error": "Missing action"}
@@ -5595,9 +5736,38 @@ def _execute_openclaw_browser_action(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _execute_openclaw_flow_action(data: Dict[str, Any]) -> Dict[str, Any]:
+    mode_gate = _openclaw_mode_gate("flow")
+    if not mode_gate.get("allowed"):
+        error = str(mode_gate.get("error", "Flow disabled by execution mode"))
+        error_code = str(mode_gate.get("error_code", "FLOW_MODE_DISABLED"))
+        return {
+            "success": False,
+            "flow": {
+                "success": False,
+                "error": error,
+                "error_code": error_code,
+                "execution_mode": OPENCLAW_EXECUTION_MODE,
+            },
+            "error": error,
+            "error_code": error_code,
+            "timestamp": datetime.now().isoformat(),
+        }
+
     chat_text = str(data.get("chat_text", "") or "")
+    source = str(data.get("source", "manual") or "manual").strip().lower()
     approve = bool(data.get("approve", True))
     deny = bool(data.get("deny", False))
+    if source in {"autopilot", "system"} and not OPENCLAW_AUTONOMOUS_UI_ENABLED:
+        return {
+            "success": True,
+            "flow": {
+                "success": True,
+                "skipped": True,
+                "reason": "autonomous_ui_disabled",
+                "source": source,
+            },
+            "timestamp": datetime.now().isoformat(),
+        }
     result = _openclaw_dashboard_flow(chat_text=chat_text, approve=approve, deny=deny)
     return {
         "success": bool(result.get("success")),
@@ -5607,6 +5777,15 @@ def _execute_openclaw_flow_action(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _execute_openclaw_attach_action(_: Dict[str, Any]) -> Dict[str, Any]:
+    mode_gate = _openclaw_mode_gate("attach")
+    if not mode_gate.get("allowed"):
+        return {
+            "success": False,
+            "error": mode_gate.get("error"),
+            "error_code": mode_gate.get("error_code"),
+            "execution_mode": OPENCLAW_EXECUTION_MODE,
+        }
+
     if not OPENCLAW_AUTO_ATTACH_ENABLED:
         return {"success": False, "error": "Auto-attach disabled"}
     result = _openclaw_attempt_attach()
@@ -5787,6 +5966,22 @@ def _parse_openclaw_queue_context(command_type: str, data: Dict[str, Any]) -> Di
 
 def _enqueue_openclaw_command(command_type: str, data: Dict[str, Any]) -> Dict[str, Any]:
     context = _parse_openclaw_queue_context(command_type, data)
+    mode_gate = _openclaw_mode_gate(command_type)
+    if not mode_gate.get("allowed"):
+        return {
+            "success": False,
+            "error": mode_gate.get("error", "Command blocked by execution mode"),
+            "error_code": mode_gate.get("error_code", "MODE_DISABLED"),
+            "decision": "denied",
+            "risk_level": context.get("risk_level", "medium"),
+            "policy_reasons": [mode_gate.get("reason", "execution_mode_gate")],
+            "token_status": {},
+            "target_worker": context.get("target_worker", ""),
+            "resolved_worker": "",
+            "queue_state": _openclaw_command_manager.queue_snapshot() if OPENCLAW_QUEUE_ENABLED else {"enabled": False},
+            "session_id": context.get("session_id"),
+        }
+
     lease_validation = _validate_openclaw_task_lease(data)
     if not lease_validation.get("success"):
         return {
@@ -5942,6 +6137,8 @@ def _openclaw_error_http_status(error_code: str) -> int:
     code = str(error_code or "").strip().upper()
     if code == "QUEUE_FULL":
         return 429
+    if code in {"BROWSER_MODE_DISABLED", "FLOW_MODE_DISABLED", "ATTACH_MODE_DISABLED"}:
+        return 409
     if code in {"MANUAL_REQUIRED"}:
         return 409
     if code in {"WORKER_UNAVAILABLE", "WORKER_UNHEALTHY", "CIRCUIT_OPEN"}:
@@ -7112,6 +7309,7 @@ def get_openclaw_dashboard():
     payload = {
         "url": base_url,
         "timestamp": datetime.now().isoformat(),
+        "execution_mode": OPENCLAW_EXECUTION_MODE,
         "token_present": bool(info.token),
         "token_source": info.source,
         "health_ok": info.health_ok,
@@ -7568,669 +7766,972 @@ def openclaw_manual_hold(session_id: str):
 
 # ============================================================================
 # UNIVERSAL AUTOMATION TASK BUS
-# Unified control for: browser, terminal, app, mail, messages, computer
 # ============================================================================
 
-# Task types supported by the automation bus
 AUTOMATION_TASK_TYPES = [
-    "browser",      # Chrome automation via OpenClaw
-    "terminal",     # Terminal/command execution
-    "app",          # Launch/control macOS apps
-    "mail",         # Email reading/sending
-    "messages",     # iMessage/Messages app
-    "computer",     # General computer control (keyboard/mouse)
-    "file",         # File operations
-    "clipboard",    # Clipboard operations
+    "browser",
+    "terminal",
+    "app",
+    "mail",
+    "messages",
+    "computer",
+    "file",
+    "clipboard",
 ]
-
-# Task status
 AUTOMATION_TASK_STATUS = ["pending", "running", "completed", "failed", "cancelled"]
-
-
-def _create_automation_task(task_type: str, action: str, params: Dict[str, Any], task_id: str = None) -> Dict[str, Any]:
-    """Create a new automation task entry."""
-    if task_id is None:
-        task_id = f"task_{int(time.time() * 1000)}_{secrets.token_hex(4)}"
-
-    return {
-        "task_id": task_id,
-        "task_type": task_type,
-        "action": action,
-        "params": params,
-        "status": "pending",
-        "created_at": datetime.now().isoformat(),
-        "started_at": None,
-        "completed_at": None,
-        "result": None,
-        "error": None,
-        "logs": [],
-    }
-
-
-def _execute_automation_task(task: Dict[str, Any]) -> Dict[str, Any]:
-    """Execute a single automation task based on type."""
-    task_type = task["task_type"]
-    action = task["action"]
-    params = task["params"]
-
-    task["status"] = "running"
-    task["started_at"] = datetime.now().isoformat()
-
-    try:
-        if task_type == "browser":
-            # Delegate to OpenClaw browser control
-            result = _openclaw_execute_browser_action(action, params)
-        elif task_type == "terminal":
-            # Execute terminal command
-            result = _execute_terminal_action(action, params)
-        elif task_type == "app":
-            # Launch/control macOS apps
-            result = _execute_app_action(action, params)
-        elif task_type == "mail":
-            # Email automation
-            result = _execute_mail_action(action, params)
-        elif task_type == "messages":
-            # Messages app automation
-            result = _execute_messages_action(action, params)
-        elif task_type == "computer":
-            # General computer control (keyboard/mouse)
-            result = _execute_computer_action(action, params)
-        elif task_type == "file":
-            # File operations
-            result = _execute_file_action(action, params)
-        elif task_type == "clipboard":
-            # Clipboard operations
-            result = _execute_clipboard_action(action, params)
-        else:
-            raise ValueError(f"Unknown task type: {task_type}")
-
-        task["status"] = "completed"
-        task["result"] = result
-        task["completed_at"] = datetime.now().isoformat()
-        return task
-
-    except Exception as e:
-        task["status"] = "failed"
-        task["error"] = str(e)
-        task["completed_at"] = datetime.now().isoformat()
-        return task
-
-
-def _openclaw_execute_browser_action(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    """Execute browser action via OpenClaw."""
-    # Map unified actions to OpenClaw commands
-    action_map = {
-        "navigate": "goto",
-        "click": "click",
-        "type": "type",
-        "screenshot": "screenshot",
-        "read": "extract",
-        "scroll": "scroll",
-        "status": "status",
-    }
-
-    openclaw_action = action_map.get(action, action)
-
-    # Use existing OpenClaw flow
-    return {
-        "success": True,
-        "action": openclaw_action,
-        "params": params,
-        "source": "automation_bus",
-    }
-
-
-def _execute_terminal_action(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    """Execute terminal command."""
-    if action == "execute":
-        cmd = params.get("command", "")
-        timeout = params.get("timeout", 30)
-
-        try:
-            result = subprocess.run(
-                cmd,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-            return {
-                "success": result.returncode == 0,
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-                "returncode": result.returncode,
-            }
-        except subprocess.TimeoutExpired:
-            return {"success": False, "error": "Command timed out"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    elif action == "list_sessions":
-        # List active terminal sessions
-        return {
-            "success": True,
-            "sessions": [{"id": "main", "name": "Main Terminal"}],
-        }
-
-    return {"success": False, "error": f"Unknown terminal action: {action}"}
-
-
-def _execute_app_action(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    """Launch or control macOS applications."""
-    if action == "launch":
-        app_path = params.get("app_path", "")
-        app_name = params.get("app_name", "")
-
-        cmd = f'open -a "{app_name or app_path}"'
-        try:
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-            return {
-                "success": result.returncode == 0,
-                "app": app_name or app_path,
-            }
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    elif action == "activate":
-        # Activate (bring to front) an app
-        app_name = params.get("app_name", "")
-        cmd = f'osascript -e \'tell application "{app_name}" to activate\''
-        try:
-            subprocess.run(cmd, shell=True, capture_output=True)
-            return {"success": True, "app": app_name}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    elif action == "list_running":
-        # List running applications
-        cmd = 'osascript -e \'tell application "System Events" to get name of every process whose background only is false\''
-        try:
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-            apps = [a.strip() for a in result.stdout.split(", ") if a.strip()]
-            return {"success": True, "running_apps": apps}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    return {"success": False, "error": f"Unknown app action: {action}"}
-
-
-def _execute_mail_action(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    """Email automation via macOS Mail app."""
-    if action == "check_unread":
-        # Check unread emails (via AppleScript)
-        cmd = '''osascript -e 'tell application "Mail" to get count of (messages of inbox whose read status is false)' '''
-        try:
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-            count = int(result.stdout.strip() or "0")
-            return {"success": True, "unread_count": count}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    elif action == "send":
-        # Send email via AppleScript
-        to = params.get("to", "")
-        subject = params.get("subject", "")
-        body = params.get("body", "")
-
-        cmd = f'''osascript -e 'tell application "Mail" to set newMessage to make new outgoing message with properties {{subject:"{subject}", content:"{body}", visible:false}} tell newMessage to make new to recipient at end of to recipients with properties address:"{to}" send newMessage'' '''
-        try:
-            subprocess.run(cmd, shell=True, capture_output=True)
-            return {"success": True, "to": to, "subject": subject}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    elif action == "list_folders":
-        return {
-            "success": True,
-            "folders": ["Inbox", "Sent", "Drafts", "Archive", "Junk"],
-        }
-
-    return {"success": False, "error": f"Unknown mail action: {action}"}
-
-
-def _execute_messages_action(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    """iMessage/Messages app automation."""
-    if action == "check_unread":
-        cmd = '''osascript -e 'tell application "Messages" to get count of (messages of active chat whose read status is false)' '''
-        try:
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-            count = int(result.stdout.strip() or "0")
-            return {"success": True, "unread_count": count}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    elif action == "send":
-        # Send iMessage
-        recipient = params.get("recipient", "")
-        message = params.get("message", "")
-
-        cmd = f'''osascript -e 'tell application "Messages" to send "{message}" to buddy "{recipient}"' '''
-        try:
-            subprocess.run(cmd, shell=True, capture_output=True)
-            return {"success": True, "recipient": recipient}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    elif action == "list_conversations":
-        return {
-            "success": True,
-            "conversations": [],
-        }
-
-    return {"success": False, "error": f"Unknown messages action: {action}"}
-
-
-def _execute_computer_action(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    """General computer control - keyboard/mouse."""
-    try:
-        import pyautogui
-    except ImportError:
-        return {"success": False, "error": "pyautogui not installed"}
-
-    if action == "click":
-        x = params.get("x")
-        y = params.get("y")
-        button = params.get("button", "left")
-
-        if x is not None and y is not None:
-            pyautogui.click(x, y, button=button)
-        else:
-            pyautogui.click(button=button)
-        return {"success": True, "action": "click", "x": x, "y": y}
-
-    elif action == "type":
-        text = params.get("text", "")
-        pyautogui.write(text)
-        return {"success": True, "action": "type", "text_length": len(text)}
-
-    elif action == "hotkey":
-        keys = params.get("keys", [])
-        if keys:
-            pyautogui.hotkey(*keys)
-        return {"success": True, "action": "hotkey", "keys": keys}
-
-    elif action == "screenshot":
-        filepath = params.get("filepath", "/tmp/screenshot.png")
-        pyautogui.screenshot(filepath)
-        return {"success": True, "filepath": filepath}
-
-    elif action == "position":
-        x, y = pyautogui.position()
-        return {"success": True, "x": x, "y": y}
-
-    elif action == "move":
-        x = params.get("x")
-        y = params.get("y")
-        if x is not None and y is not None:
-            pyautogui.moveTo(x, y)
-        return {"success": True, "action": "move", "x": x, "y": y}
-
-    return {"success": False, "error": f"Unknown computer action: {action}"}
-
-
-def _execute_file_action(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    """File operations."""
-    import shutil
-
-    if action == "read":
-        filepath = params.get("filepath", "")
-        try:
-            with open(filepath, "r") as f:
-                content = f.read()
-            return {"success": True, "content": content, "filepath": filepath}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    elif action == "write":
-        filepath = params.get("filepath", "")
-        content = params.get("content", "")
-        try:
-            with open(filepath, "w") as f:
-                f.write(content)
-            return {"success": True, "filepath": filepath}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    elif action == "copy":
-        src = params.get("src", "")
-        dst = params.get("dst", "")
-        try:
-            shutil.copy2(src, dst)
-            return {"success": True, "src": src, "dst": dst}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    elif action == "list":
-        dirpath = params.get("dirpath", ".")
-        try:
-            files = os.listdir(dirpath)
-            return {"success": True, "files": files, "dirpath": dirpath}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    return {"success": False, "error": f"Unknown file action: {action}"}
-
-
-def _execute_clipboard_action(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    """Clipboard operations."""
-    if action == "read":
-        cmd = "pbpaste"
-        try:
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-            return {"success": True, "content": result.stdout}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    elif action == "write":
-        content = params.get("content", "")
-        cmd = f'echo "{content}" | pbcopy'
-        try:
-            subprocess.run(cmd, shell=True)
-            return {"success": True, "content_length": len(content)}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    return {"success": False, "error": f"Unknown clipboard action: {action}"}
-
-
-@app.route('/api/automation/execute', methods=['POST'])
-def automation_execute():
-    """
-    Universal automation task bus.
-    Execute tasks across: browser, terminal, app, mail, messages, computer, file, clipboard.
-
-    Request body:
-    {
-        "task_type": "browser|terminal|app|mail|messages|computer|file|clipboard",
-        "action": "action_name",
-        "params": {...},
-        "task_id": "optional_custom_task_id"
-    }
-    """
-    data = request.get_json() or {}
-
-    task_type = data.get("task_type", "")
-    action = data.get("action", "")
-    params = data.get("params", {})
-    task_id = data.get("task_id")
-
-    # Validate task type
-    if task_type not in AUTOMATION_TASK_TYPES:
-        return jsonify({
-            "success": False,
-            "error": f"Invalid task_type. Must be one of: {AUTOMATION_TASK_TYPES}",
-        }), 400
-
-    # Create task
-    task = _create_automation_task(task_type, action, params, task_id)
-
-    # Add to recent tasks (for dedup)
-    task_key = f"{task_type}:{action}:{json.dumps(params, sort_keys=True)}"
-    with _AUTOMATION_TASKS_LOCK:
-        _automation_recent_tasks.append({
-            "task_id": task["task_id"],
-            "task_key": task_key,
-            "timestamp": time.time(),
-        })
-
-    # Execute task
-    result_task = _execute_automation_task(task)
-
-    return jsonify({
-        "success": result_task["status"] == "completed",
-        "task_id": result_task["task_id"],
-        "status": result_task["status"],
-        "result": result_task.get("result"),
-        "error": result_task.get("error"),
-        "created_at": result_task["created_at"],
-        "completed_at": result_task.get("completed_at"),
-    })
-
-
-@app.route('/api/automation/batch', methods=['POST'])
-def automation_batch():
-    """
-    Execute multiple automation tasks in batch.
-
-    Request body:
-    {
-        "tasks": [
-            {"task_type": "...", "action": "...", "params": {...}},
-            ...
-        ]
-    }
-    """
-    data = request.get_json() or {}
-    tasks_data = data.get("tasks", [])
-
-    if not tasks_data:
-        return jsonify({
-            "success": False,
-            "error": "No tasks provided",
-        }), 400
-
-    results = []
-    for task_data in tasks_data:
-        task_type = task_data.get("task_type", "")
-        action = task_data.get("action", "")
-        params = task_data.get("params", {})
-
-        if task_type not in AUTOMATION_TASK_TYPES:
-            results.append({
-                "success": False,
-                "error": f"Invalid task_type: {task_type}",
-            })
-            continue
-
-        task = _create_automation_task(task_type, action, params)
-        result_task = _execute_automation_task(task)
-
-        results.append({
-            "task_id": result_task["task_id"],
-            "status": result_task["status"],
-            "result": result_task.get("result"),
-            "error": result_task.get("error"),
-        })
-
-    return jsonify({
-        "success": True,
-        "total": len(tasks_data),
-        "results": results,
-    })
-
-
-@app.route('/api/automation/status/<task_id>')
-def automation_status(task_id: str):
-    """Get status of a specific automation task."""
-    # In a full implementation, we'd store tasks in a database
-    # For now, check recent tasks
-    return jsonify({
-        "task_id": task_id,
-        "status": "unknown",
-        "message": "Task status tracking requires persistent storage",
-    })
-
-
-@app.route('/api/automation/types')
-def automation_types():
-    """List supported automation task types and their actions."""
-    return jsonify({
-        "task_types": AUTOMATION_TASK_TYPES,
-        "capabilities": {
-            "browser": ["navigate", "click", "type", "screenshot", "read", "scroll", "status"],
-            "terminal": ["execute", "list_sessions"],
-            "app": ["launch", "activate", "list_running"],
-            "mail": ["check_unread", "send", "list_folders"],
-            "messages": ["check_unread", "send", "list_conversations"],
-            "computer": ["click", "type", "hotkey", "screenshot", "position", "move"],
-            "file": ["read", "write", "copy", "list"],
-            "clipboard": ["read", "write"],
-        },
-    })
-
-
-@app.route('/api/automation/history')
-def automation_history():
-    """Get recent automation task history."""
-    limit = _int_in_range(request.args.get("limit", 20), default=20, min_value=1, max_value=100)
-
-    with _AUTOMATION_TASKS_LOCK:
-        recent = list(_automation_recent_tasks)[-limit:]
-
-    return jsonify({
-        "count": len(recent),
-        "tasks": recent,
-    })
-
-
-@app.route('/api/automation/control', methods=['POST'])
-def automation_control():
-    """
-    Universal control endpoint for all automation.
-    Start/stop/restart automation services.
-
-    Request body:
-    {
-        "action": "start|stop|restart|status",
-        "target": "browser|terminal|all"
-    }
-    """
-    data = request.get_json() or {}
-    action = data.get("action", "status")
-    target = data.get("target", "all")
-
-    if action == "status":
-        return jsonify({
-            "success": True,
-            "target": target,
-            "status": {
-                "browser": "running" if _openclaw_browser_available else "stopped",
-                "automation_bus": "running",
-            },
-        })
-
-    elif action == "stop":
-        return jsonify({
-            "success": True,
-            "message": f"Stop {target} - requires persistent process management",
-        })
-
-    elif action == "start":
-        return jsonify({
-            "success": True,
-            "message": f"Start {target} - already running in daemon mode",
-        })
-
-    return jsonify({
-        "success": False,
-        "error": f"Unknown action: {action}",
-    }), 400
-
-
-# ============================================================================
-# SCHEDULED AUTOMATION
-# Schedule tasks to run automatically at intervals
-# ============================================================================
-
+AUTOMATION_ROOT = (Path(__file__).parent.parent).resolve()
+AUTOMATION_STATE_DIR = AUTOMATION_ROOT / "data" / "state"
+AUTOMATION_TASK_HISTORY_PATH = AUTOMATION_STATE_DIR / "automation_tasks.jsonl"
+AUTOMATION_SCHEDULES_PATH = AUTOMATION_STATE_DIR / "automation_schedules.json"
+AUTOMATION_SESSION_QUEUE_MAX = max(2, int(os.getenv("AUTOMATION_SESSION_QUEUE_MAX", "32")))
+AUTOMATION_SESSION_LEASE_TTL_SEC = max(30, int(os.getenv("AUTOMATION_SESSION_LEASE_TTL_SEC", "180")))
+AUTOMATION_SCHEDULER_INTERVAL_SEC = max(2.0, float(os.getenv("AUTOMATION_SCHEDULER_INTERVAL_SEC", "5")))
+AUTOMATION_SAFE_ROOTS = [AUTOMATION_ROOT, Path("/tmp")]
 _AUTOMATION_SCHEDULER_LOCK = threading.Lock()
 _automation_scheduled_tasks: Dict[str, Dict[str, Any]] = {}
 _automation_scheduler_running = False
 _automation_scheduler_thread: Optional[threading.Thread] = None
+_automation_tasks_by_id: Dict[str, Dict[str, Any]] = {}
+_automation_sessions: Dict[str, Dict[str, Any]] = {}
+_AUTOMATION_POLL_LOCK = threading.Lock()
+_automation_poll_last_seen: Dict[str, float] = {}
+
+AUTOMATION_CAPABILITIES: Dict[str, List[str]] = {
+    "browser": ["status", "start", "open", "navigate", "snapshot", "click", "type", "press", "flow"],
+    "terminal": ["execute", "list_sessions"],
+    "app": ["launch", "activate", "list_running"],
+    "mail": ["check_unread", "list_recent", "list_folders"],
+    "messages": ["check_unread", "list_recent", "list_conversations"],
+    "computer": ["approve_prompt", "deny_prompt", "continue_prompt", "type_text", "press", "position", "screenshot"],
+    "file": ["read", "write", "list", "copy"],
+    "clipboard": ["read", "write"],
+}
+AUTOMATION_PASSIVE_POLL_ACTIONS = {
+    ("browser", "status"),
+    ("mail", "check_unread"),
+    ("mail", "list_recent"),
+    ("messages", "check_unread"),
+    ("messages", "list_recent"),
+    ("clipboard", "read"),
+    ("computer", "position"),
+    ("app", "list_running"),
+}
+
+# Task classification for risk management
+# - passive_poll: Read-only, non-destructive, can run frequently
+# - active_control: Modifies state, requires approval or limited frequency
+# - destructive: Potentially harmful, requires explicit approval
+AUTOMATION_TASK_CLASSES = {
+    "passive_poll": {"browser", "terminal", "app", "mail", "messages", "clipboard", "file"},
+    "active_control": {"browser", "terminal", "app", "computer", "file"},
+    "destructive": {"terminal", "computer", "file"},
+}
+
+# Global automation kill-switch (Phase 0)
+_AUTOMATION_ENABLED = True
+_AUTOMATION_KILL_REASON = ""
+
+
+def _automation_set_enabled(enabled: bool, reason: str = ""):
+    """Set automation enabled/disabled state with reason."""
+    global _AUTOMATION_ENABLED, _AUTOMATION_KILL_REASON
+    _AUTOMATION_ENABLED = enabled
+    _AUTOMATION_KILL_REASON = reason
+    logger.info(f"Automation {'enabled' if enabled else 'DISABLED'}: {reason}")
+
+
+def _automation_is_enabled() -> Tuple[bool, str]:
+    """Check if automation is enabled and return reason if disabled."""
+    return _AUTOMATION_ENABLED, _AUTOMATION_KILL_REASON
+
+
+# Rate limiting counters
+_AUTOMATION_RATE_LOCK = threading.Lock()
+_AUTOMATION_RATE_COUNTS: Dict[str, Dict[str, int]] = {}  # {task_type: {owner_id: count}}
+_AUTOMATION_RATE_WINDOW_SEC = 60  # 1 minute window
+_AUTOMATION_RATE_MAX_PER_WINDOW = {
+    "passive_poll": 100,
+    "active_control": 20,
+    "destructive": 5,
+}
+
+
+def _automation_check_rate_limit(task_type: str, owner_id: str) -> Tuple[bool, str]:
+    """Check if task exceeds rate limit. Returns (allowed, reason)."""
+    if not _AUTOMATION_ENABLED:
+        return False, _AUTOMATION_KILL_REASON or "Automation is disabled"
+
+    # Determine task class
+    task_class = "active_control"
+    for cls, types in AUTOMATION_TASK_CLASSES.items():
+        if task_type in types:
+            task_class = cls
+            break
+
+    max_allowed = _AUTOMATION_RATE_MAX_PER_WINDOW.get(task_class, 20)
+
+    with _AUTOMATION_RATE_LOCK:
+        now = time.time()
+        if owner_id not in _AUTOMATION_RATE_COUNTS:
+            _AUTOMATION_RATE_COUNTS[owner_id] = {"count": 0, "window_start": now}
+
+        rate_info = _AUTOMATION_RATE_COUNTS[owner_id]
+        if now - rate_info["window_start"] > _AUTOMATION_RATE_WINDOW_SEC:
+            rate_info["count"] = 0
+            rate_info["window_start"] = now
+
+        current_count = rate_info["count"]
+        if current_count >= max_allowed:
+            return False, f"Rate limit exceeded: {current_count}/{max_allowed} in {_AUTOMATION_RATE_WINDOW_SEC}s"
+
+        rate_info["count"] = current_count + 1
+        return True, ""
+
+
+def _automation_safe_path(path_value: str, create_parent: bool = False) -> Path:
+    candidate = Path(path_value).expanduser()
+    resolved = candidate.resolve() if candidate.is_absolute() else (AUTOMATION_ROOT / candidate).resolve()
+    if not any(root in resolved.parents or resolved == root for root in AUTOMATION_SAFE_ROOTS):
+        raise ValueError("Path is outside automation safe roots")
+    if create_parent:
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+    return resolved
+
+
+def _automation_store_task(task: Dict[str, Any]) -> None:
+    if not isinstance(task, dict):
+        return
+    task_id = str(task.get("task_id", "")).strip()
+    if task_id:
+        _automation_tasks_by_id[task_id] = dict(task)
+    with _AUTOMATION_TASKS_LOCK:
+        _automation_recent_tasks.append(dict(task))
+    _append_jsonl_event(AUTOMATION_TASK_HISTORY_PATH, dict(task))
+
+
+def _automation_update_session(
+    session_id: str,
+    owner_id: str,
+    lease_token: str,
+    lease_expires_at: Optional[datetime],
+    task_id: str = "",
+    error: str = "",
+) -> Dict[str, Any]:
+    now = datetime.now()
+    with _AUTOMATION_TASKS_LOCK:
+        session = _automation_sessions.get(session_id, {})
+        queue_depth = max(0, int(session.get("queue_depth", 0) or 0))
+        session.update(
+            {
+                "session_id": session_id,
+                "owner_id": owner_id,
+                "lease_token": lease_token,
+                "lease_expires_at": lease_expires_at.isoformat() if lease_expires_at else None,
+                "last_heartbeat_at": now.isoformat(),
+                "updated_at": now.isoformat(),
+                "queue_depth": min(AUTOMATION_SESSION_QUEUE_MAX, queue_depth),
+                "last_task_id": task_id or session.get("last_task_id", ""),
+                "last_error": error or "",
+            }
+        )
+        _automation_sessions[session_id] = session
+        return dict(session)
+
+
+def _automation_active_lease(session: Dict[str, Any]) -> bool:
+    expires = _parse_iso_datetime(session.get("lease_expires_at"))
+    return bool(expires and datetime.now() < expires)
+
+
+def _automation_assert_session_lease(session_id: str, owner_id: str, lease_token: str = "") -> Dict[str, Any]:
+    owner = str(owner_id or "api").strip() or "api"
+    with _AUTOMATION_TASKS_LOCK:
+        current = dict(_automation_sessions.get(session_id, {}))
+    if current and _automation_active_lease(current):
+        current_owner = str(current.get("owner_id", "")).strip()
+        current_token = str(current.get("lease_token", "")).strip()
+        if current_owner and current_owner != owner:
+            return {"allowed": False, "error_code": "LEASE_CONFLICT", "error": "Session is leased by another owner"}
+        if current_token and lease_token and lease_token != current_token:
+            return {"allowed": False, "error_code": "LEASE_TOKEN_INVALID", "error": "Invalid lease token"}
+        token = current_token or lease_token or secrets.token_hex(12)
+    else:
+        token = lease_token or secrets.token_hex(12)
+    lease_exp = datetime.now() + timedelta(seconds=AUTOMATION_SESSION_LEASE_TTL_SEC)
+    snapshot = _automation_update_session(session_id, owner, token, lease_exp)
+    return {"allowed": True, "session": snapshot}
+
+
+def _automation_validate_task(task_type: str, action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    ttype = str(task_type or "").strip().lower()
+    act = str(action or "").strip().lower()
+    if ttype not in AUTOMATION_TASK_TYPES:
+        return {"ok": False, "error_code": "INVALID_TASK_TYPE", "error": f"Unsupported task type '{ttype}'"}
+    if act not in AUTOMATION_CAPABILITIES.get(ttype, []):
+        return {"ok": False, "error_code": "INVALID_ACTION", "error": f"Unsupported action '{act}' for {ttype}"}
+    if not isinstance(params, dict):
+        return {"ok": False, "error_code": "INVALID_PARAMS", "error": "params must be a JSON object"}
+    if ttype == "mail" and not AUTOMATION_ENABLE_MAIL_READ:
+        return {"ok": False, "error_code": "MAIL_DISABLED", "error": "Mail automation is disabled"}
+    if ttype == "messages" and not AUTOMATION_ENABLE_MESSAGES_READ:
+        return {"ok": False, "error_code": "MESSAGES_DISABLED", "error": "Messages automation is disabled"}
+    if ttype == "terminal" and not AUTOMATION_ENABLE_TERMINAL_EXEC:
+        return {"ok": False, "error_code": "TERMINAL_DISABLED", "error": "Terminal automation is disabled"}
+    if ttype == "app" and not AUTOMATION_ENABLE_APP_CONTROL:
+        return {"ok": False, "error_code": "APP_CONTROL_DISABLED", "error": "App control is disabled"}
+    if ttype in {"mail", "messages"} and act in {"send"}:
+        return {"ok": False, "error_code": "READ_ONLY", "error": "Send actions are disabled in read-first mode"}
+    return {"ok": True}
+
+
+def _automation_poll_debounced(task_type: str, action: str, session_id: str, owner_id: str) -> Tuple[bool, float]:
+    if (task_type, action) not in AUTOMATION_PASSIVE_POLL_ACTIONS:
+        return False, 0.0
+    cooldown = float(AUTOMATION_PASSIVE_POLL_COOLDOWN_SEC)
+    if cooldown <= 0:
+        return False, 0.0
+    key = f"{owner_id}:{session_id}:{task_type}:{action}"
+    now = time.time()
+    with _AUTOMATION_POLL_LOCK:
+        seen_at = _automation_poll_last_seen.get(key)
+        if seen_at is not None:
+            elapsed = now - seen_at
+            if elapsed < cooldown:
+                return True, round(max(0.0, cooldown - elapsed), 2)
+        _automation_poll_last_seen[key] = now
+    return False, 0.0
+
+
+def _automation_execute_browser(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    if action == "flow":
+        queued = _enqueue_openclaw_command("flow", dict(params))
+    else:
+        payload = dict(params)
+        payload["action"] = action
+        queued = _enqueue_openclaw_command("browser", payload)
+    if not queued.get("success"):
+        return {"success": False, "error": queued.get("error"), "error_code": queued.get("error_code")}
+    return {
+        "success": True,
+        "request_id": queued.get("request_id"),
+        "mode": queued.get("mode"),
+        "session_id": queued.get("session_id"),
+        "result": queued.get("result") if isinstance(queued.get("result"), dict) else {},
+    }
+
+
+def _automation_execute_terminal(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    if action == "list_sessions":
+        with _AUTOMATION_TASKS_LOCK:
+            sessions = sorted(dict(item) for item in _automation_sessions.values())
+        return {"success": True, "sessions": sessions}
+
+    command = str(params.get("command", "")).strip()
+    if not command:
+        return {"success": False, "error": "Missing command", "error_code": "MISSING_COMMAND"}
+    try:
+        argv = shlex.split(command)
+    except Exception as exc:
+        return {"success": False, "error": f"Invalid command: {exc}", "error_code": "INVALID_COMMAND"}
+    if not argv:
+        return {"success": False, "error": "Empty command", "error_code": "INVALID_COMMAND"}
+    binary = str(argv[0]).strip().lower()
+    if binary not in AUTOMATION_TERMINAL_ALLOWED_BINS:
+        return {"success": False, "error": f"Executable '{binary}' is not allowlisted", "error_code": "COMMAND_DENIED"}
+    timeout_sec = max(1, min(AUTOMATION_TERMINAL_TIMEOUT_SEC, int(params.get("timeout_sec", AUTOMATION_TERMINAL_TIMEOUT_SEC))))
+    cwd = str(params.get("cwd", str(AUTOMATION_ROOT))).strip() or str(AUTOMATION_ROOT)
+    try:
+        safe_cwd = _automation_safe_path(cwd)
+    except Exception:
+        return {"success": False, "error": "cwd is outside safe roots", "error_code": "INVALID_CWD"}
+    try:
+        completed = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_sec, cwd=str(safe_cwd), check=False)
+        return {
+            "success": completed.returncode == 0,
+            "returncode": completed.returncode,
+            "stdout": str(completed.stdout or "")[:4000],
+            "stderr": str(completed.stderr or "")[:4000],
+            "argv": argv,
+        }
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "Command timeout", "error_code": "EXEC_TIMEOUT"}
+
+
+def _automation_execute_app(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    if action == "launch":
+        app_name = str(params.get("app_name", "") or params.get("app_path", "")).strip()
+        if not app_name:
+            return {"success": False, "error": "Missing app_name", "error_code": "MISSING_APP"}
+        done = subprocess.run(["open", "-a", app_name], capture_output=True, text=True, check=False)
+        return {"success": done.returncode == 0, "returncode": done.returncode, "app_name": app_name}
+    if action == "activate":
+        app_name = str(params.get("app_name", "")).strip()
+        if not app_name:
+            return {"success": False, "error": "Missing app_name", "error_code": "MISSING_APP"}
+        done = subprocess.run(["osascript", "-e", f'tell application "{app_name}" to activate'], capture_output=True, text=True, check=False)
+        return {"success": done.returncode == 0, "returncode": done.returncode, "app_name": app_name}
+    if action == "list_running":
+        done = subprocess.run(
+            ["osascript", "-e", 'tell application "System Events" to get name of every process whose background only is false'],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        apps = [item.strip() for item in str(done.stdout or "").split(",") if item.strip()]
+        return {"success": done.returncode == 0, "running_apps": apps, "returncode": done.returncode}
+    return {"success": False, "error": "Unsupported app action", "error_code": "INVALID_ACTION"}
+
+
+def _automation_decode_header(value: Any) -> str:
+    out = []
+    for text, enc in decode_header(str(value or "")):
+        if isinstance(text, bytes):
+            out.append(text.decode(enc or "utf-8", errors="replace"))
+        else:
+            out.append(str(text))
+    return "".join(out).strip()
+
+
+def _automation_execute_mail(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    if action == "list_folders":
+        return {"success": True, "folders": [AUTOMATION_EMAIL_IMAP_FOLDER, "Sent", "Drafts", "Archive", "Spam"]}
+    if AUTOMATION_EMAIL_IMAP_HOST and AUTOMATION_EMAIL_IMAP_USERNAME and AUTOMATION_EMAIL_IMAP_PASSWORD:
+        limit = max(1, min(30, int(params.get("limit", 10))))
+        try:
+            mailbox = imaplib.IMAP4_SSL(AUTOMATION_EMAIL_IMAP_HOST, AUTOMATION_EMAIL_IMAP_PORT) if AUTOMATION_EMAIL_IMAP_SSL else imaplib.IMAP4(AUTOMATION_EMAIL_IMAP_HOST, AUTOMATION_EMAIL_IMAP_PORT)
+            mailbox.login(AUTOMATION_EMAIL_IMAP_USERNAME, AUTOMATION_EMAIL_IMAP_PASSWORD)
+            mailbox.select(AUTOMATION_EMAIL_IMAP_FOLDER)
+            if action == "check_unread":
+                status, data = mailbox.search(None, "UNSEEN")
+                mailbox.logout()
+                if status != "OK":
+                    return {"success": False, "error": "Failed to query unread", "error_code": "MAIL_QUERY_FAILED"}
+                ids = data[0].split() if data and data[0] else []
+                return {"success": True, "unread_count": len(ids)}
+            if action == "list_recent":
+                status, data = mailbox.search(None, "ALL")
+                if status != "OK":
+                    mailbox.logout()
+                    return {"success": False, "error": "Failed to list messages", "error_code": "MAIL_QUERY_FAILED"}
+                ids = (data[0].split() if data and data[0] else [])[-limit:]
+                rows: List[Dict[str, Any]] = []
+                for msg_id in reversed(ids):
+                    f_status, parts = mailbox.fetch(msg_id, "(RFC822.HEADER)")
+                    if f_status != "OK" or not parts:
+                        continue
+                    raw = parts[0][1] if isinstance(parts[0], tuple) and len(parts[0]) > 1 else b""
+                    msg = message_from_bytes(raw)
+                    rows.append(
+                        {
+                            "id": msg_id.decode("utf-8", errors="ignore"),
+                            "subject": _automation_decode_header(msg.get("Subject")),
+                            "from": _automation_decode_header(msg.get("From")),
+                            "date": _automation_decode_header(msg.get("Date")),
+                        }
+                    )
+                mailbox.logout()
+                return {"success": True, "messages": rows, "count": len(rows)}
+        except Exception as exc:
+            return {"success": False, "error": str(exc), "error_code": "MAIL_BACKEND_FAILED"}
+
+    # Fallback: local Mail unread probe.
+    if action == "check_unread":
+        done = subprocess.run(
+            ["osascript", "-e", 'tell application "Mail" to get count of (messages of inbox whose read status is false)'],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if done.returncode != 0:
+            return {"success": False, "error": "Mail unread probe failed", "error_code": "MAIL_UNAVAILABLE"}
+        try:
+            unread = int(str(done.stdout or "0").strip() or "0")
+        except Exception:
+            unread = 0
+        return {"success": True, "unread_count": unread}
+    if action == "list_recent":
+        return {"success": False, "error": "IMAP credentials missing for list_recent", "error_code": "MAIL_CREDENTIALS_MISSING"}
+    return {"success": False, "error": "Unsupported mail action", "error_code": "INVALID_ACTION"}
+
+
+def _automation_execute_messages(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    if action == "list_conversations":
+        done = subprocess.run(
+            ["osascript", "-e", 'tell application "Messages" to get name of every chat'],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        rows = [item.strip() for item in str(done.stdout or "").split(",") if item.strip()]
+        return {"success": done.returncode == 0, "conversations": rows[:50]}
+    if action == "check_unread":
+        done = subprocess.run(
+            ["osascript", "-e", 'tell application "Messages" to get count of (chats whose unread count > 0)'],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if done.returncode != 0:
+            return {"success": False, "error": "Messages unread probe failed", "error_code": "MESSAGES_UNAVAILABLE"}
+        try:
+            unread = int(str(done.stdout or "0").strip() or "0")
+        except Exception:
+            unread = 0
+        return {"success": True, "unread_count": unread}
+    if action == "list_recent":
+        limit = max(1, min(20, int(params.get("limit", 10))))
+        done = subprocess.run(
+            [
+                "osascript",
+                "-e",
+                'tell application "Messages" to set _names to name of every chat',
+                "-e",
+                "return _names",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        rows = [item.strip() for item in str(done.stdout or "").split(",") if item.strip()]
+        return {"success": done.returncode == 0, "threads": rows[:limit]}
+    return {"success": False, "error": "Unsupported messages action", "error_code": "INVALID_ACTION"}
+
+
+def _automation_execute_computer(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    if action == "position":
+        if not pyautogui:
+            return {"success": False, "error": "pyautogui not available", "error_code": "DEPENDENCY_UNAVAILABLE"}
+        x, y = pyautogui.position()
+        return {"success": True, "x": int(x), "y": int(y)}
+    if action == "screenshot":
+        if not pyautogui:
+            return {"success": False, "error": "pyautogui not available", "error_code": "DEPENDENCY_UNAVAILABLE"}
+        filepath = str(params.get("filepath", "/tmp/automation_screenshot.png")).strip() or "/tmp/automation_screenshot.png"
+        path = _automation_safe_path(filepath, create_parent=True)
+        pyautogui.screenshot(str(path))
+        return {"success": True, "filepath": str(path)}
+    return _computer_control_action(action, params)
+
+
+def _automation_execute_file(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    if action == "list":
+        target = _automation_safe_path(str(params.get("dirpath", ".") or "."))
+        if not target.exists() or not target.is_dir():
+            return {"success": False, "error": "Directory does not exist", "error_code": "PATH_NOT_FOUND"}
+        files = sorted(item.name for item in target.iterdir())
+        return {"success": True, "dirpath": str(target), "files": files}
+    if action == "read":
+        target = _automation_safe_path(str(params.get("filepath", "") or ""))
+        if not target.exists() or not target.is_file():
+            return {"success": False, "error": "File does not exist", "error_code": "PATH_NOT_FOUND"}
+        content = target.read_text(encoding="utf-8", errors="replace")
+        return {"success": True, "filepath": str(target), "content": content[:200000]}
+    if action == "write":
+        target = _automation_safe_path(str(params.get("filepath", "") or ""), create_parent=True)
+        content = str(params.get("content", ""))
+        target.write_text(content, encoding="utf-8")
+        return {"success": True, "filepath": str(target), "written_chars": len(content)}
+    if action == "copy":
+        src = _automation_safe_path(str(params.get("src", "") or ""))
+        dst = _automation_safe_path(str(params.get("dst", "") or ""), create_parent=True)
+        shutil.copy2(src, dst)
+        return {"success": True, "src": str(src), "dst": str(dst)}
+    return {"success": False, "error": "Unsupported file action", "error_code": "INVALID_ACTION"}
+
+
+def _automation_execute_clipboard(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    if action == "read":
+        done = subprocess.run(["pbpaste"], capture_output=True, text=True, check=False)
+        return {"success": done.returncode == 0, "content": str(done.stdout or "")}
+    if action == "write":
+        content = str(params.get("content", ""))
+        done = subprocess.run(["pbcopy"], input=content, text=True, capture_output=True, check=False)
+        return {"success": done.returncode == 0, "content_length": len(content)}
+    return {"success": False, "error": "Unsupported clipboard action", "error_code": "INVALID_ACTION"}
+
+
+def _create_automation_task(task_type: str, action: str, params: Dict[str, Any], task_id: str = "") -> Dict[str, Any]:
+    now = datetime.now().isoformat()
+    return {
+        "task_id": task_id or f"task_{int(time.time() * 1000)}_{secrets.token_hex(4)}",
+        "task_type": str(task_type).strip().lower(),
+        "action": str(action).strip().lower(),
+        "params": params if isinstance(params, dict) else {},
+        "status": "pending",
+        "created_at": now,
+        "started_at": None,
+        "completed_at": None,
+        "duration_ms": 0,
+        "error": "",
+        "error_code": "",
+        "result": {},
+        "session_id": "",
+        "owner_id": "",
+    }
+
+
+def _execute_automation_task(task: Dict[str, Any]) -> Dict[str, Any]:
+    started = time.time()
+    task["status"] = "running"
+    task["started_at"] = datetime.now().isoformat()
+    task_type = str(task.get("task_type", "")).strip().lower()
+    action = str(task.get("action", "")).strip().lower()
+    params = task.get("params") if isinstance(task.get("params"), dict) else {}
+    try:
+        if task_type == "browser":
+            result = _automation_execute_browser(action, params)
+        elif task_type == "terminal":
+            result = _automation_execute_terminal(action, params)
+        elif task_type == "app":
+            result = _automation_execute_app(action, params)
+        elif task_type == "mail":
+            result = _automation_execute_mail(action, params)
+        elif task_type == "messages":
+            result = _automation_execute_messages(action, params)
+        elif task_type == "computer":
+            result = _automation_execute_computer(action, params)
+        elif task_type == "file":
+            result = _automation_execute_file(action, params)
+        elif task_type == "clipboard":
+            result = _automation_execute_clipboard(action, params)
+        else:
+            result = {"success": False, "error": f"Unsupported task_type '{task_type}'", "error_code": "INVALID_TASK_TYPE"}
+    except Exception as exc:
+        result = {"success": False, "error": str(exc), "error_code": "TASK_EXEC_EXCEPTION"}
+
+    task["result"] = result if isinstance(result, dict) else {}
+    task["status"] = "completed" if bool(task["result"].get("success")) else "failed"
+    task["error"] = str(task["result"].get("error", "")) if task["status"] == "failed" else ""
+    task["error_code"] = str(task["result"].get("error_code", "")) if task["status"] == "failed" else ""
+    task["completed_at"] = datetime.now().isoformat()
+    task["duration_ms"] = int((time.time() - started) * 1000)
+    _automation_store_task(task)
+    return task
+
+
+def _automation_save_schedules() -> None:
+    AUTOMATION_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {"updated_at": datetime.now().isoformat(), "schedules": list(_automation_scheduled_tasks.values())}
+    tmp = AUTOMATION_SCHEDULES_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    tmp.replace(AUTOMATION_SCHEDULES_PATH)
+
+
+def _automation_load_schedules() -> None:
+    if not AUTOMATION_SCHEDULES_PATH.exists():
+        return
+    try:
+        payload = json.loads(AUTOMATION_SCHEDULES_PATH.read_text(encoding="utf-8"))
+        rows = payload.get("schedules") if isinstance(payload.get("schedules"), list) else []
+    except Exception:
+        rows = []
+    with _AUTOMATION_SCHEDULER_LOCK:
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            schedule_id = str(row.get("schedule_id", "")).strip()
+            if not schedule_id:
+                continue
+            _automation_scheduled_tasks[schedule_id] = row
 
 
 def _automation_scheduler_loop():
-    """Background loop to check and execute scheduled tasks."""
     global _automation_scheduler_running
-
     while _automation_scheduler_running:
+        now = time.time()
+        due_rows: List[Dict[str, Any]] = []
         try:
-            now = time.time()
             with _AUTOMATION_SCHEDULER_LOCK:
-                for schedule_id, schedule in list(_automation_scheduled_tasks.items()):
-                    if not schedule.get("enabled", True):
+                for sid, row in list(_automation_scheduled_tasks.items()):
+                    if not bool(row.get("enabled", True)):
                         continue
-
-                    # Check if it's time to run
-                    interval_sec = schedule.get("interval_sec", 60)
-                    last_run = schedule.get("last_run", 0)
-
-                    if now - last_run >= interval_sec:
-                        # Execute the task
-                        schedule["last_run"] = now
-                        schedule["run_count"] = schedule.get("run_count", 0) + 1
-
-                        task_type = schedule.get("task_type")
-                        action = schedule.get("action")
-                        params = schedule.get("params", {})
-
-                        if task_type and action:
-                            task = _create_automation_task(task_type, action, params)
-                            result_task = _execute_automation_task(task)
-                            schedule["last_result"] = {
-                                "status": result_task["status"],
-                                "success": result_task["status"] == "completed",
-                            }
-
-        except Exception as e:
-            logger.error(f"Automation scheduler error: {e}")
-
-        time.sleep(5)  # Check every 5 seconds
+                    next_run_at = float(row.get("next_run_at", 0) or 0)
+                    interval_sec = max(10, int(row.get("interval_sec", 60) or 60))
+                    if next_run_at <= 0:
+                        row["next_run_at"] = now + interval_sec
+                        continue
+                    if now >= next_run_at:
+                        row["last_run"] = now
+                        row["next_run_at"] = now + interval_sec
+                        row["run_count"] = int(row.get("run_count", 0) or 0) + 1
+                        due_rows.append({"schedule_id": sid, **row})
+                if due_rows:
+                    _automation_save_schedules()
+            for row in due_rows:
+                task = _create_automation_task(str(row.get("task_type", "")), str(row.get("action", "")), row.get("params") if isinstance(row.get("params"), dict) else {})
+                session_id = str(row.get("session_id", "scheduler")).strip() or "scheduler"
+                owner_id = str(row.get("owner_id", "scheduler")).strip() or "scheduler"
+                lease = _automation_assert_session_lease(session_id, owner_id, str(row.get("lease_token", "") or ""))
+                if not lease.get("allowed"):
+                    task["status"] = "failed"
+                    task["error"] = str(lease.get("error", "lease denied"))
+                    task["error_code"] = str(lease.get("error_code", "LEASE_CONFLICT"))
+                    task["completed_at"] = datetime.now().isoformat()
+                    _automation_store_task(task)
+                    continue
+                task["session_id"] = session_id
+                task["owner_id"] = owner_id
+                task["lease_token"] = str((lease.get("session") or {}).get("lease_token", ""))
+                done = _execute_automation_task(task)
+                with _AUTOMATION_SCHEDULER_LOCK:
+                    src = _automation_scheduled_tasks.get(str(row.get("schedule_id", "")))
+                    if isinstance(src, dict):
+                        src["last_result"] = {
+                            "success": done.get("status") == "completed",
+                            "status": done.get("status"),
+                            "error_code": done.get("error_code"),
+                            "completed_at": done.get("completed_at"),
+                            "task_id": done.get("task_id"),
+                        }
+                        _automation_save_schedules()
+        except Exception as exc:
+            logger.error(f"Automation scheduler error: {exc}")
+        time.sleep(AUTOMATION_SCHEDULER_INTERVAL_SEC)
 
 
 def _start_automation_scheduler():
-    """Start the automation scheduler background thread."""
     global _automation_scheduler_running, _automation_scheduler_thread
-
     if _automation_scheduler_running:
         return
-
+    _automation_load_schedules()
     _automation_scheduler_running = True
-    _automation_scheduler_thread = threading.Thread(target=_automation_scheduler_loop, daemon=True)
+    _automation_scheduler_thread = threading.Thread(target=_automation_scheduler_loop, daemon=True, name="automation-scheduler")
     _automation_scheduler_thread.start()
     logger.info("Automation scheduler started")
 
 
 def _stop_automation_scheduler():
-    """Stop the automation scheduler."""
     global _automation_scheduler_running
     _automation_scheduler_running = False
 
 
-# Start scheduler on module load
-_start_automation_scheduler()
+def _automation_public_session(session_id: str) -> Dict[str, Any]:
+    with _AUTOMATION_TASKS_LOCK:
+        raw = dict(_automation_sessions.get(session_id, {}))
+    if not raw:
+        return {"session_id": session_id, "owner_id": "", "lease_expires_at": None, "queue_depth": 0}
+    return {
+        "session_id": raw.get("session_id"),
+        "owner_id": raw.get("owner_id"),
+        "lease_expires_at": raw.get("lease_expires_at"),
+        "last_heartbeat_at": raw.get("last_heartbeat_at"),
+        "queue_depth": raw.get("queue_depth", 0),
+        "last_task_id": raw.get("last_task_id", ""),
+        "last_error": raw.get("last_error", ""),
+        "lease_token": raw.get("lease_token", ""),
+    }
+
+
+@app.route('/api/automation/sessions')
+def automation_sessions():
+    with _AUTOMATION_TASKS_LOCK:
+        rows = sorted((_automation_public_session(key) for key in _automation_sessions.keys()), key=lambda item: str(item.get("session_id", "")))
+    return jsonify({"success": True, "count": len(rows), "sessions": rows})
+
+
+@app.route('/api/automation/sessions/lease', methods=['POST'])
+def automation_sessions_lease():
+    data = request.get_json(silent=True) or {}
+    action = str(data.get("action", "acquire")).strip().lower() or "acquire"
+    session_id = str(data.get("session_id", "default")).strip() or "default"
+    owner_id = str(data.get("owner_id", "api")).strip() or "api"
+    lease_token = str(data.get("lease_token", "")).strip()
+    if action in {"acquire", "heartbeat"}:
+        check = _automation_assert_session_lease(session_id, owner_id, lease_token)
+        if not check.get("allowed"):
+            return jsonify({"success": False, "error": check.get("error"), "error_code": check.get("error_code")}), 409
+        return jsonify({"success": True, "session": check.get("session")})
+    if action == "release":
+        with _AUTOMATION_TASKS_LOCK:
+            current = dict(_automation_sessions.get(session_id, {}))
+        if current and str(current.get("owner_id", "")).strip() not in {"", owner_id}:
+            return jsonify({"success": False, "error": "Session owned by another actor", "error_code": "LEASE_CONFLICT"}), 409
+        snapshot = _automation_update_session(session_id, owner_id, "", None)
+        return jsonify({"success": True, "session": snapshot})
+    return jsonify({"success": False, "error": "Unsupported lease action", "error_code": "INVALID_ACTION"}), 400
+
+
+@app.route('/api/automation/execute', methods=['POST'])
+def automation_execute():
+    data = request.get_json(silent=True) or {}
+    task_type = str(data.get("task_type", "")).strip().lower()
+    action = str(data.get("action", "")).strip().lower()
+    params = data.get("params") if isinstance(data.get("params"), dict) else {}
+    task_id = str(data.get("task_id", "")).strip()
+    session_id = str(data.get("session_id", "default")).strip() or "default"
+    owner_id = str(data.get("owner_id", "api")).strip() or "api"
+    lease_token = str(data.get("lease_token", "")).strip()
+
+    gate = _automation_validate_task(task_type, action, params)
+    if not gate.get("ok"):
+        return jsonify({"success": False, "error": gate.get("error"), "error_code": gate.get("error_code")}), 400
+
+    # Phase 0: Rate limiting check
+    rate_allowed, rate_reason = _automation_check_rate_limit(task_type, owner_id)
+    if not rate_allowed:
+        return jsonify({
+            "success": False,
+            "error": rate_reason,
+            "error_code": "RATE_LIMIT_EXCEEDED",
+            "automation_enabled": _AUTOMATION_ENABLED,
+        }), 429
+
+    lease = _automation_assert_session_lease(session_id, owner_id, lease_token)
+    if not lease.get("allowed"):
+        return jsonify({"success": False, "error": lease.get("error"), "error_code": lease.get("error_code")}), 409
+    session = lease.get("session") if isinstance(lease.get("session"), dict) else {}
+    debounced, retry_after = _automation_poll_debounced(task_type, action, session_id, owner_id)
+    if debounced:
+        return jsonify(
+            {
+                "success": True,
+                "status": "skipped",
+                "skipped": True,
+                "reason": "debounced",
+                "retry_after_sec": retry_after,
+                "task_type": task_type,
+                "action": action,
+                "session": _automation_public_session(session_id),
+            }
+        )
+
+    task = _create_automation_task(task_type, action, params, task_id)
+    task["session_id"] = session_id
+    task["owner_id"] = owner_id
+    task["lease_token"] = str(session.get("lease_token", ""))
+    with _AUTOMATION_TASKS_LOCK:
+        current = dict(_automation_sessions.get(session_id, {}))
+        current["queue_depth"] = min(AUTOMATION_SESSION_QUEUE_MAX, int(current.get("queue_depth", 0) or 0) + 1)
+        _automation_sessions[session_id] = current
+    result_task = _execute_automation_task(task)
+    with _AUTOMATION_TASKS_LOCK:
+        current = dict(_automation_sessions.get(session_id, {}))
+        current["queue_depth"] = max(0, int(current.get("queue_depth", 0) or 0) - 1)
+        current["last_task_id"] = result_task.get("task_id")
+        current["last_error"] = result_task.get("error") if result_task.get("status") == "failed" else ""
+        _automation_sessions[session_id] = current
+
+    if result_task.get("status") == "failed":
+        _add_notification(
+            level=NOTIFY_WARNING,
+            category="automation",
+            title=f"Automation task failed: {task_type}/{action}",
+            message=str(result_task.get("error", "unknown error"))[:300],
+            data={"task_id": result_task.get("task_id"), "error_code": result_task.get("error_code")},
+            source="automation_bus",
+        )
+    return jsonify(
+        {
+            "success": result_task.get("status") == "completed",
+            "task_id": result_task.get("task_id"),
+            "status": result_task.get("status"),
+            "result": result_task.get("result"),
+            "error": result_task.get("error"),
+            "error_code": result_task.get("error_code"),
+            "duration_ms": result_task.get("duration_ms"),
+            "session": _automation_public_session(session_id),
+            "created_at": result_task.get("created_at"),
+            "completed_at": result_task.get("completed_at"),
+        }
+    )
+
+
+@app.route('/api/automation/batch', methods=['POST'])
+def automation_batch():
+    data = request.get_json(silent=True) or {}
+    tasks_data = data.get("tasks") if isinstance(data.get("tasks"), list) else []
+    if not tasks_data:
+        return jsonify({"success": False, "error": "No tasks provided", "error_code": "NO_TASKS"}), 400
+    session_id = str(data.get("session_id", "default")).strip() or "default"
+    owner_id = str(data.get("owner_id", "api")).strip() or "api"
+    lease_token = str(data.get("lease_token", "")).strip()
+    lease = _automation_assert_session_lease(session_id, owner_id, lease_token)
+    if not lease.get("allowed"):
+        return jsonify({"success": False, "error": lease.get("error"), "error_code": lease.get("error_code")}), 409
+
+    results: List[Dict[str, Any]] = []
+    success_count = 0
+    for row in tasks_data:
+        if not isinstance(row, dict):
+            results.append({"success": False, "error": "Each task must be object", "error_code": "INVALID_TASK"})
+            continue
+        body = {
+            "task_type": str(row.get("task_type", "")).strip().lower(),
+            "action": str(row.get("action", "")).strip().lower(),
+            "params": row.get("params") if isinstance(row.get("params"), dict) else {},
+            "task_id": str(row.get("task_id", "")).strip(),
+            "session_id": session_id,
+            "owner_id": owner_id,
+            "lease_token": str((lease.get("session") or {}).get("lease_token", "")),
+        }
+        gate = _automation_validate_task(body["task_type"], body["action"], body["params"])
+        if not gate.get("ok"):
+            results.append({"success": False, "task_id": body["task_id"] or "", "error": gate.get("error"), "error_code": gate.get("error_code")})
+            continue
+        task = _create_automation_task(body["task_type"], body["action"], body["params"], body["task_id"])
+        task["session_id"] = session_id
+        task["owner_id"] = owner_id
+        task["lease_token"] = body["lease_token"]
+        done = _execute_automation_task(task)
+        ok = done.get("status") == "completed"
+        if ok:
+            success_count += 1
+        results.append(
+            {
+                "success": ok,
+                "task_id": done.get("task_id"),
+                "status": done.get("status"),
+                "error": done.get("error"),
+                "error_code": done.get("error_code"),
+                "result": done.get("result"),
+                "duration_ms": done.get("duration_ms"),
+            }
+        )
+    return jsonify(
+        {
+            "success": success_count == len(results),
+            "partial_success": 0 < success_count < len(results),
+            "summary": {"total": len(results), "success": success_count, "failed": max(0, len(results) - success_count)},
+            "results": results,
+            "session": _automation_public_session(session_id),
+        }
+    )
+
+
+@app.route('/api/automation/status/<task_id>')
+def automation_status(task_id: str):
+    task = _automation_tasks_by_id.get(task_id)
+    if isinstance(task, dict):
+        return jsonify({"success": True, "task": task})
+    return jsonify({"success": False, "error": "Task not found", "error_code": "TASK_NOT_FOUND"}), 404
+
+
+@app.route('/api/automation/types')
+def automation_types():
+    return jsonify({"success": True, "task_types": AUTOMATION_TASK_TYPES, "capabilities": AUTOMATION_CAPABILITIES})
+
+
+@app.route('/api/automation/capabilities')
+def automation_capabilities():
+    return jsonify(
+        {
+            "success": True,
+            "capabilities": AUTOMATION_CAPABILITIES,
+            "runtime": {
+                "mail_read_enabled": bool(AUTOMATION_ENABLE_MAIL_READ),
+                "messages_read_enabled": bool(AUTOMATION_ENABLE_MESSAGES_READ),
+                "app_control_enabled": bool(AUTOMATION_ENABLE_APP_CONTROL),
+                "terminal_exec_enabled": bool(AUTOMATION_ENABLE_TERMINAL_EXEC),
+                "terminal_allowlist": sorted(AUTOMATION_TERMINAL_ALLOWED_BINS),
+                "safe_roots": [str(root) for root in AUTOMATION_SAFE_ROOTS],
+            },
+        }
+    )
+
+
+@app.route('/api/automation/history')
+def automation_history():
+    limit = _int_in_range(request.args.get("limit", 20), default=20, min_value=1, max_value=300)
+    task_type = str(request.args.get("task_type", "")).strip().lower()
+    status = str(request.args.get("status", "")).strip().lower()
+    session_id = str(request.args.get("session_id", "")).strip()
+    with _AUTOMATION_TASKS_LOCK:
+        rows = [dict(item) for item in _automation_recent_tasks if isinstance(item, dict)]
+    if task_type:
+        rows = [row for row in rows if str(row.get("task_type", "")).strip().lower() == task_type]
+    if status:
+        rows = [row for row in rows if str(row.get("status", "")).strip().lower() == status]
+    if session_id:
+        rows = [row for row in rows if str(row.get("session_id", "")).strip() == session_id]
+    rows = list(reversed(rows[-limit:]))
+    return jsonify({"success": True, "count": len(rows), "tasks": rows})
+
+
+@app.route('/api/automation/control', methods=['POST'])
+def automation_control():
+    """
+    Control automation system - includes kill-switch (Phase 0).
+
+    Actions:
+    - status: Get automation status
+    - enable: Enable automation
+    - disable: Kill-switch - disable all automation
+    - stop_scheduler: Stop scheduled tasks
+    - start_scheduler: Start scheduled tasks
+    """
+    data = request.get_json(silent=True) or {}
+    action = str(data.get("action", "status")).strip().lower() or "status"
+
+    # Get current enabled state
+    enabled, reason = _automation_is_enabled()
+
+    if action == "status":
+        # Get rate limit info
+        with _AUTOMATION_RATE_LOCK:
+            rate_summary = {}
+            for owner_id, info in _AUTOMATION_RATE_COUNTS.items():
+                rate_summary[owner_id] = {"count": info["count"], "window_start": info["window_start"]}
+
+        return jsonify(
+            {
+                "success": True,
+                "status": {
+                    "automation_enabled": enabled,
+                    "kill_reason": reason,
+                    "scheduler_running": bool(_automation_scheduler_running),
+                    "schedules_count": len(_automation_scheduled_tasks),
+                    "tasks_cached": len(_automation_tasks_by_id),
+                    "sessions_count": len(_automation_sessions),
+                    "rate_limits": _AUTOMATION_RATE_MAX_PER_WINDOW,
+                    "rate_usage": rate_summary,
+                    "task_classes": {
+                        "passive_poll": "unlimited read-only",
+                        "active_control": "20/min",
+                        "destructive": "5/min",
+                    },
+                },
+            }
+        )
+
+    if action == "enable":
+        reason = str(data.get("reason", "")).strip() or "User enabled"
+        _automation_set_enabled(True, reason)
+        return jsonify({"success": True, "message": "Automation enabled", "reason": reason})
+
+    if action == "disable":
+        reason = str(data.get("reason", "")).strip() or "User disabled"
+        _automation_set_enabled(False, reason)
+        # Stop scheduler too
+        _stop_automation_scheduler()
+        return jsonify({"success": True, "message": "Automation DISABLED (kill-switch)", "reason": reason})
+
+    if action == "stop_scheduler":
+        _stop_automation_scheduler()
+        return jsonify({"success": True, "message": "Scheduler stopped"})
+
+    if action == "start_scheduler":
+        if not _AUTOMATION_ENABLED:
+            return jsonify({"success": False, "error": "Cannot start scheduler: automation is disabled", "error_code": "AUTOMATION_DISABLED"}), 409
+        _start_automation_scheduler()
+        return jsonify({"success": True, "message": "Scheduler started"})
+
+    return jsonify({"success": False, "error": f"Unknown action: {action}", "error_code": "INVALID_ACTION"}), 400
 
 
 @app.route('/api/automation/schedule', methods=['POST'])
 def automation_schedule_create():
-    """
-    Create a scheduled automation task.
-
-    Request body:
-    {
-        "schedule_id": "optional_custom_id",
-        "task_type": "terminal|app|...",
-        "action": "execute|list_running|...",
-        "params": {...},
-        "interval_sec": 60,  // seconds between runs
-        "enabled": true
-    }
-    """
-    data = request.get_json() or {}
-
-    schedule_id = data.get("schedule_id") or f"schedule_{int(time.time() * 1000)}"
-    task_type = data.get("task_type", "")
-    action = data.get("action", "")
-    params = data.get("params", {})
-    interval_sec = max(10, int(data.get("interval_sec", 60)))
-    enabled = data.get("enabled", True)
-
-    # Validate task type
-    if task_type not in AUTOMATION_TASK_TYPES:
-        return jsonify({
-            "success": False,
-            "error": f"Invalid task_type. Must be one of: {AUTOMATION_TASK_TYPES}",
-        }), 400
-
+    data = request.get_json(silent=True) or {}
+    schedule_id = str(data.get("schedule_id", "")).strip() or f"schedule_{int(time.time() * 1000)}"
+    task_type = str(data.get("task_type", "")).strip().lower()
+    action = str(data.get("action", "")).strip().lower()
+    params = data.get("params") if isinstance(data.get("params"), dict) else {}
+    interval_sec = max(10, int(data.get("interval_sec", 60) or 60))
+    enabled = _to_bool(data.get("enabled", True))
+    session_id = str(data.get("session_id", "scheduler")).strip() or "scheduler"
+    owner_id = str(data.get("owner_id", "scheduler")).strip() or "scheduler"
+    gate = _automation_validate_task(task_type, action, params)
+    if not gate.get("ok"):
+        return jsonify({"success": False, "error": gate.get("error"), "error_code": gate.get("error_code")}), 400
     schedule = {
         "schedule_id": schedule_id,
         "task_type": task_type,
@@ -8238,121 +8739,94 @@ def automation_schedule_create():
         "params": params,
         "interval_sec": interval_sec,
         "enabled": enabled,
+        "session_id": session_id,
+        "owner_id": owner_id,
         "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat(),
         "last_run": 0,
+        "next_run_at": (time.time() + interval_sec) if enabled else 0,
         "run_count": 0,
         "last_result": None,
     }
-
     with _AUTOMATION_SCHEDULER_LOCK:
         _automation_scheduled_tasks[schedule_id] = schedule
-
-    return jsonify({
-        "success": True,
-        "schedule": schedule,
-    })
+        _automation_save_schedules()
+    return jsonify({"success": True, "schedule": schedule})
 
 
 @app.route('/api/automation/schedule/<schedule_id>', methods=['DELETE'])
 def automation_schedule_delete(schedule_id: str):
-    """Delete a scheduled automation task."""
     with _AUTOMATION_SCHEDULER_LOCK:
-        if schedule_id in _automation_scheduled_tasks:
-            del _automation_scheduled_tasks[schedule_id]
-            return jsonify({"success": True, "schedule_id": schedule_id})
-
-    return jsonify({
-        "success": False,
-        "error": f"Schedule not found: {schedule_id}",
-    }), 404
+        if schedule_id not in _automation_scheduled_tasks:
+            return jsonify({"success": False, "error": f"Schedule not found: {schedule_id}", "error_code": "SCHEDULE_NOT_FOUND"}), 404
+        _automation_scheduled_tasks.pop(schedule_id, None)
+        _automation_save_schedules()
+    return jsonify({"success": True, "schedule_id": schedule_id})
 
 
 @app.route('/api/automation/schedule/<schedule_id>', methods=['POST'])
 def automation_schedule_update(schedule_id: str):
-    """
-    Update a scheduled automation task.
-
-    Request body:
-    {
-        "enabled": true/false,
-        "interval_sec": 60,
-        "params": {...}
-    }
-    """
-    data = request.get_json() or {}
-
+    data = request.get_json(silent=True) or {}
     with _AUTOMATION_SCHEDULER_LOCK:
-        if schedule_id not in _automation_scheduled_tasks:
-            return jsonify({
-                "success": False,
-                "error": f"Schedule not found: {schedule_id}",
-            }), 404
-
-        schedule = _automation_scheduled_tasks[schedule_id]
-
+        schedule = _automation_scheduled_tasks.get(schedule_id)
+        if not isinstance(schedule, dict):
+            return jsonify({"success": False, "error": f"Schedule not found: {schedule_id}", "error_code": "SCHEDULE_NOT_FOUND"}), 404
         if "enabled" in data:
-            schedule["enabled"] = data["enabled"]
+            schedule["enabled"] = _to_bool(data.get("enabled"))
         if "interval_sec" in data:
-            schedule["interval_sec"] = max(10, int(data["interval_sec"]))
-        if "params" in data:
-            schedule["params"] = data["params"]
-
+            schedule["interval_sec"] = max(10, int(data.get("interval_sec") or schedule.get("interval_sec", 60)))
+        if "params" in data and isinstance(data.get("params"), dict):
+            schedule["params"] = data.get("params")
+        if "session_id" in data:
+            schedule["session_id"] = str(data.get("session_id", "scheduler")).strip() or "scheduler"
+        if "owner_id" in data:
+            schedule["owner_id"] = str(data.get("owner_id", "scheduler")).strip() or "scheduler"
+        interval = max(10, int(schedule.get("interval_sec", 60) or 60))
+        schedule["next_run_at"] = (time.time() + interval) if bool(schedule.get("enabled", True)) else 0
         schedule["updated_at"] = datetime.now().isoformat()
-
-    return jsonify({
-        "success": True,
-        "schedule": schedule,
-    })
+        _automation_save_schedules()
+        updated = dict(schedule)
+    return jsonify({"success": True, "schedule": updated})
 
 
 @app.route('/api/automation/schedules')
 def automation_schedules_list():
-    """List all scheduled automation tasks."""
     with _AUTOMATION_SCHEDULER_LOCK:
-        schedules = list(_automation_scheduled_tasks.values())
-
-    return jsonify({
-        "success": True,
-        "count": len(schedules),
-        "schedules": schedules,
-    })
+        rows = sorted((dict(item) for item in _automation_scheduled_tasks.values()), key=lambda item: str(item.get("schedule_id", "")))
+    return jsonify({"success": True, "count": len(rows), "schedules": rows, "scheduler_running": bool(_automation_scheduler_running)})
 
 
 @app.route('/api/automation/schedule/<schedule_id>/run', methods=['POST'])
 def automation_schedule_run_now(schedule_id: str):
-    """Manually trigger a scheduled task to run now."""
     with _AUTOMATION_SCHEDULER_LOCK:
-        if schedule_id not in _automation_scheduled_tasks:
-            return jsonify({
-                "success": False,
-                "error": f"Schedule not found: {schedule_id}",
-            }), 404
-
-        schedule = _automation_scheduled_tasks[schedule_id]
-
-    # Execute immediately
-    task = _create_automation_task(
-        schedule["task_type"],
-        schedule["action"],
-        schedule["params"]
-    )
-    result_task = _execute_automation_task(task)
-
-    # Update schedule
+        row = _automation_scheduled_tasks.get(schedule_id)
+        if not isinstance(row, dict):
+            return jsonify({"success": False, "error": f"Schedule not found: {schedule_id}", "error_code": "SCHEDULE_NOT_FOUND"}), 404
+        payload = dict(row)
+    task = _create_automation_task(str(payload.get("task_type", "")), str(payload.get("action", "")), payload.get("params") if isinstance(payload.get("params"), dict) else {})
+    task["session_id"] = str(payload.get("session_id", "scheduler")).strip() or "scheduler"
+    task["owner_id"] = str(payload.get("owner_id", "scheduler")).strip() or "scheduler"
+    lease = _automation_assert_session_lease(task["session_id"], task["owner_id"], "")
+    if not lease.get("allowed"):
+        return jsonify({"success": False, "error": lease.get("error"), "error_code": lease.get("error_code")}), 409
+    task["lease_token"] = str((lease.get("session") or {}).get("lease_token", ""))
+    done = _execute_automation_task(task)
     with _AUTOMATION_SCHEDULER_LOCK:
-        _automation_scheduled_tasks[schedule_id]["last_run"] = time.time()
-        _automation_scheduled_tasks[schedule_id]["run_count"] = _automation_scheduled_tasks[schedule_id].get("run_count", 0) + 1
-        _automation_scheduled_tasks[schedule_id]["last_result"] = {
-            "status": result_task["status"],
-            "success": result_task["status"] == "completed",
-        }
+        src = _automation_scheduled_tasks.get(schedule_id)
+        if isinstance(src, dict):
+            src["last_run"] = time.time()
+            src["run_count"] = int(src.get("run_count", 0) or 0) + 1
+            src["last_result"] = {
+                "success": done.get("status") == "completed",
+                "status": done.get("status"),
+                "error_code": done.get("error_code"),
+                "task_id": done.get("task_id"),
+            }
+            _automation_save_schedules()
+    return jsonify({"success": done.get("status") == "completed", "task_id": done.get("task_id"), "status": done.get("status"), "result": done.get("result"), "error": done.get("error"), "error_code": done.get("error_code")})
 
-    return jsonify({
-        "success": result_task["status"] == "completed",
-        "task_id": result_task["task_id"],
-        "status": result_task["status"],
-        "result": result_task.get("result"),
-    })
+
+_start_automation_scheduler()
 
 
 # ============================================================================
@@ -8936,8 +9410,29 @@ def get_model_routing_events():
 @app.route('/api/providers/catalog')
 def providers_catalog():
     """List supported provider types and managed agents for BYOK."""
+    registry = load_model_registry_snapshot()
     return jsonify({
         "success": True,
+        "catalog": _provider_store.get_catalog(),
+        "official_registry": registry,
+        "timestamp": datetime.now().isoformat(),
+    })
+
+
+@app.route('/api/providers/catalog/refresh', methods=['POST'])
+def providers_catalog_refresh():
+    """Refresh model catalog from official provider APIs using configured BYOK profile."""
+    rate_limited = _rate_limited("providers_catalog_refresh", API_RATE_LIMIT_PROVIDER_PER_MIN, 60)
+    if rate_limited:
+        return rate_limited
+
+    payload = request.get_json(silent=True) or {}
+    timeout_sec = _int_in_range(payload.get("timeout_sec", 8), default=8, min_value=2, max_value=30)
+    profile = _provider_store.get(masked=False)
+    snapshot = refresh_model_registry_from_profile(profile=profile, timeout_sec=timeout_sec)
+    return jsonify({
+        "success": True,
+        "official_registry": snapshot,
         "catalog": _provider_store.get_catalog(),
         "timestamp": datetime.now().isoformat(),
     })
@@ -10717,11 +11212,558 @@ try:
             "audit": _hub.audit_log[-limit:]
         })
 
+    def _hub_normalize_assignee(value: Any) -> str:
+        return str(value or "").strip().lower().replace("_", "-")
+
+    def _hub_normalize_priority(value: Any) -> str:
+        raw = str(value or "normal").strip().lower()
+        if raw in {"p0", "critical", "urgent", "highest"}:
+            return "p0"
+        if raw in {"p1", "high", "important"}:
+            return "p1"
+        if raw in {"p2", "medium", "normal"}:
+            return "p2"
+        return "p3"
+
+    def _hub_normalize_status(value: Any) -> str:
+        raw = str(value or "todo").strip().lower()
+        if raw in {"in_progress", "running", "active", "claimed", "doing"}:
+            return "in_progress"
+        if raw in {"done", "completed", "resolved", "closed"}:
+            return "done"
+        if raw in {"blocked", "stuck", "waiting", "hold"}:
+            return "blocked"
+        if raw in {"review", "reviewing"}:
+            return "review"
+        if raw in {"backlog"}:
+            return "todo"
+        return "todo"
+
+    def _hub_task_lease_info(task: Dict[str, Any], now_dt: Optional[datetime] = None) -> Dict[str, Any]:
+        now = now_dt or datetime.now()
+        owner = str(task.get("lease_owner") or "").strip()
+        token = str(task.get("lease_token") or "").strip()
+        expires_at = str(task.get("lease_expires_at") or "").strip()
+        expires = _parse_iso_datetime(expires_at)
+        active = bool(owner and token and expires and expires > now)
+        stale = bool(owner and token and (not expires or expires <= now))
+        return {
+            "owner": owner,
+            "token_present": bool(token),
+            "expires_at": expires_at or None,
+            "active": active,
+            "stale": stale,
+        }
+
+    def _hub_orion_rows_by_assignee(orions_snapshot: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        index: Dict[str, Dict[str, Any]] = {}
+        if not isinstance(orions_snapshot, dict):
+            return index
+        for key, row in orions_snapshot.items():
+            if not isinstance(row, dict):
+                continue
+            candidates = {
+                _hub_normalize_assignee(key),
+                _hub_normalize_assignee(row.get("id")),
+            }
+            for item in candidates:
+                if item:
+                    index[item] = row
+        return index
+
+    def _hub_runtime_rows_by_assignee(instances: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        index: Dict[str, Dict[str, Any]] = {}
+        for item in instances:
+            if not isinstance(item, dict):
+                continue
+            candidates = {
+                _hub_normalize_assignee(item.get("id")),
+                _hub_normalize_assignee(item.get("name")),
+            }
+            for key in candidates:
+                if key:
+                    index[key] = item
+        return index
+
+    def _hub_bridge_terminals_by_owner() -> Dict[str, List[Dict[str, Any]]]:
+        lock = globals().get("_BRIDGE_TERMINALS_LOCK")
+        sessions_store = globals().get("_bridge_terminal_sessions")
+        if not isinstance(sessions_store, dict) or lock is None:
+            return {}
+        with lock:
+            rows = [dict(item) for item in sessions_store.values() if isinstance(item, dict)]
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for row in rows:
+            owner_raw = str(
+                row.get("owner_id")
+                or row.get("assignee")
+                or row.get("orion_id")
+                or row.get("instance_id")
+                or ""
+            ).strip()
+            owner = owner_raw
+            if owner.lower().startswith("orion:"):
+                owner = owner.split(":", 1)[1]
+            owner_norm = _hub_normalize_assignee(owner)
+            if not owner_norm:
+                continue
+            grouped.setdefault(owner_norm, []).append(row)
+        return grouped
+
+    def _hub_next_actions(limit: int = 8) -> List[Dict[str, Any]]:
+        max_items = max(1, int(limit))
+        now = datetime.now()
+        tasks = _hub.list_tasks()
+        runtime_rows = _hub_runtime_rows_by_assignee(get_orion_instances_snapshot())
+        bridge_terminals = _hub_bridge_terminals_by_owner()
+        priority_rank = {"p0": 0, "p1": 1, "p2": 2, "p3": 3}
+        actions: List[Dict[str, Any]] = []
+
+        def rank(task: Dict[str, Any]) -> Tuple[int, str]:
+            priority = _hub_normalize_priority(task.get("priority"))
+            created = str(task.get("created_at") or "")
+            return (priority_rank.get(priority, 3), created)
+
+        actionable = [task for task in tasks if _hub_normalize_status(task.get("status")) in {"todo", "in_progress", "blocked"}]
+        actionable_sorted = sorted(actionable, key=rank)
+
+        for task in actionable_sorted:
+            assignee = _hub_normalize_assignee(task.get("assigned_to"))
+            priority = _hub_normalize_priority(task.get("priority"))
+            status = _hub_normalize_status(task.get("status"))
+            task_id = str(task.get("id") or "").strip()
+            if not task_id:
+                continue
+            if not assignee and status == "todo":
+                actions.append(
+                    {
+                        "action_type": "assign_then_dispatch",
+                        "title": f"Assign and dispatch {task.get('title') or task_id}",
+                        "task_id": task_id,
+                        "priority": priority,
+                        "reason": "Unassigned task is waiting in todo/backlog.",
+                        "recommended_api": "/api/hub/tasks/<task_id>/dispatch",
+                        "suggested_payload": {"ensure_assigned": True, "priority": "high"},
+                    }
+                )
+                continue
+
+            if assignee:
+                runtime = runtime_rows.get(assignee, {})
+                online = bool(runtime.get("online", False))
+                running = bool(runtime.get("running", False))
+                paused = bool(runtime.get("paused", False))
+                if not online and status in {"todo", "in_progress"}:
+                    actions.append(
+                        {
+                            "action_type": "reassign_or_bring_online",
+                            "title": f"Assignee offline for {task.get('title') or task_id}",
+                            "task_id": task_id,
+                            "assignee": assignee,
+                            "priority": priority,
+                            "reason": "Task owner is offline; reassign or recover runtime.",
+                            "recommended_api": "/api/hub/tasks/batch-update",
+                            "suggested_payload": {"updates": [{"task_id": task_id, "assigned_to": LOCAL_INSTANCE_ID}]},
+                        }
+                    )
+                    continue
+                if status == "todo" and online and (not running or paused):
+                    actions.append(
+                        {
+                            "action_type": "dispatch_task",
+                            "title": f"Dispatch {task.get('title') or task_id}",
+                            "task_id": task_id,
+                            "assignee": assignee,
+                            "priority": priority,
+                            "reason": "Assignee online but task not started yet.",
+                            "recommended_api": "/api/hub/tasks/<task_id>/dispatch",
+                            "suggested_payload": {"instance_id": assignee, "priority": "high"},
+                        }
+                    )
+
+            lease = _hub_task_lease_info(task, now_dt=now)
+            if status == "in_progress" and lease.get("stale"):
+                actions.append(
+                    {
+                        "action_type": "reclaim_stale_lease",
+                        "title": f"Reclaim stale lease for {task.get('title') or task_id}",
+                        "task_id": task_id,
+                        "priority": priority,
+                        "reason": "In-progress task has stale/expired lease.",
+                        "recommended_api": "/api/hub/tasks/<task_id>/release",
+                        "suggested_payload": {"owner_id": lease.get("owner"), "lease_token": "", "next_status": "todo"},
+                    }
+                )
+
+            if len(actions) >= max_items:
+                break
+
+        if len(actions) < max_items:
+            terminal_candidates: List[Dict[str, Any]] = []
+            for owner, rows in bridge_terminals.items():
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    status = str(row.get("status") or "").strip().lower()
+                    busy = bool(row.get("busy")) or status in {"running", "busy"}
+                    if status in {"error", "failed", "blocked"}:
+                        terminal_candidates.append(
+                            {
+                                "action_type": "inspect_terminal_error",
+                                "title": f"Inspect terminal error ({owner})",
+                                "priority": "p1",
+                                "reason": str(row.get("last_error") or row.get("last_output") or "Terminal reported an error."),
+                                "owner_id": owner,
+                                "session_id": str(row.get("session_id") or ""),
+                                "recommended_api": "/api/bridge/terminals",
+                                "suggested_payload": {"owner_id": owner},
+                            }
+                        )
+                    elif busy:
+                        updated = _parse_iso_datetime(row.get("updated_at"))
+                        if updated and (now - updated).total_seconds() >= 900:
+                            terminal_candidates.append(
+                                {
+                                    "action_type": "check_stale_terminal",
+                                    "title": f"Check stale running terminal ({owner})",
+                                    "priority": "p2",
+                                    "reason": "Terminal has been running without recent update.",
+                                    "owner_id": owner,
+                                    "session_id": str(row.get("session_id") or ""),
+                                    "recommended_api": "/api/bridge/terminals",
+                                    "suggested_payload": {"owner_id": owner},
+                                }
+                            )
+            actions.extend(terminal_candidates[: max(0, max_items - len(actions))])
+
+        return actions[:max_items]
+
+    @app.route('/api/hub/tasks/<task_id>/dispatch', methods=['POST'])
+    def dispatch_hub_task(task_id):
+        data = request.get_json(silent=True) or {}
+        task_key = str(task_id or "").strip()
+        tasks = _hub.list_tasks()
+        task = next((item for item in tasks if str(item.get("id") or "").strip() == task_key), None)
+        if not isinstance(task, dict):
+            return jsonify({"success": False, "error": "Task not found", "error_code": "TASK_NOT_FOUND"}), 404
+
+        ensure_assigned = _to_bool(data.get("ensure_assigned", True))
+        force_reopen = _to_bool(data.get("force_reopen", False))
+        fallback_guardian = _to_bool(data.get("guardian_fallback", True))
+        initial_status = _hub_normalize_status(task.get("status"))
+        if initial_status in {"done", "review"} and not force_reopen:
+            return jsonify({"success": False, "error": "Task is already finalized", "error_code": "TASK_FINALIZED", "task": task}), 409
+        selected_instance = _hub_normalize_assignee(data.get("instance_id")) or _hub_normalize_assignee(task.get("assigned_to")) or _hub_normalize_assignee(LOCAL_INSTANCE_ID)
+
+        assignment_result = None
+        if ensure_assigned:
+            current_assignee = _hub_normalize_assignee(task.get("assigned_to"))
+            if current_assignee != selected_instance:
+                assignment_result = _hub.assign_task_safe(task_id=task_key, orion_id=selected_instance)
+                if not assignment_result.get("success"):
+                    return jsonify(assignment_result), (409 if assignment_result.get("error_code") == "VERSION_CONFLICT" else 400)
+
+        latest_tasks = _hub.list_tasks()
+        current_task = next((item for item in latest_tasks if str(item.get("id") or "").strip() == task_key), task)
+        current_status = _hub_normalize_status(current_task.get("status"))
+        reopen_result = None
+        if force_reopen and current_status in {"done", "review"}:
+            reopen_result = _hub.update_task_status_safe(task_id=task_key, new_status="todo", force=True)
+            if not reopen_result.get("success"):
+                return jsonify(reopen_result), (409 if reopen_result.get("error_code") == "VERSION_CONFLICT" else 400)
+            latest_tasks = _hub.list_tasks()
+            current_task = next((item for item in latest_tasks if str(item.get("id") or "").strip() == task_key), current_task)
+
+        command = str(data.get("command", "run_cycle") or "run_cycle").strip()
+        target = str(data.get("target", "orion") or "orion").strip().lower() or "orion"
+        priority = str(data.get("priority", "high") or "high").strip().lower() or "high"
+        options = data.get("options") if isinstance(data.get("options"), dict) else {}
+        options.setdefault("control_mode", "interrupt")
+        options.setdefault("resume_after", True)
+        options.setdefault("reason", "hub_task_dispatch")
+        options.setdefault("dispatch_task_id", task_key)
+        options.setdefault("dispatch_task_title", str(current_task.get("title") or ""))
+        options.setdefault("dispatch_task_priority", _hub_normalize_priority(current_task.get("priority")))
+        options.setdefault("dispatch_assignee", selected_instance)
+
+        dispatch = _call_instance_command(selected_instance, target, command, priority, options)
+        guardian = None
+        if not bool(dispatch.get("success")) and fallback_guardian:
+            guardian = _call_instance_command(
+                selected_instance,
+                "guardian",
+                "unstick_orion",
+                "high",
+                {"source": "hub_task_dispatch", "task_id": task_key},
+            )
+
+        accepted = bool(dispatch.get("success")) or bool(isinstance(guardian, dict) and guardian.get("success"))
+        level = "success" if accepted else "warning"
+        state.add_agent_log(
+            "guardian",
+            f"🎯 Hub dispatch task {task_key} -> {selected_instance}: {'accepted' if accepted else 'failed'}",
+            level,
+        )
+        return jsonify(
+            {
+                "success": accepted,
+                "task": current_task,
+                "instance_id": selected_instance,
+                "dispatch": dispatch,
+                "guardian_fallback": guardian,
+                "assignment": assignment_result,
+                "reopen": reopen_result,
+                "timestamp": datetime.now().isoformat(),
+            }
+        ), (200 if accepted else 502)
+
+    @app.route('/api/hub/next-actions')
+    def get_hub_next_actions():
+        limit = _int_in_range(request.args.get("limit", 8), default=8, min_value=1, max_value=30)
+        actions = _hub_next_actions(limit=limit)
+        return jsonify(
+            {
+                "success": True,
+                "actions": actions,
+                "count": len(actions),
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
+
+    # ========== Autopilot: Auto-Execute Next Actions ==========
+    _AUTOPILOT_STATE: Dict[str, Any] = {
+        "enabled": False,
+        "dry_run": True,
+        "interval": 30,
+        "max_actions_per_cycle": 3,
+        "policy": {
+            "allow_dispatch": True,
+            "allow_reassign": True,
+            "allow_release_lease": True,
+            "allow_inspect_terminal": False,
+            "require_confidence": 0.8,
+            "blocked_actions": [],
+        },
+        "stats": {
+            "total_cycles": 0,
+            "actions_executed": 0,
+            "actions_blocked": 0,
+            "errors": 0,
+            "last_cycle": None,
+        },
+    }
+
+    def _autopilot_should_execute(action: Dict[str, Any]) -> Tuple[bool, str]:
+        """Check if autopilot should execute this action based on policy."""
+        policy = _AUTOPILOT_STATE["policy"]
+        action_type = action.get("action_type", "")
+
+        # Check blocked actions
+        if action_type in policy.get("blocked_actions", []):
+            return False, f"Action type {action_type} is blocked"
+
+        # Check specific action permissions
+        if action_type == "dispatch_task" and not policy.get("allow_dispatch"):
+            return False, "Dispatch not allowed by policy"
+        if action_type == "assign_then_dispatch" and not policy.get("allow_reassign"):
+            return False, "Reassign not allowed by policy"
+        if action_type == "reassign_or_bring_online" and not policy.get("allow_reassign"):
+            return False, "Reassign not allowed by policy"
+        if action_type == "reclaim_stale_lease" and not policy.get("allow_release_lease"):
+            return False, "Release lease not allowed by policy"
+        if action_type == "inspect_terminal" and not policy.get("allow_inspect_terminal"):
+            return False, "Inspect terminal not allowed by policy"
+
+        # Check priority (only execute p0/p1 in auto mode)
+        priority = action.get("priority", "p2")
+        priority_rank = {"p0": 0, "p1": 1, "p2": 2, "p3": 3}
+        if priority_rank.get(priority, 3) > 1:
+            return False, f"Priority {priority} too low for auto-execute"
+
+        return True, "Allowed"
+
+    def _autopilot_execute_action(action: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute a single action."""
+        action_type = action.get("action_type", "")
+        task_id = action.get("task_id")
+        result = {"action": action_type, "task_id": task_id, "success": False, "error": None}
+
+        try:
+            if action_type in ("dispatch_task", "assign_then_dispatch") and task_id:
+                # Dispatch task
+                url = f"{request.host_url.rstrip('/')}/api/hub/tasks/{task_id}/dispatch"
+                payload = action.get("suggested_payload", {})
+                resp = requests.post(url, json=payload, timeout=30)
+                result["success"] = resp.status_code < 400
+                result["response"] = resp.json() if result["success"] else resp.text
+            elif action_type == "reclaim_stale_lease" and task_id:
+                # Release stale lease
+                url = f"{request.host_url.rstrip('/')}/api/hub/tasks/{task_id}/release"
+                payload = action.get("suggested_payload", {"next_status": "todo"})
+                resp = requests.post(url, json=payload, timeout=30)
+                result["success"] = resp.status_code < 400
+                result["response"] = resp.json() if result["success"] else resp.text
+            elif action_type == "reassign_or_bring_online" and task_id:
+                # Batch update to reassign
+                url = f"{request.host_url.rstrip('/')}/api/hub/tasks/batch-update"
+                payload = action.get("suggested_payload", {})
+                resp = requests.post(url, json=payload, timeout=30)
+                result["success"] = resp.status_code < 400
+                result["response"] = resp.json() if result["success"] else resp.text
+            else:
+                result["error"] = f"Unknown action type: {action_type}"
+        except Exception as e:
+            result["error"] = str(e)
+
+        return result
+
+    @app.route('/api/hub/autopilot/status')
+    def get_autopilot_status():
+        """Get autopilot status."""
+        return jsonify({
+            "success": True,
+            "enabled": _AUTOPILOT_STATE["enabled"],
+            "dry_run": _AUTOPILOT_STATE["dry_run"],
+            "interval": _AUTOPILOT_STATE["interval"],
+            "policy": _AUTOPILOT_STATE["policy"],
+            "stats": _AUTOPILOT_STATE["stats"],
+            "timestamp": datetime.now().isoformat(),
+        })
+
+    @app.route('/api/hub/autopilot/config', methods=['POST'])
+    def configure_autopilot():
+        """Configure autopilot settings."""
+        data = request.get_json(silent=True) or {}
+
+        if "enabled" in data:
+            _AUTOPILOT_STATE["enabled"] = bool(data["enabled"])
+        if "dry_run" in data:
+            _AUTOPILOT_STATE["dry_run"] = bool(data["dry_run"])
+        if "interval" in data:
+            _AUTOPILOT_STATE["interval"] = max(10, int(data["interval"]))
+        if "max_actions_per_cycle" in data:
+            _AUTOPILOT_STATE["max_actions_per_cycle"] = max(1, min(10, int(data["max_actions_per_cycle"])))
+        if "policy" in data and isinstance(data["policy"], dict):
+            _AUTOPILOT_STATE["policy"].update(data["policy"])
+
+        return jsonify({
+            "success": True,
+            "state": _AUTOPILOT_STATE,
+            "timestamp": datetime.now().isoformat(),
+        })
+
+    @app.route('/api/hub/autopilot/run', methods=['POST'])
+    def run_autopilot_cycle():
+        """Run one autopilot cycle."""
+        if not _AUTOPILOT_STATE["enabled"]:
+            return jsonify({
+                "success": False,
+                "error": "Autopilot is not enabled",
+                "timestamp": datetime.now().isoformat(),
+            }), 400
+
+        max_actions = _AUTOPILOT_STATE["max_actions_per_cycle"]
+        actions = _hub_next_actions(limit=max_actions * 2)
+
+        executed = []
+        blocked = []
+        errors = []
+
+        for action in actions[:max_actions]:
+            should_exec, reason = _autopilot_should_execute(action)
+            if not should_exec:
+                blocked.append({"action": action, "reason": reason})
+                _AUTOPILOT_STATE["stats"]["actions_blocked"] += 1
+                continue
+
+            if _AUTOPILOT_STATE["dry_run"]:
+                executed.append({"action": action, "dry_run": True})
+                _AUTOPILOT_STATE["stats"]["actions_executed"] += 1
+            else:
+                result = _autopilot_execute_action(action)
+                if result.get("success"):
+                    executed.append({"action": action, "result": result})
+                    _AUTOPILOT_STATE["stats"]["actions_executed"] += 1
+                else:
+                    errors.append({"action": action, "error": result.get("error")})
+                    _AUTOPILOT_STATE["stats"]["errors"] += 1
+
+        _AUTOPILOT_STATE["stats"]["total_cycles"] += 1
+        _AUTOPILOT_STATE["stats"]["last_cycle"] = datetime.now().isoformat()
+
+        return jsonify({
+            "success": True,
+            "executed": executed,
+            "blocked": blocked,
+            "errors": errors,
+            "stats": _AUTOPILOT_STATE["stats"],
+            "timestamp": datetime.now().isoformat(),
+        })
+
+    @app.route('/api/hub/autopilot/preview', methods=['GET'])
+    def preview_autopilot_actions():
+        """Preview which actions would be executed."""
+        max_actions = _AUTOPILOT_STATE["max_actions_per_cycle"]
+        actions = _hub_next_actions(limit=max_actions * 2)
+
+        preview = []
+        for action in actions[:max_actions]:
+            should_exec, reason = _autopilot_should_execute(action)
+            preview.append({
+                "action": action,
+                "would_execute": should_exec,
+                "reason": reason,
+            })
+
+        return jsonify({
+            "success": True,
+            "preview": preview,
+            "policy": _AUTOPILOT_STATE["policy"],
+            "timestamp": datetime.now().isoformat(),
+        })
+
     @app.route('/api/hub/workload')
     def get_agent_workload():
-        """Get agent workload summary - tasks per assignee with priority breakdown"""
+        """Get workload summary across tasks, runtime, control-plane, and automation sessions."""
+        now = datetime.now()
         tasks = _hub.list_tasks()
-        orions_snapshot = _hub.get_snapshot().get("orions", {})
+        hub_snapshot = _hub.get_snapshot()
+        orions_snapshot = hub_snapshot.get("orions", {}) if isinstance(hub_snapshot.get("orions"), dict) else {}
+        orion_index = _hub_orion_rows_by_assignee(orions_snapshot)
+        runtime_instances = get_orion_instances_snapshot()
+        runtime_index = _hub_runtime_rows_by_assignee(runtime_instances)
+        control_plane_snapshot = _control_plane_registry.snapshot()
+        workers = control_plane_snapshot.get("workers", []) if isinstance(control_plane_snapshot.get("workers"), list) else []
+        worker_index: Dict[str, Dict[str, Any]] = {}
+        for worker in workers:
+            if not isinstance(worker, dict):
+                continue
+            worker_id = _hub_normalize_assignee(worker.get("worker_id"))
+            if worker_id:
+                worker_index[worker_id] = worker
+
+        with _AUTOMATION_TASKS_LOCK:
+            automation_sessions = [dict(item) for item in _automation_sessions.values() if isinstance(item, dict)]
+
+        sessions_by_owner: Dict[str, List[Dict[str, Any]]] = {}
+        for session in automation_sessions:
+            owner_raw = str(session.get("owner_id") or "").strip()
+            owner = _hub_normalize_assignee(owner_raw.split(":", 1)[1] if owner_raw.lower().startswith("orion:") else owner_raw)
+            if not owner:
+                continue
+            sessions_by_owner.setdefault(owner, []).append(session)
+        bridge_terminals_by_owner = _hub_bridge_terminals_by_owner()
+        bridge_terminal_total = sum(len(rows) for rows in bridge_terminals_by_owner.values())
+        bridge_terminal_busy_total = 0
+        bridge_terminal_error_total = 0
+        for rows in bridge_terminals_by_owner.values():
+            for row in rows:
+                status = str(row.get("status") or "").strip().lower()
+                busy = bool(row.get("busy")) or status in {"running", "busy"}
+                if busy:
+                    bridge_terminal_busy_total += 1
+                if status in {"error", "failed", "blocked"}:
+                    bridge_terminal_error_total += 1
 
         workload: Dict[str, Any] = {}
         unassigned: List[Dict[str, Any]] = []
@@ -10729,26 +11771,19 @@ try:
         status_counts: Dict[str, int] = {"todo": 0, "in_progress": 0, "done": 0, "blocked": 0}
 
         for task in tasks:
-            assignee = str(task.get("assigned_to") or "").strip().lower() or "unassigned"
-            priority_raw = str(task.get("priority") or "normal").strip().lower()
-            status_raw = str(task.get("status") or "todo").strip().lower()
+            if not isinstance(task, dict):
+                continue
+            assignee = _hub_normalize_assignee(task.get("assigned_to")) or "unassigned"
+            priority_norm = _hub_normalize_priority(task.get("priority"))
+            status_norm = _hub_normalize_status(task.get("status"))
+            lease = _hub_task_lease_info(task, now_dt=now)
 
-            # Normalize priority to P0-P3
-            priority_norm = "p3"
-            if priority_raw in ("p0", "critical", "urgent", "highest"):
-                priority_norm = "p0"
-            elif priority_raw in ("p1", "high", "important"):
-                priority_norm = "p1"
-            elif priority_raw in ("p2", "medium", "normal"):
-                priority_norm = "p2"
             priority_counts[priority_norm] = priority_counts.get(priority_norm, 0) + 1
-
-            # Normalize status
-            if status_raw in ("in_progress", "running", "active", "claimed"):
+            if status_norm == "in_progress":
                 status_counts["in_progress"] = status_counts.get("in_progress", 0) + 1
-            elif status_raw in ("done", "completed", "resolved"):
+            elif status_norm == "done":
                 status_counts["done"] = status_counts.get("done", 0) + 1
-            elif status_raw in ("blocked", "stuck", "waiting"):
+            elif status_norm == "blocked":
                 status_counts["blocked"] = status_counts.get("blocked", 0) + 1
             else:
                 status_counts["todo"] = status_counts.get("todo", 0) + 1
@@ -10757,52 +11792,222 @@ try:
                 "id": task.get("id"),
                 "title": task.get("title", ""),
                 "priority": priority_norm,
-                "status": status_raw,
+                "status": status_norm,
                 "created_at": task.get("created_at"),
+                "updated_at": task.get("updated_at"),
+                "lease_active": bool(lease.get("active")),
+                "lease_stale": bool(lease.get("stale")),
+                "lease_owner": lease.get("owner"),
+                "lease_expires_at": lease.get("expires_at"),
             }
 
             if assignee == "unassigned":
                 unassigned.append(task_summary)
-            else:
-                if assignee not in workload:
-                    workload[assignee] = {
-                        "assignee": assignee,
-                        "tasks": [],
-                        "by_priority": {"p0": 0, "p1": 0, "p2": 0, "p3": 0},
-                        "by_status": {"todo": 0, "in_progress": 0, "done": 0, "blocked": 0},
-                        "is_online": False,
-                        "last_heartbeat": None,
+                continue
+
+            if assignee not in workload:
+                workload[assignee] = {
+                    "assignee": assignee,
+                    "tasks": [],
+                    "by_priority": {"p0": 0, "p1": 0, "p2": 0, "p3": 0},
+                    "by_status": {"todo": 0, "in_progress": 0, "done": 0, "blocked": 0},
+                    "task_count": 0,
+                    "active_task_count": 0,
+                    "lease_active_count": 0,
+                    "lease_stale_count": 0,
+                    "is_online": False,
+                    "currently_working": False,
+                    "last_heartbeat": None,
+                    "runtime": {
+                        "running": False,
+                        "paused": False,
+                        "pause_reason": "",
+                        "iteration": None,
+                        "active_flow_count": 0,
+                        "last_progress_at": None,
+                    },
+                    "control_plane": {
+                        "is_alive": False,
+                        "status": "unknown",
+                        "lease_expires_at": None,
+                        "queue_depth": 0,
+                        "running_tasks": 0,
+                    },
+                    "tool_sessions": {
+                        "owned": 0,
+                        "busy": 0,
+                        "total_queue_depth": 0,
+                        "sessions": [],
+                    },
+                    "terminal_sessions": {
+                        "owned": 0,
+                        "busy": 0,
+                        "error": 0,
+                        "sessions": [],
+                    },
+                }
+
+            row = workload[assignee]
+            row["tasks"].append(task_summary)
+            row["task_count"] = int(row.get("task_count", 0) or 0) + 1
+            row["by_priority"][priority_norm] = row["by_priority"].get(priority_norm, 0) + 1
+            row["by_status"][status_norm if status_norm in {"todo", "in_progress", "done", "blocked"} else "todo"] = row["by_status"].get(
+                status_norm if status_norm in {"todo", "in_progress", "done", "blocked"} else "todo",
+                0,
+            ) + 1
+            if status_norm == "in_progress":
+                row["active_task_count"] = int(row.get("active_task_count", 0) or 0) + 1
+            if task_summary["lease_active"]:
+                row["lease_active_count"] = int(row.get("lease_active_count", 0) or 0) + 1
+            if task_summary["lease_stale"]:
+                row["lease_stale_count"] = int(row.get("lease_stale_count", 0) or 0) + 1
+
+        for assignee, row in workload.items():
+            orion = orion_index.get(assignee, {})
+            orion_lease_expires = _parse_iso_datetime(orion.get("lease_expires_at"))
+            orion_alive = bool(orion_lease_expires and orion_lease_expires > now and str(orion.get("status") or "active") != "offline")
+            row["control_plane"] = {
+                "is_alive": orion_alive,
+                "status": str(orion.get("status", "unknown") or "unknown"),
+                "lease_expires_at": orion.get("lease_expires_at"),
+                "queue_depth": 0,
+                "running_tasks": 0,
+            }
+            row["last_heartbeat"] = orion.get("last_heartbeat_at")
+
+            runtime = runtime_index.get(assignee, {})
+            if runtime:
+                row["runtime"] = {
+                    "running": bool(runtime.get("running", False)),
+                    "paused": bool(runtime.get("paused", False)),
+                    "pause_reason": str(runtime.get("pause_reason", "") or ""),
+                    "iteration": runtime.get("iteration"),
+                    "active_flow_count": int(runtime.get("active_flow_count", 0) or 0),
+                    "last_progress_at": runtime.get("last_progress_at"),
+                }
+                row["last_heartbeat"] = row["last_heartbeat"] or runtime.get("last_progress_at") or runtime.get("last_cycle_finished_at")
+
+            worker = worker_index.get(assignee, {})
+            if worker:
+                row["control_plane"]["queue_depth"] = int(worker.get("queue_depth", 0) or 0)
+                row["control_plane"]["running_tasks"] = int(worker.get("running_tasks", 0) or 0)
+                row["control_plane"]["status"] = str(worker.get("health", row["control_plane"]["status"]) or row["control_plane"]["status"])
+
+            sessions = sessions_by_owner.get(assignee, [])
+            session_rows: List[Dict[str, Any]] = []
+            busy_sessions = 0
+            total_queue_depth = 0
+            for session in sessions:
+                queue_depth = int(session.get("queue_depth", 0) or 0)
+                lease_expires = _parse_iso_datetime(session.get("lease_expires_at"))
+                lease_active = bool(lease_expires and lease_expires > now)
+                is_busy = queue_depth > 0 or lease_active
+                if is_busy:
+                    busy_sessions += 1
+                total_queue_depth += queue_depth
+                session_rows.append(
+                    {
+                        "session_id": session.get("session_id"),
+                        "queue_depth": queue_depth,
+                        "lease_expires_at": session.get("lease_expires_at"),
+                        "last_task_id": session.get("last_task_id"),
+                        "last_error": session.get("last_error"),
+                        "busy": is_busy,
                     }
-                    # Check if this assignee is an online Orion
-                    orion_key = assignee.replace("-", "_")
-                    if orion_key in orions_snapshot:
-                        orion_info = orions_snapshot[orion_key]
-                        workload[assignee]["is_online"] = orion_info.get("is_alive", False)
-                        workload[assignee]["last_heartbeat"] = orion_info.get("last_heartbeat")
+                )
+            row["tool_sessions"] = {
+                "owned": len(sessions),
+                "busy": busy_sessions,
+                "total_queue_depth": total_queue_depth,
+                "sessions": session_rows,
+            }
+            terminal_rows = bridge_terminals_by_owner.get(assignee, [])
+            terminal_items: List[Dict[str, Any]] = []
+            terminal_busy = 0
+            terminal_error = 0
+            for term in terminal_rows:
+                status = str(term.get("status") or "").strip().lower()
+                busy = bool(term.get("busy")) or status in {"running", "busy"}
+                if busy:
+                    terminal_busy += 1
+                if status in {"error", "failed", "blocked"}:
+                    terminal_error += 1
+                terminal_items.append(
+                    {
+                        "session_id": term.get("session_id"),
+                        "status": status or "unknown",
+                        "busy": busy,
+                        "title": term.get("title"),
+                        "cwd": term.get("cwd"),
+                        "command": term.get("command"),
+                        "updated_at": term.get("updated_at"),
+                        "last_error": term.get("last_error"),
+                    }
+                )
+            row["terminal_sessions"] = {
+                "owned": len(terminal_rows),
+                "busy": terminal_busy,
+                "error": terminal_error,
+                "sessions": terminal_items,
+            }
 
-                workload[assignee]["tasks"].append(task_summary)
-                workload[assignee]["by_priority"][priority_norm] = workload[assignee]["by_priority"].get(priority_norm, 0) + 1
-                norm_status = "todo"
-                if status_raw in ("in_progress", "running", "active", "claimed"):
-                    norm_status = "in_progress"
-                elif status_raw in ("done", "completed", "resolved"):
-                    norm_status = "done"
-                elif status_raw in ("blocked", "stuck", "waiting"):
-                    norm_status = "blocked"
-                workload[assignee]["by_status"][norm_status] = workload[assignee]["by_status"].get(norm_status, 0) + 1
+            row["is_online"] = bool(runtime.get("online", False)) or bool(row["control_plane"].get("is_alive"))
+            row["currently_working"] = bool(
+                row.get("active_task_count", 0)
+                or row["runtime"].get("running")
+                or row["control_plane"].get("running_tasks")
+                or row["tool_sessions"].get("busy")
+                or row["terminal_sessions"].get("busy")
+            )
 
-        # Sort by total tasks descending
-        workload_list = sorted(workload.values(), key=lambda x: len(x.get("tasks", [])), reverse=True)
+        workload_list = sorted(
+            workload.values(),
+            key=lambda x: (
+                -int((x.get("by_priority", {}) or {}).get("p0", 0) or 0),
+                -int(x.get("active_task_count", 0) or 0),
+                -int(x.get("task_count", 0) or 0),
+                str(x.get("assignee", "")),
+            ),
+        )
 
-        return jsonify({
-            "success": True,
-            "workload": workload_list,
-            "unassigned": unassigned,
-            "priority_breakdown": priority_counts,
-            "status_breakdown": status_counts,
-            "total_tasks": len(tasks),
-            "total_assignees": len(workload),
-        })
+        busy_tool_sessions = 0
+        for sessions in sessions_by_owner.values():
+            for session in sessions:
+                queue_depth = int(session.get("queue_depth", 0) or 0)
+                lease_expires = _parse_iso_datetime(session.get("lease_expires_at"))
+                if queue_depth > 0 or (lease_expires and lease_expires > now):
+                    busy_tool_sessions += 1
+
+        return jsonify(
+            {
+                "success": True,
+                "workload": workload_list,
+                "unassigned": unassigned,
+                "priority_breakdown": priority_counts,
+                "status_breakdown": status_counts,
+                "total_tasks": len(tasks),
+                "total_assignees": len(workload),
+                "runtime_instances": runtime_instances,
+                "control_plane": {
+                    "registered_workers": int(control_plane_snapshot.get("registered_workers", 0) or 0),
+                    "alive_workers": int(control_plane_snapshot.get("alive_workers", 0) or 0),
+                    "open_circuits": int(control_plane_snapshot.get("open_circuits", 0) or 0),
+                },
+                "automation_sessions": {
+                    "total": len(automation_sessions),
+                    "owners": len(sessions_by_owner),
+                    "busy": busy_tool_sessions,
+                },
+                "bridge_terminals": {
+                    "total": bridge_terminal_total,
+                    "owners": len(bridge_terminals_by_owner),
+                    "busy": bridge_terminal_busy_total,
+                    "error": bridge_terminal_error_total,
+                    "last_sync": (_bridge_state.get("terminal_last_sync") if isinstance(_bridge_state, dict) else None),
+                },
+                "next_actions_preview": _hub_next_actions(limit=5),
+            }
+        )
 
     @app.route('/api/hub/register-orion', methods=['POST'])
     def register_orion_instance():
@@ -11215,13 +12420,75 @@ _bridge_state = {
     "last_sync": None,
     "synced_contacts": 0,
     "synced_sessions": 0,
+    "synced_terminals": 0,
+    "terminal_last_sync": None,
     "notifications_received": 0,
 }
+_BRIDGE_TERMINALS_LOCK = threading.Lock()
+_bridge_terminal_sessions: Dict[str, Dict[str, Any]] = {}
+
+
+def _bridge_normalize_owner_id(value: Any) -> str:
+    owner_raw = str(value or "").strip()
+    if owner_raw.lower().startswith("orion:"):
+        owner_raw = owner_raw.split(":", 1)[1]
+    return owner_raw.strip()
+
+
+def _bridge_terminal_public_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    status = str(row.get("status") or "").strip().lower() or "unknown"
+    busy = bool(row.get("busy")) or status in {"running", "busy"}
+    return {
+        "session_id": row.get("session_id"),
+        "owner_id": row.get("owner_id"),
+        "source": row.get("source"),
+        "title": row.get("title"),
+        "cwd": row.get("cwd"),
+        "command": row.get("command"),
+        "status": status,
+        "busy": busy,
+        "pid": row.get("pid"),
+        "started_at": row.get("started_at"),
+        "updated_at": row.get("updated_at"),
+        "last_output": row.get("last_output"),
+        "last_error": row.get("last_error"),
+        "metadata": row.get("metadata") if isinstance(row.get("metadata"), dict) else {},
+    }
+
+
+def _bridge_terminal_snapshot(owner_id: str = "", limit: int = 120) -> Dict[str, Any]:
+    owner_norm = _bridge_normalize_owner_id(owner_id).lower()
+    with _BRIDGE_TERMINALS_LOCK:
+        rows = [_bridge_terminal_public_row(dict(item)) for item in _bridge_terminal_sessions.values() if isinstance(item, dict)]
+    if owner_norm:
+        rows = [row for row in rows if _bridge_normalize_owner_id(row.get("owner_id")).lower() == owner_norm]
+    rows = _sort_by_timestamp_desc(rows)[:max(1, int(limit))]
+    busy = 0
+    errors = 0
+    owners: Set[str] = set()
+    for row in rows:
+        if bool(row.get("busy")):
+            busy += 1
+        if str(row.get("status") or "").lower() in {"error", "failed", "blocked"}:
+            errors += 1
+        owner = _bridge_normalize_owner_id(row.get("owner_id"))
+        if owner:
+            owners.add(owner)
+    return {
+        "rows": rows,
+        "summary": {
+            "total": len(rows),
+            "busy": busy,
+            "error": errors,
+            "owners": len(owners),
+        },
+    }
 
 
 @app.route('/api/bridge/status')
 def bridge_status():
     """Get bridge status between JACK OS and NEXUS."""
+    terminal_summary = _bridge_terminal_snapshot(limit=500).get("summary", {})
     return jsonify({
         "success": True,
         "bridge": {
@@ -11231,6 +12498,10 @@ def bridge_status():
             "stats": {
                 "synced_contacts": _bridge_state["synced_contacts"],
                 "synced_sessions": _bridge_state["synced_sessions"],
+                "synced_terminals": _bridge_state["synced_terminals"],
+                "terminal_last_sync": _bridge_state.get("terminal_last_sync"),
+                "terminal_busy": int(terminal_summary.get("busy", 0) or 0),
+                "terminal_error": int(terminal_summary.get("error", 0) or 0),
                 "notifications_received": _bridge_state["notifications_received"],
             },
         },
@@ -11364,6 +12635,91 @@ def update_jackos_status():
     state.add_agent_log("bridge", f"🔗 JACK OS {status_text}", "info")
 
     return jsonify({"success": True, "connected": _bridge_state["jackos_connected"]})
+
+
+@app.route('/api/bridge/sync/terminals', methods=['POST'])
+def sync_terminals_from_bridge():
+    """Sync terminal sessions (e.g. VSCode terminals) into monitor control plane."""
+    data = request.get_json(silent=True) or {}
+    source = str(data.get("source", "bridge")).strip() or "bridge"
+    terminals = data.get("terminals")
+    if not isinstance(terminals, list):
+        return jsonify({"success": False, "error": "Missing terminals list", "error_code": "MISSING_TERMINALS"}), 400
+
+    now_iso = datetime.now().isoformat()
+    upserts = 0
+    with _BRIDGE_TERMINALS_LOCK:
+        for item in terminals:
+            if not isinstance(item, dict):
+                continue
+            session_id = str(item.get("session_id") or item.get("id") or "").strip()
+            if not session_id:
+                continue
+            owner_id = _bridge_normalize_owner_id(
+                item.get("owner_id") or item.get("assignee") or item.get("orion_id") or item.get("instance_id")
+            )
+            status = str(item.get("status") or "").strip().lower() or "unknown"
+            busy = bool(item.get("busy")) or status in {"running", "busy"}
+            row = {
+                "session_id": session_id,
+                "owner_id": owner_id,
+                "source": source,
+                "title": str(item.get("title") or item.get("name") or "").strip(),
+                "cwd": str(item.get("cwd") or "").strip(),
+                "command": str(item.get("command") or item.get("last_command") or "").strip(),
+                "status": status,
+                "busy": busy,
+                "pid": item.get("pid"),
+                "started_at": item.get("started_at"),
+                "updated_at": item.get("updated_at") or now_iso,
+                "last_output": str(item.get("last_output") or item.get("tail") or "").strip(),
+                "last_error": str(item.get("last_error") or "").strip(),
+                "metadata": item.get("metadata") if isinstance(item.get("metadata"), dict) else {},
+            }
+            _bridge_terminal_sessions[session_id] = row
+            upserts += 1
+
+    _bridge_state["synced_terminals"] = len(_bridge_terminal_sessions)
+    _bridge_state["terminal_last_sync"] = now_iso
+    _bridge_state["last_sync"] = now_iso
+    summary = _bridge_terminal_snapshot(limit=500).get("summary", {})
+    socketio.emit(
+        "terminals_synced",
+        {
+            "source": source,
+            "upserts": upserts,
+            "total": int(summary.get("total", 0) or 0),
+            "busy": int(summary.get("busy", 0) or 0),
+            "error": int(summary.get("error", 0) or 0),
+            "timestamp": now_iso,
+        },
+    )
+    state.add_agent_log("bridge", f"🖥️ Synced terminals: +{upserts} ({source})", "info")
+    return jsonify(
+        {
+            "success": True,
+            "source": source,
+            "upserts": upserts,
+            "summary": summary,
+            "timestamp": now_iso,
+        }
+    )
+
+
+@app.route('/api/bridge/terminals')
+def bridge_terminals():
+    owner_id = str(request.args.get("owner_id", "") or "").strip()
+    limit = _int_in_range(request.args.get("limit", 120), default=120, min_value=1, max_value=500)
+    snapshot = _bridge_terminal_snapshot(owner_id=owner_id, limit=limit)
+    return jsonify(
+        {
+            "success": True,
+            "terminals": snapshot.get("rows", []),
+            "summary": snapshot.get("summary", {}),
+            "owner_id": owner_id or None,
+            "timestamp": datetime.now().isoformat(),
+        }
+    )
 
 
 # ============================================

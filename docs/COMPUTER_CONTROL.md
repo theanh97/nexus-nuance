@@ -67,23 +67,24 @@ Rule file: `monitoring/prometheus/openclaw-alerts.yml`
 
 ## Env flags
 
+- `OPENCLAW_EXECUTION_MODE=headless|hybrid|browser` (default `headless`; chỉ `browser` mới bật dashboard-flow + auto-attach)
 - `MONITOR_COMPUTER_CONTROL_ENABLED=true|false`
 - `MONITOR_AUTO_APPROVE_SAFE_DECISIONS=true|false`
 - `MONITOR_AUTO_APPROVE_ALL_DECISIONS=true|false` (tự duyệt toàn bộ command intervention)
 - `MONITOR_AUTO_EXECUTE_COMMANDS=true|false` (tự chạy command khi đã duyệt)
 - `MONITOR_ALLOW_UNSAFE_COMMANDS=true|false` (bỏ allowlist, rủi ro cao)
 - `GUARDIAN_FORCE_APPROVE_ALL=true|false` (Guardian tự duyệt tất cả)
-- `OPENCLAW_BROWSER_AUTO_START=true|false`
+- `OPENCLAW_BROWSER_AUTO_START=true|false` (default theo execution mode)
 - `OPENCLAW_BROWSER_TIMEOUT_MS=30000`
 - `OPENCLAW_DASHBOARD_URL=http://127.0.0.1:5050/`
-- `OPENCLAW_SELF_HEAL_OPEN_DASHBOARD=true|false`
+- `OPENCLAW_SELF_HEAL_OPEN_DASHBOARD=true|false` (default theo execution mode)
 - `OPENCLAW_SELF_HEAL_OPEN_COOLDOWN_SEC=300`
 - `OPENCLAW_SELF_HEAL_FALLBACK_COOLDOWN_SEC=90`
 - `OPENCLAW_FLOW_OPEN_COOLDOWN_SEC=20`
 - `OPENCLAW_ACTION_DEBOUNCE_SEC=6`
 - `OPENCLAW_AUTO_IDEMPOTENCY_ENABLED=true|false`
 - `OPENCLAW_AUTO_IDEMPOTENCY_WINDOW_SEC=8`
-- `OPENCLAW_AUTO_ATTACH_ENABLED=true|false`
+- `OPENCLAW_AUTO_ATTACH_ENABLED=true|false` (default theo execution mode)
 - `OPENCLAW_AUTO_ATTACH_RETRIES=2`
 - `OPENCLAW_AUTO_ATTACH_DELAY_SEC=1.2`
 - `OPENCLAW_AUTO_ATTACH_HEURISTIC=true|false`

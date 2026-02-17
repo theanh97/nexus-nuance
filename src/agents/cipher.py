@@ -76,13 +76,22 @@ class Cipher(AsyncAgent):
 
         code = self._normalize_code_payload(message.content.get("code", {}))
         context = message.content.get("context", {})
+        runtime_hints = message.content.get("runtime_hints", {})
+        if not isinstance(runtime_hints, dict):
+            runtime_hints = {}
 
         # Run automated security checks
         auto_issues = self._automated_checks(code)
 
         # Run AI-powered deep review
         importance = message.priority.value if hasattr(message, "priority") else "normal"
-        ai_review = await self._ai_review(code, context, auto_issues, importance)
+        ai_review = await self._ai_review(
+            code,
+            context,
+            auto_issues,
+            importance,
+            prefer_cost=bool(runtime_hints.get("prefer_cost", False)),
+        )
 
         # Combine results
         all_issues = auto_issues + ai_review.get("issues", [])
@@ -169,7 +178,14 @@ class Cipher(AsyncAgent):
 
         return issues
 
-    async def _ai_review(self, code: Dict, context: Dict, existing_issues: List, importance: str = "normal") -> Dict:
+    async def _ai_review(
+        self,
+        code: Dict,
+        context: Dict,
+        existing_issues: List,
+        importance: str = "normal",
+        prefer_cost: bool = False,
+    ) -> Dict:
         """AI-powered deep security review"""
 
         prompt = f"""You are CIPHER, a paranoid security expert reviewing code.
@@ -235,7 +251,8 @@ Be THOROUGH and PARANOID. Better safe than sorry."""
         response = await self.call_api(
             messages,
             task_type=TaskType.SECURITY_AUDIT,
-            importance="critical" if importance in {"high", "critical"} else importance
+            importance="critical" if importance in {"high", "critical"} else importance,
+            prefer_cost=prefer_cost,
         )
 
         if "error" in response:

@@ -2293,6 +2293,23 @@
             </article>
 
             <article class="card" data-view="workspace tasks" data-zen="secondary">
+                <h2>Next Actions</h2>
+                <ul id="next-actions-list" class="activity-list">
+                    <li class="activity-item"><div class="text">Analyzing next actions...</div></li>
+                </ul>
+            </article>
+
+            <article class="card" data-view="workspace tasks" data-zen="secondary">
+                <div class="row">
+                    <h2>Bridge Terminals</h2>
+                    <span class="tiny" id="bridge-terminals-summary">loading...</span>
+                </div>
+                <ul id="bridge-terminals-list" class="activity-list">
+                    <li class="activity-item"><div class="text">Loading terminal sessions...</div></li>
+                </ul>
+            </article>
+
+            <article class="card" data-view="workspace tasks" data-zen="secondary">
                 <div class="row">
                     <h2>Inter-ORION Messages</h2>
                     <span class="tiny" id="messages-summary">0 messages</span>
@@ -2746,6 +2763,9 @@
             tasksBoard: document.getElementById('tasks-board'),
             tasksMetrics: document.getElementById('tasks-metrics'),
             workloadGrid: document.getElementById('workload-grid'),
+            nextActionsList: document.getElementById('next-actions-list'),
+            bridgeTerminalsList: document.getElementById('bridge-terminals-list'),
+            bridgeTerminalsSummary: document.getElementById('bridge-terminals-summary'),
             taskFilterAssignee: document.getElementById('task-filter-assignee'),
             taskFilterPriority: document.getElementById('task-filter-priority'),
             taskFilterStatus: document.getElementById('task-filter-status'),
@@ -3506,6 +3526,8 @@
                 updateDashboard(data);
                 loadKanbanBoard();
                 loadWorkload();
+                loadNextActions();
+                loadBridgeTerminals();
                 loadMessages();
                 loadNotifications();
                 loadInterventions();
@@ -3625,6 +3647,7 @@
                                 <select class="task-select" data-task-status>${buildStatusOptions(status)}</select>
                                 <input class="task-input" data-task-assignee type="text" placeholder="assignee" value="${escapeHtml(assigneeValue)}" />
                                 <button type="button" class="task-mini-btn" data-task-save>Save</button>
+                                <button type="button" class="task-mini-btn" data-task-dispatch>Dispatch</button>
                             </div>
                         </div>
                     `;
@@ -3643,6 +3666,20 @@
                     const status = statusInput ? String(statusInput.value || '').trim() : '';
                     const assignedTo = assigneeInput ? String(assigneeInput.value || '').trim() : '';
                     await saveTaskQuick(taskId, status, assignedTo);
+                });
+            });
+
+            Array.from(refs.tasksBoard.querySelectorAll('[data-task-dispatch]')).forEach((button) => {
+                button.addEventListener('click', async () => {
+                    const card = button.closest('.task-item');
+                    if (!card) return;
+                    const taskId = String(card.dataset.taskId || '').trim();
+                    if (!taskId) return;
+                    const statusInput = card.querySelector('[data-task-status]');
+                    const assigneeInput = card.querySelector('[data-task-assignee]');
+                    const status = statusInput ? String(statusInput.value || '').trim() : '';
+                    const assignedTo = assigneeInput ? String(assigneeInput.value || '').trim() : '';
+                    await dispatchTaskNow(taskId, status, assignedTo);
                 });
             });
         }
@@ -3670,6 +3707,34 @@
             }
         }
 
+        async function dispatchTaskNow(taskId, status, assignedTo) {
+            try {
+                const payload = {
+                    ensure_assigned: true,
+                    instance_id: assignedTo || '',
+                    priority: 'high',
+                };
+                if (status) payload.status_hint = status;
+                const response = await fetch(`/api/hub/tasks/${encodeURIComponent(taskId)}/dispatch`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const body = await response.json();
+                if (!response.ok || body.success === false) {
+                    const err = (body && (body.error || body.error_code)) || 'dispatch_failed';
+                    notify(`Dispatch failed: ${err}`, 'danger', 2400);
+                    return;
+                }
+                notify('Task dispatched', 'ok', 1300);
+                await loadKanbanBoard();
+                await loadWorkload();
+                await loadNextActions();
+            } catch (error) {
+                notify(`Dispatch error: ${error.message || 'unknown'}`, 'danger', 2400);
+            }
+        }
+
         async function loadKanbanBoard() {
             try {
                 const response = await fetch('/api/hub/kanban');
@@ -3686,14 +3751,16 @@
                 const response = await fetch('/api/hub/workload');
                 const payload = await response.json();
                 if (!payload || payload.success === false) return;
-                renderWorkload(payload.workload || [], payload.unassigned || [], payload.priority_breakdown || {});
+                renderWorkload(payload);
             } catch (error) {
                 console.error('Failed to load workload', error);
             }
         }
 
-        function renderWorkload(workload, unassigned, priorityBreakdown) {
+        function renderWorkload(payload) {
             if (!refs.workloadGrid) return;
+            const workload = Array.isArray(payload && payload.workload) ? payload.workload : [];
+            const unassigned = Array.isArray(payload && payload.unassigned) ? payload.unassigned : [];
 
             if (!workload.length && !unassigned.length) {
                 refs.workloadGrid.innerHTML = '<div class="workload-item"><div class="workload-name">No tasks yet</div></div>';
@@ -3705,6 +3772,11 @@
                 const statusText = w.is_online ? 'Online' : 'Offline';
                 const byPriority = w.by_priority || {};
                 const byStatus = w.by_status || {};
+                const runtime = w.runtime || {};
+                const controlPlane = w.control_plane || {};
+                const tools = w.tool_sessions || {};
+                const terminals = w.terminal_sessions || {};
+                const stateLabel = w.currently_working ? 'working' : (runtime.paused ? 'paused' : 'idle');
                 const taskList = (w.tasks || []).slice(0, 4).map((t) => {
                     const p = normalizePriority(t.priority);
                     return `<div class="workload-task-item">
@@ -3720,12 +3792,19 @@
                                 <span class="workload-status ${statusClass}" title="${statusText}"></span>
                                 ${escapeHtml(w.assignee || 'Unknown')}
                             </div>
-                            <span class="tiny">${w.tasks.length} tasks</span>
+                            <span class="tiny">${w.tasks.length} tasks · ${stateLabel}</span>
                         </div>
                         <div class="workload-tasks">
                             <span class="workload-mini-stat"><strong>${byStatus.in_progress || 0}</strong> active</span>
                             <span class="workload-mini-stat"><strong>${byPriority.p0 || 0}</strong> P0</span>
                             <span class="workload-mini-stat"><strong>${byPriority.p1 || 0}</strong> P1</span>
+                            <span class="workload-mini-stat"><strong>${tools.busy || 0}</strong> tools</span>
+                            <span class="workload-mini-stat"><strong>${terminals.busy || 0}</strong> terminals</span>
+                        </div>
+                        <div class="workload-tasks">
+                            <span class="workload-mini-stat"><strong>${runtime.iteration ?? '-'}</strong> iter</span>
+                            <span class="workload-mini-stat"><strong>${controlPlane.running_tasks || 0}</strong> cp-run</span>
+                            <span class="workload-mini-stat"><strong>${w.lease_active_count || 0}</strong> leases</span>
                         </div>
                         <div class="workload-task-list">${taskList || '<div class="tiny" style="color:var(--muted)">No visible tasks</div>'}</div>
                     </div>
@@ -3751,6 +3830,89 @@
             ` : '';
 
             refs.workloadGrid.innerHTML = items + unassignedItem;
+        }
+
+        async function loadNextActions() {
+            try {
+                const response = await fetch('/api/hub/next-actions?limit=8');
+                const payload = await response.json();
+                if (!payload || payload.success === false) return;
+                renderNextActions(payload.actions || []);
+            } catch (error) {
+                console.error('Failed to load next actions', error);
+            }
+        }
+
+        function renderNextActions(actions) {
+            if (!refs.nextActionsList) return;
+            const rows = Array.isArray(actions) ? actions : [];
+            if (!rows.length) {
+                refs.nextActionsList.innerHTML = '<li class="activity-item"><div class="text">No immediate action needed.</div></li>';
+                return;
+            }
+            refs.nextActionsList.innerHTML = rows.map((item) => {
+                const title = escapeHtml(String(item.title || item.action_type || 'Action'));
+                const reason = escapeHtml(String(item.reason || ''));
+                const taskId = escapeHtml(String(item.task_id || ''));
+                const priority = escapeHtml(String((item.priority || '').toUpperCase()));
+                const dispatchable = String(item.action_type || '') === 'dispatch_task' && taskId;
+                const button = dispatchable
+                    ? `<button type="button" class="task-mini-btn" data-next-dispatch="${taskId}">Run</button>`
+                    : '';
+                return `
+                    <li class="activity-item">
+                        <div class="text">${title}${priority ? ` · ${priority}` : ''}</div>
+                        <div class="tiny">${reason}</div>
+                        ${button}
+                    </li>
+                `;
+            }).join('');
+            Array.from(refs.nextActionsList.querySelectorAll('[data-next-dispatch]')).forEach((button) => {
+                button.addEventListener('click', async () => {
+                    const taskId = String(button.getAttribute('data-next-dispatch') || '').trim();
+                    if (!taskId) return;
+                    await dispatchTaskNow(taskId, '', '');
+                });
+            });
+        }
+
+        async function loadBridgeTerminals() {
+            try {
+                const response = await fetch('/api/bridge/terminals?limit=20');
+                const payload = await response.json();
+                if (!payload || payload.success === false) return;
+                renderBridgeTerminals(payload.terminals || [], payload.summary || {});
+            } catch (error) {
+                console.error('Failed to load bridge terminals', error);
+            }
+        }
+
+        function renderBridgeTerminals(rows, summary) {
+            if (!refs.bridgeTerminalsList) return;
+            const terminals = Array.isArray(rows) ? rows : [];
+            const stats = (summary && typeof summary === 'object') ? summary : {};
+            if (refs.bridgeTerminalsSummary) {
+                refs.bridgeTerminalsSummary.textContent = `total ${stats.total || 0} · busy ${stats.busy || 0} · error ${stats.error || 0}`;
+            }
+            if (!terminals.length) {
+                refs.bridgeTerminalsList.innerHTML = '<li class="activity-item"><div class="text">No bridge terminal telemetry yet.</div></li>';
+                return;
+            }
+            refs.bridgeTerminalsList.innerHTML = terminals.slice(0, 8).map((row) => {
+                const owner = escapeHtml(String(row.owner_id || 'unknown'));
+                const title = escapeHtml(String(row.title || row.session_id || 'terminal'));
+                const command = escapeHtml(String(row.command || '').slice(0, 80));
+                const status = String(row.status || 'unknown').toLowerCase();
+                const levelClass = (status === 'error' || status === 'failed' || status === 'blocked') ? 'error' : (row.busy ? 'warning' : 'info');
+                const meta = [owner, status].filter(Boolean).join(' · ');
+                return `
+                    <li class="activity-item ${levelClass}">
+                        <div class="text">${title}</div>
+                        <div class="tiny">${escapeHtml(meta)}</div>
+                        ${command ? `<div class="tiny">${command}</div>` : ''}
+                    </li>
+                `;
+            }).join('');
         }
 
         // Inter-ORION Messaging
@@ -6025,6 +6187,8 @@
         loadStatus();
         loadKanbanBoard();
         loadWorkload();
+        loadNextActions();
+        loadBridgeTerminals();
         loadMessages();
         loadNotifications();
         loadInterventions();

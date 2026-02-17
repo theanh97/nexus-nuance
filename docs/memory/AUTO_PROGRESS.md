@@ -1,6 +1,6 @@
 # Nexus Progress Snapshot
 
-Last updated: 2026-02-17T21:19:26.629653
+Last updated: 2026-02-17T22:22:47.515820
 
 ## Project
 - name: Nexus
@@ -35,9 +35,9 @@ Last updated: 2026-02-17T21:19:26.629653
 - provider: pyautogui
 
 ## Signals (last window)
-- counts: {'error': 1, 'warning': 12, 'success': 6, 'info': 101}
-- top_agent: orion
-- latest_event: Self-improvement complete: 0 applied, 0 pending
+- counts: {'error': 2, 'warning': 6, 'success': 43, 'info': 65}
+- top_agent: guardian
+- latest_event: Agent coordination (exec) instances=1 agents=3 saved92 tokens tasks=3
 
 ## Pending
 - pending_decisions: 0

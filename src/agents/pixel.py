@@ -53,6 +53,9 @@ class Pixel(AsyncAgent):
         screenshot_path = message.content.get("screenshot")
         context = message.content.get("context", {})
         iteration = message.content.get("iteration", 1)
+        runtime_hints = message.content.get("runtime_hints", {})
+        if not isinstance(runtime_hints, dict):
+            runtime_hints = {}
 
         # If no screenshot, analyze based on code
         if not screenshot_path:
@@ -61,7 +64,12 @@ class Pixel(AsyncAgent):
         # Analyze screenshot
         try:
             importance = message.priority.value if hasattr(message, "priority") else "normal"
-            analysis = await self._analyze_screenshot(screenshot_path, context, importance)
+            analysis = await self._analyze_screenshot(
+                screenshot_path,
+                context,
+                importance,
+                prefer_cost=bool(runtime_hints.get("prefer_cost", False)),
+            )
 
             overall_score = analysis.get("overall_score", 5.0)
 
@@ -86,7 +94,13 @@ class Pixel(AsyncAgent):
             self._log(f"❌ Analysis failed: {str(e)}")
             return self.create_result(False, {"error": str(e)}, score=5.0)
 
-    async def _analyze_screenshot(self, screenshot_path: str, context: Dict, importance: str = "normal") -> Dict:
+    async def _analyze_screenshot(
+        self,
+        screenshot_path: str,
+        context: Dict,
+        importance: str = "normal",
+        prefer_cost: bool = False,
+    ) -> Dict:
         """Analyze UI screenshot using vision model"""
 
         prompt = self._get_analysis_prompt(context)
@@ -100,6 +114,7 @@ class Pixel(AsyncAgent):
             complexity=TaskComplexity.MEDIUM,
             importance=importance,
             prefer_speed=(importance == "low"),
+            prefer_cost=prefer_cost,
             runtime_only=not allow_subscription_primary,
         )
         if not route_chain:

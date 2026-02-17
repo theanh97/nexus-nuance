@@ -487,6 +487,12 @@ class AsyncAgent(ABC):
         usage = (result or {}).get("usage", {}) if isinstance(result, dict) else {}
         prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
         completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens") or 0
+        usage_source = "provider"
+        if int(prompt_tokens or 0) <= 0 and int(completion_tokens or 0) <= 0 and int(estimated_tokens or 0) > 0:
+            # Fallback estimate keeps routing economics useful for providers that omit usage payloads.
+            prompt_tokens = max(1, int(estimated_tokens * 0.6))
+            completion_tokens = max(1, int(estimated_tokens) - int(prompt_tokens))
+            usage_source = "estimated"
         total_tokens = int(prompt_tokens) + int(completion_tokens)
         selected = selected_model or self.model
 
@@ -515,6 +521,7 @@ class AsyncAgent(ABC):
                 "prompt_tokens": int(prompt_tokens),
                 "completion_tokens": int(completion_tokens),
                 "total_tokens": int(total_tokens),
+                "source": usage_source,
             },
             "estimated_cost_usd": cost_usd,
             "error": str((result or {}).get("error", ""))[:300] if isinstance(result, dict) and "error" in result else "",

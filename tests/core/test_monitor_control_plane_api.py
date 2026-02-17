@@ -36,6 +36,27 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(monitor_app, "_monitor_supervisor_enabled", True)
     monkeypatch.setattr(monitor_app, "_monitor_autopilot_pause_until", None)
     monkeypatch.setattr(monitor_app, "_agent_coordination_recent", {})
+    monkeypatch.setattr(monitor_app, "_automation_recent_tasks", monitor_app.deque(maxlen=monitor_app.AUTOMATION_TASK_HISTORY_MAX))
+    monkeypatch.setattr(monitor_app, "_automation_tasks_by_id", {})
+    monkeypatch.setattr(monitor_app, "_automation_sessions", {})
+    monkeypatch.setattr(monitor_app, "_automation_poll_last_seen", {})
+    monkeypatch.setattr(monitor_app, "_automation_scheduled_tasks", {})
+    monkeypatch.setattr(monitor_app, "_automation_scheduler_running", False)
+    monkeypatch.setattr(monitor_app, "OPENCLAW_EXECUTION_MODE", "browser")
+    monkeypatch.setattr(monitor_app, "_bridge_terminal_sessions", {})
+    monkeypatch.setattr(
+        monitor_app,
+        "_bridge_state",
+        {
+            "jackos_connected": False,
+            "last_sync": None,
+            "synced_contacts": 0,
+            "synced_sessions": 0,
+            "synced_terminals": 0,
+            "terminal_last_sync": None,
+            "notifications_received": 0,
+        },
+    )
     monkeypatch.setattr(monitor_app, "GUARDIAN_CONTROL_TOKEN", "")
     monkeypatch.setattr(monitor_app, "_guardian_control_audit", [])
     monkeypatch.setattr(
@@ -128,6 +149,32 @@ def test_openclaw_commands_auto_approved_low_risk_sync(client, monkeypatch):
     assert body["success"] is True
     assert body["decision"] == "auto_approved"
     assert body["risk_level"] == "low"
+
+
+def test_openclaw_browser_endpoint_rejects_headless_mode(client, monkeypatch):
+    monkeypatch.setattr(monitor_app, "OPENCLAW_EXECUTION_MODE", "headless")
+
+    resp = client.post(
+        "/api/openclaw/browser",
+        json={"action": "status"},
+    )
+    assert resp.status_code == 409
+    body = resp.get_json()
+    assert body["success"] is False
+    assert body["error_code"] == "BROWSER_MODE_DISABLED"
+
+
+def test_openclaw_flow_endpoint_requires_browser_mode(client, monkeypatch):
+    monkeypatch.setattr(monitor_app, "OPENCLAW_EXECUTION_MODE", "hybrid")
+
+    resp = client.post(
+        "/api/openclaw/flow/dashboard",
+        json={"chat_text": "status"},
+    )
+    assert resp.status_code == 409
+    body = resp.get_json()
+    assert body["success"] is False
+    assert body["error_code"] == "FLOW_MODE_DISABLED"
 
 
 def test_guardian_control_requires_token_when_configured(client, monkeypatch):
@@ -330,6 +377,10 @@ def test_openclaw_flow_dashboard_burst_uses_queue_idempotency(client, monkeypatc
 
 def test_openclaw_browser_auto_attach_uses_non_force_mode(monkeypatch):
     monkeypatch.setattr(monitor_app, "_collect_token_info", lambda force_refresh=False: _healthy_token_info())
+    monkeypatch.setattr(monitor_app, "OPENCLAW_EXECUTION_MODE", "browser")
+    monkeypatch.setattr(monitor_app, "OPENCLAW_AUTO_ATTACH_ENABLED", True)
+    monitor_app._OPENCLAW_ATTACH_CONTEXT.depth = 0
+    monkeypatch.setattr(monitor_app, "OPENCLAW_AUTO_ATTACH_ENABLED", True)
 
     calls = {"count": 0}
 
@@ -606,6 +657,8 @@ def test_control_plane_workers_exposes_lease_enforcement(client):
 
 
 def test_monitor_recovery_enqueues_openclaw_autopilot_flow(monkeypatch):
+    monkeypatch.setattr(monitor_app, "OPENCLAW_EXECUTION_MODE", "browser")
+    monkeypatch.setattr(monitor_app, "OPENCLAW_AUTONOMOUS_UI_ENABLED", True)
     monkeypatch.setattr(monitor_app, "MONITOR_AUTOPILOT_OPENCLAW_FLOW_ENABLED", True)
     monkeypatch.setattr(monitor_app, "MONITOR_AUTOPILOT_OPENCLAW_FLOW_COOLDOWN_SEC", 120)
     monkeypatch.setattr(monitor_app, "OPENCLAW_REQUIRE_TASK_LEASE", False)
@@ -651,7 +704,17 @@ def test_monitor_recovery_enqueues_openclaw_autopilot_flow(monkeypatch):
     assert guardian_calls[0]["command"] == "unstick_orion"
 
 
+def test_monitor_recovery_skips_openclaw_flow_when_execution_mode_headless(monkeypatch):
+    monkeypatch.setattr(monitor_app, "OPENCLAW_AUTONOMOUS_UI_ENABLED", True)
+    monkeypatch.setattr(monitor_app, "MONITOR_AUTOPILOT_OPENCLAW_FLOW_ENABLED", True)
+    monkeypatch.setattr(monitor_app, "OPENCLAW_EXECUTION_MODE", "headless")
+    result = monitor_app._monitor_maybe_enqueue_openclaw_flow("orion-test", "not_running")
+    assert result["attempted"] is False
+    assert result["reason"] == "execution_mode_headless"
+
+
 def test_monitor_recovery_skips_openclaw_autopilot_when_lease_required(monkeypatch):
+    monkeypatch.setattr(monitor_app, "OPENCLAW_AUTONOMOUS_UI_ENABLED", True)
     monkeypatch.setattr(monitor_app, "MONITOR_AUTOPILOT_OPENCLAW_FLOW_ENABLED", True)
     monkeypatch.setattr(monitor_app, "OPENCLAW_REQUIRE_TASK_LEASE", True)
     monkeypatch.setattr(monitor_app, "_monitor_process_started_at", datetime.now() - timedelta(seconds=600))
@@ -679,6 +742,14 @@ def test_monitor_recovery_skips_openclaw_autopilot_when_lease_required(monkeypat
 
     assert queued_calls == []
     assert len(guardian_calls) == 1
+
+
+def test_monitor_recovery_skips_openclaw_autopilot_when_autonomous_ui_disabled(monkeypatch):
+    monkeypatch.setattr(monitor_app, "OPENCLAW_AUTONOMOUS_UI_ENABLED", False)
+    monkeypatch.setattr(monitor_app, "MONITOR_AUTOPILOT_OPENCLAW_FLOW_ENABLED", True)
+    result = monitor_app._monitor_maybe_enqueue_openclaw_flow("orion-test", "not_running")
+    assert result["attempted"] is False
+    assert result["reason"] == "autonomous_ui_disabled"
 
 
 def test_interventions_queue_and_defer(client):
@@ -764,6 +835,247 @@ def test_hub_tasks_batch_update_and_history(client):
     assert history_payload["success"] is True
     assert history_payload["task_id"] == task_id
     assert history_payload["count"] >= 1
+
+
+def test_hub_task_dispatch_assigns_and_runs_cycle(client, monkeypatch):
+    created = client.post(
+        "/api/hub/tasks",
+        json={"title": "Dispatch me", "description": "handoff test", "priority": "high"},
+    )
+    assert created.status_code == 200
+    task_id = created.get_json()["task"]["id"]
+
+    calls = []
+
+    def fake_call(instance_id, target, command, priority, options=None):
+        calls.append(
+            {
+                "instance_id": instance_id,
+                "target": target,
+                "command": command,
+                "priority": priority,
+                "options": dict(options or {}),
+            }
+        )
+        return {"success": True, "instance_id": instance_id, "target": target, "command": command}
+
+    monkeypatch.setattr(monitor_app, "_call_instance_command", fake_call)
+
+    dispatched = client.post(
+        f"/api/hub/tasks/{task_id}/dispatch",
+        json={"instance_id": "orion-2"},
+    )
+    assert dispatched.status_code == 200
+    payload = dispatched.get_json()
+    assert payload["success"] is True
+    assert payload["instance_id"] == "orion-2"
+    assert payload["dispatch"]["success"] is True
+
+    assert len(calls) == 1
+    assert calls[0]["instance_id"] == "orion-2"
+    assert calls[0]["target"] == "orion"
+    assert calls[0]["command"] == "run_cycle"
+    assert calls[0]["options"]["dispatch_task_id"] == task_id
+
+    tasks = client.get("/api/hub/tasks")
+    assert tasks.status_code == 200
+    task_rows = tasks.get_json()["tasks"]
+    updated_task = next(row for row in task_rows if row["id"] == task_id)
+    assert updated_task["assigned_to"] == "orion-2"
+
+
+def test_hub_task_dispatch_rejects_finalized_task_without_force_reopen(client):
+    created = client.post(
+        "/api/hub/tasks",
+        json={"title": "Finalized task", "description": "already done"},
+    )
+    assert created.status_code == 200
+    task_id = created.get_json()["task"]["id"]
+
+    moved = client.post(
+        "/api/hub/tasks/batch-update",
+        json={"updates": [{"task_id": task_id, "status": "done"}]},
+    )
+    assert moved.status_code == 200
+
+    dispatched = client.post(f"/api/hub/tasks/{task_id}/dispatch", json={})
+    assert dispatched.status_code == 409
+    payload = dispatched.get_json()
+    assert payload["success"] is False
+    assert payload["error_code"] == "TASK_FINALIZED"
+
+
+def test_hub_workload_includes_runtime_and_tool_sessions(client, monkeypatch):
+    created = client.post(
+        "/api/hub/tasks",
+        json={"title": "Runtime task", "description": "status", "priority": "urgent", "assigned_to": "orion-1"},
+    )
+    assert created.status_code == 200
+    task_id = created.get_json()["task"]["id"]
+
+    moved = client.post(
+        "/api/hub/tasks/batch-update",
+        json={"updates": [{"task_id": task_id, "status": "in_progress", "assigned_to": "orion-1"}]},
+    )
+    assert moved.status_code == 200
+
+    registered = client.post("/api/hub/register-orion", json={"instance_id": "orion-1", "config": {}})
+    assert registered.status_code == 200
+
+    monkeypatch.setattr(
+        monitor_app,
+        "get_orion_instances_snapshot",
+        lambda: [
+            {
+                "id": "orion-1",
+                "name": "Orion 1",
+                "online": True,
+                "running": True,
+                "paused": False,
+                "pause_reason": "",
+                "iteration": 7,
+                "active_flow_count": 2,
+                "last_progress_at": datetime.now().isoformat(),
+            }
+        ],
+    )
+
+    with monitor_app._AUTOMATION_TASKS_LOCK:
+        monitor_app._automation_sessions["sess-runtime-1"] = {
+            "session_id": "sess-runtime-1",
+            "owner_id": "orion:orion-1",
+            "queue_depth": 1,
+            "lease_expires_at": (datetime.now() + timedelta(seconds=120)).isoformat(),
+            "last_task_id": "auto-task-1",
+            "last_error": "",
+            "lease_token": "token-1",
+        }
+
+    synced = client.post(
+        "/api/bridge/sync/terminals",
+        json={
+            "source": "vscode-test",
+            "terminals": [
+                {
+                    "session_id": "term-1",
+                    "owner_id": "orion:orion-1",
+                    "title": "Deploy",
+                    "cwd": "/tmp",
+                    "command": "npm run deploy",
+                    "status": "running",
+                    "busy": True,
+                }
+            ],
+        },
+    )
+    assert synced.status_code == 200
+
+    workload = client.get("/api/hub/workload")
+    assert workload.status_code == 200
+    payload = workload.get_json()
+    assert payload["success"] is True
+    assert payload["automation_sessions"]["total"] >= 1
+    assert payload["bridge_terminals"]["total"] >= 1
+    assert payload["next_actions_preview"] is not None
+
+    rows = payload["workload"]
+    match = next(row for row in rows if row["assignee"] == "orion-1")
+    assert match["runtime"]["iteration"] == 7
+    assert match["runtime"]["running"] is True
+    assert match["tool_sessions"]["owned"] >= 1
+    assert match["tool_sessions"]["busy"] >= 1
+    assert match["terminal_sessions"]["owned"] >= 1
+    assert match["terminal_sessions"]["busy"] >= 1
+
+
+def test_hub_next_actions_recommends_for_unassigned_todo(client):
+    created = client.post(
+        "/api/hub/tasks",
+        json={"title": "Unassigned urgent", "description": "needs owner", "priority": "critical"},
+    )
+    assert created.status_code == 200
+    task_id = created.get_json()["task"]["id"]
+
+    actions_resp = client.get("/api/hub/next-actions?limit=5")
+    assert actions_resp.status_code == 200
+    payload = actions_resp.get_json()
+    assert payload["success"] is True
+    assert payload["count"] >= 1
+    action_types = [row.get("action_type") for row in payload["actions"]]
+    assert "assign_then_dispatch" in action_types
+    assert any(row.get("task_id") == task_id for row in payload["actions"])
+
+
+def test_bridge_sync_terminals_and_list(client):
+    synced = client.post(
+        "/api/bridge/sync/terminals",
+        json={
+            "source": "vscode",
+            "terminals": [
+                {
+                    "session_id": "term-a",
+                    "owner_id": "orion:orion-1",
+                    "title": "Build",
+                    "cwd": "/tmp/project",
+                    "command": "npm run build",
+                    "status": "running",
+                },
+                {
+                    "session_id": "term-b",
+                    "owner_id": "orion:orion-2",
+                    "title": "Tests",
+                    "cwd": "/tmp/project",
+                    "command": "pytest -q",
+                    "status": "error",
+                    "last_error": "test failed",
+                },
+            ],
+        },
+    )
+    assert synced.status_code == 200
+    sync_payload = synced.get_json()
+    assert sync_payload["success"] is True
+    assert sync_payload["upserts"] == 2
+    assert sync_payload["summary"]["total"] >= 2
+
+    listed = client.get("/api/bridge/terminals?limit=10")
+    assert listed.status_code == 200
+    list_payload = listed.get_json()
+    assert list_payload["success"] is True
+    assert list_payload["summary"]["total"] >= 2
+    assert any(row.get("session_id") == "term-b" for row in list_payload["terminals"])
+
+    status = client.get("/api/bridge/status")
+    assert status.status_code == 200
+    status_payload = status.get_json()
+    assert status_payload["success"] is True
+    assert status_payload["bridge"]["stats"]["synced_terminals"] >= 2
+
+
+def test_hub_next_actions_includes_terminal_error_signal(client):
+    synced = client.post(
+        "/api/bridge/sync/terminals",
+        json={
+            "source": "vscode",
+            "terminals": [
+                {
+                    "session_id": "term-err-1",
+                    "owner_id": "orion:orion-1",
+                    "title": "Deploy",
+                    "command": "deploy.sh",
+                    "status": "error",
+                    "last_error": "permission denied",
+                }
+            ],
+        },
+    )
+    assert synced.status_code == 200
+
+    actions_resp = client.get("/api/hub/next-actions?limit=5")
+    assert actions_resp.status_code == 200
+    payload = actions_resp.get_json()
+    assert payload["success"] is True
+    assert any(row.get("action_type") == "inspect_terminal_error" for row in payload["actions"])
 
 
 def test_audit_timeline_and_export_endpoints(client):
@@ -1426,3 +1738,131 @@ def test_human_notification_stats(client):
     assert "stats" in payload
     assert payload["stats"]["total"] >= 2
     assert "channels_available" in payload["stats"]
+
+
+def test_automation_terminal_execute_and_status(client):
+    run = client.post(
+        "/api/automation/execute",
+        json={
+            "task_type": "terminal",
+            "action": "execute",
+            "params": {"command": "pwd"},
+            "session_id": "term-a",
+            "owner_id": "tester-a",
+        },
+    )
+    assert run.status_code == 200
+    body = run.get_json()
+    assert body["success"] is True
+    assert body["status"] == "completed"
+    task_id = body["task_id"]
+    assert task_id
+
+    status = client.get(f"/api/automation/status/{task_id}")
+    assert status.status_code == 200
+    payload = status.get_json()
+    assert payload["success"] is True
+    assert payload["task"]["task_id"] == task_id
+    assert payload["task"]["session_id"] == "term-a"
+
+
+def test_automation_terminal_command_allowlist_denies_unknown_binary(client):
+    run = client.post(
+        "/api/automation/execute",
+        json={
+            "task_type": "terminal",
+            "action": "execute",
+            "params": {"command": "uname -a"},
+            "session_id": "term-a",
+            "owner_id": "tester-a",
+        },
+    )
+    assert run.status_code == 200
+    payload = run.get_json()
+    assert payload["success"] is False
+    assert payload["error_code"] in {"COMMAND_DENIED", "INVALID_COMMAND"}
+
+
+def test_automation_execute_debounces_passive_browser_status(client, monkeypatch):
+    monkeypatch.setattr(monitor_app, "AUTOMATION_PASSIVE_POLL_COOLDOWN_SEC", 60.0)
+    calls = {"count": 0}
+
+    def fake_browser(action, params):
+        calls["count"] += 1
+        return {"success": True, "action": action, "params": dict(params or {})}
+
+    monkeypatch.setattr(monitor_app, "_automation_execute_browser", fake_browser)
+    payload = {
+        "task_type": "browser",
+        "action": "status",
+        "params": {"route_mode": "direct"},
+        "session_id": "browser-main",
+        "owner_id": "tester-a",
+    }
+    first = client.post("/api/automation/execute", json=payload)
+    assert first.status_code == 200
+    first_data = first.get_json()
+    assert first_data["success"] is True
+    assert first_data["status"] == "completed"
+
+    second = client.post("/api/automation/execute", json=payload)
+    assert second.status_code == 200
+    second_data = second.get_json()
+    assert second_data["success"] is True
+    assert second_data["status"] == "skipped"
+    assert second_data["reason"] == "debounced"
+    assert calls["count"] == 1
+
+
+def test_automation_session_lease_conflict(client):
+    first = client.post(
+        "/api/automation/sessions/lease",
+        json={"action": "acquire", "session_id": "shared", "owner_id": "owner-a"},
+    )
+    assert first.status_code == 200
+    first_payload = first.get_json()
+    assert first_payload["success"] is True
+
+    second = client.post(
+        "/api/automation/sessions/lease",
+        json={"action": "acquire", "session_id": "shared", "owner_id": "owner-b"},
+    )
+    assert second.status_code == 409
+    second_payload = second.get_json()
+    assert second_payload["success"] is False
+    assert second_payload["error_code"] == "LEASE_CONFLICT"
+
+
+def test_automation_capabilities_endpoint(client):
+    response = client.get("/api/automation/capabilities")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert "capabilities" in payload
+    assert "runtime" in payload
+    assert "terminal" in payload["capabilities"]
+
+
+def test_automation_schedule_create_and_list(client):
+    created = client.post(
+        "/api/automation/schedule",
+        json={
+            "schedule_id": "sched-test-1",
+            "task_type": "terminal",
+            "action": "execute",
+            "params": {"command": "pwd"},
+            "interval_sec": 30,
+            "enabled": True,
+        },
+    )
+    assert created.status_code == 200
+    create_payload = created.get_json()
+    assert create_payload["success"] is True
+    assert create_payload["schedule"]["schedule_id"] == "sched-test-1"
+    assert create_payload["schedule"]["next_run_at"] > 0
+
+    listed = client.get("/api/automation/schedules")
+    assert listed.status_code == 200
+    list_payload = listed.get_json()
+    assert list_payload["success"] is True
+    assert any(item.get("schedule_id") == "sched-test-1" for item in list_payload["schedules"])

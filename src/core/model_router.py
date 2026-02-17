@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
+from src.core.routing_telemetry import read_recent_routing_events
 
 load_dotenv()
 
@@ -84,6 +85,9 @@ DEFAULT_GLM_API_BASE = os.getenv("GLM_API_BASE") or os.getenv("ZAI_OPENAI_BASE_U
 
 DAILY_BUDGET_USD = float(os.getenv("ROUTER_DAILY_BUDGET_USD", "15"))
 SOFT_BUDGET_RATIO = float(os.getenv("ROUTER_SOFT_BUDGET_RATIO", "0.85"))
+ENABLE_MODEL_PERFORMANCE_LEARNING = os.getenv("ENABLE_MODEL_PERFORMANCE_LEARNING", "true").strip().lower() in {"1", "true", "yes", "on"}
+MODEL_PERFORMANCE_WINDOW = max(50, int(os.getenv("MODEL_PERFORMANCE_WINDOW", "240")))
+MODEL_PERFORMANCE_MIN_CALLS = max(1, int(os.getenv("MODEL_PERFORMANCE_MIN_CALLS", "4")))
 STATE_DIR = Path(os.getenv("ROUTER_STATE_DIR", "data/state"))
 
 _COMPLEXITY_RANK = {
@@ -534,6 +538,56 @@ class ModelRouter:
             return f"{cfg.api_source}:{cfg.name}"
         return cfg.name
 
+    def _model_performance_scores(self, task_type: TaskType) -> Dict[str, float]:
+        """
+        Estimate per-model utility from recent routing telemetry.
+        Higher is better.
+        """
+        scores: Dict[str, float] = {}
+        if not ENABLE_MODEL_PERFORMANCE_LEARNING:
+            return scores
+        events = read_recent_routing_events(limit=MODEL_PERFORMANCE_WINDOW)
+        if not events:
+            return scores
+
+        grouped: Dict[str, Dict[str, float]] = {}
+        for item in events:
+            if str(item.get("task_type", "")) != task_type.value:
+                continue
+            selected = str(item.get("selected_model", "")).strip()
+            if not selected:
+                continue
+            row = grouped.setdefault(selected, {"calls": 0.0, "success": 0.0, "latency_ms": 0.0, "cost_usd": 0.0})
+            row["calls"] += 1.0
+            if bool(item.get("success", False)):
+                row["success"] += 1.0
+            row["latency_ms"] += max(0.0, float(item.get("duration_ms", 0.0) or 0.0))
+            row["cost_usd"] += max(0.0, float(item.get("estimated_cost_usd", 0.0) or 0.0))
+
+        if not grouped:
+            return scores
+
+        # Normalize against observed maxima so score is stable by window.
+        max_latency = max((v["latency_ms"] / max(1.0, v["calls"]) for v in grouped.values()), default=1.0)
+        max_cost = max((v["cost_usd"] / max(1.0, v["calls"]) for v in grouped.values()), default=1.0)
+        max_latency = max(1.0, max_latency)
+        max_cost = max(1e-6, max_cost)
+
+        for model_name, row in grouped.items():
+            calls = row["calls"]
+            if calls < float(MODEL_PERFORMANCE_MIN_CALLS):
+                continue
+            success_ratio = row["success"] / calls
+            avg_latency = row["latency_ms"] / calls
+            avg_cost = row["cost_usd"] / calls
+            latency_score = 1.0 - min(1.0, avg_latency / max_latency)
+            cost_score = 1.0 - min(1.0, avg_cost / max_cost)
+            # Weighted toward reliability, then cost, then latency.
+            utility = (0.62 * success_ratio) + (0.25 * cost_score) + (0.13 * latency_score)
+            scores[model_name] = utility
+
+        return scores
+
     def get_fallback_chain(
         self,
         task_type: TaskType,
@@ -576,6 +630,14 @@ class ModelRouter:
         elif prefer_cost or prefer_speed:
             candidates = self._sort_by_preferences(candidates, prefer_speed, prefer_cost)
         # Default behavior: preserve chain order from policy for deterministic routing.
+        elif ENABLE_MODEL_PERFORMANCE_LEARNING:
+            perf = self._model_performance_scores(task_type)
+            if perf:
+                def _perf_key(cfg: ModelConfig) -> float:
+                    base = perf.get(cfg.name, 0.0)
+                    # tiny deterministic prior by configured quality tier
+                    return base + (float(cfg.quality_tier) * 0.001)
+                candidates = sorted(candidates, key=_perf_key, reverse=True)
 
         if candidates:
             return candidates

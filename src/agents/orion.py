@@ -20,6 +20,9 @@ from src.core.computer_controller import get_computer_controller
 from src.core.multi_orion_hub import get_multi_orion_hub
 from src.core.orion_messenger import get_messenger
 from src.core.human_notifier import get_notifier
+from src.core.routing_telemetry import read_recent_routing_events
+from src.core.provider_profile import ProviderProfileStore
+from src.core.official_model_registry import refresh_model_registry_from_profile
 from src.memory.autonomous_improver import get_autonomous_improver
 from src.memory.learning_loop import get_learning_loop
 
@@ -70,15 +73,48 @@ class Orion(AsyncAgent):
         self.security_audit_interval = max(1, int(os.getenv("SECURITY_AUDIT_INTERVAL", "8")))
         self.security_fallback_audit_interval = max(2, int(os.getenv("SECURITY_FALLBACK_AUDIT_INTERVAL", "20")))
         self.echo_interval = max(1, int(os.getenv("ECHO_TEST_INTERVAL", "4")))
+        self._base_security_audit_interval = self.security_audit_interval
+        self._base_echo_interval = self.echo_interval
         self.last_echo_iteration = 0
         self.last_tested_fingerprint = ""
         self.last_security_fingerprint = ""
         self.last_full_security_audit_iteration = 0
         self.last_deployed_fingerprint = ""
         self.nova_stable_interval = max(1, int(os.getenv("ORION_NOVA_STABLE_INTERVAL", "2")))
+        self._base_nova_stable_interval = self.nova_stable_interval
         self.last_nova_iteration = 0
         self.last_nova_result: Optional[TaskResult] = None
         self.agent_controls: Dict[str, Dict[str, Any]] = {}
+        self.token_guard_enabled = os.getenv("ORION_TOKEN_GUARD_ENABLED", "true").lower() == "true"
+        self.token_guard_soft_ratio = max(0.1, float(os.getenv("ORION_TOKEN_GUARD_SOFT_RATIO", "0.85")))
+        self.token_guard_hard_ratio = max(
+            self.token_guard_soft_ratio,
+            float(os.getenv("ORION_TOKEN_GUARD_HARD_RATIO", "1.0")),
+        )
+        self.token_hard_cap_enabled = os.getenv("ORION_TOKEN_HARD_CAP_ENABLED", "true").lower() == "true"
+        self.token_hard_cap_ratio = max(
+            self.token_guard_hard_ratio,
+            float(os.getenv("ORION_TOKEN_HARD_CAP_RATIO", "1.2")),
+        )
+        self.token_hard_cap_interval_multiplier = max(2, int(os.getenv("ORION_TOKEN_HARD_CAP_MULTIPLIER", "2")))
+        self.pixel_soft_interval = max(1, int(os.getenv("ORION_PIXEL_SOFT_INTERVAL", "2")))
+        self.pixel_hard_interval = max(self.pixel_soft_interval, int(os.getenv("ORION_PIXEL_HARD_INTERVAL", "4")))
+        self.nova_soft_interval = max(self.nova_stable_interval, int(os.getenv("ORION_NOVA_SOFT_INTERVAL", "3")))
+        self.nova_hard_interval = max(self.nova_soft_interval, int(os.getenv("ORION_NOVA_HARD_INTERVAL", "5")))
+        self.echo_soft_interval = max(self.echo_interval, int(os.getenv("ORION_ECHO_SOFT_INTERVAL", "5")))
+        self.echo_hard_interval = max(self.echo_soft_interval, int(os.getenv("ORION_ECHO_HARD_INTERVAL", "8")))
+        self.token_policy_tune_interval = max(2, int(os.getenv("ORION_TOKEN_POLICY_TUNE_INTERVAL", "4")))
+        self.last_token_policy_tune_iteration = 0
+        self.token_policy_mode = "balanced"
+        self.last_pixel_iteration = 0
+        self._last_token_budget: Dict[str, Any] = {}
+        self.model_registry_auto_refresh_enabled = os.getenv("MODEL_REGISTRY_AUTO_REFRESH_ENABLED", "true").lower() == "true"
+        self.model_registry_refresh_interval_sec = max(
+            600,
+            int(os.getenv("MODEL_REGISTRY_REFRESH_INTERVAL_SEC", "21600")),
+        )
+        self._last_model_registry_refresh_ts: float = 0.0
+        self.provider_store = ProviderProfileStore()
 
         self.instance_id = str(os.getenv("ORION_INSTANCE_ID", self.name.lower())).strip().lower() or self.name.lower()
         self.control_plane_base_url = str(os.getenv("MONITOR_BASE_URL", os.getenv("OPENCLAW_DASHBOARD_URL", "http://127.0.0.1:5050"))).strip().rstrip("/")
@@ -438,6 +474,9 @@ class Orion(AsyncAgent):
 
         # Message stats
         msg_stats = self.messenger.get_stats()
+        token_budget = self._get_token_budget_snapshot()
+        token_economics = self._token_economics_snapshot()
+        token_hard_cap = self._hard_cap_state()
 
         return {
             "instance_id": self.instance_id,
@@ -453,6 +492,10 @@ class Orion(AsyncAgent):
             "online_orions": len([o for o in hub_snapshot.get("orions", {}).values()
                                  if o.get("status") == "active"]),
             "message_stats": msg_stats,
+            "token_budget": token_budget,
+            "token_economics": token_economics,
+            "token_policy_mode": self.token_policy_mode,
+            "token_hard_cap": token_hard_cap,
             "last_cycle": self.last_cycle_finished_at.isoformat() if self.last_cycle_finished_at else None,
         }
 
@@ -553,6 +596,7 @@ Messages: {report['message_stats']['total_messages']} total"""
 
             self.iteration += 1
             self.last_progress_at = datetime.now()
+            self._maybe_refresh_official_model_registry()
             self._log(f"\n{'='*60}")
             self._log(f"🔄 ITERATION #{self.iteration}")
             self._log(f"{'='*60}")
@@ -582,6 +626,10 @@ Messages: {report['message_stats']['total_messages']} total"""
                 self._save_history()
                 self.last_progress_at = datetime.now()
                 recovery_needed = self._update_stability_signals(result)
+                economics = self._token_economics_snapshot()
+                tune = self._maybe_tune_token_policy(economics=economics)
+                result["token_economics"] = economics
+                result["token_policy_tuning"] = tune
 
                 # Check if target reached
                 if result.get("score", 0) >= self.target_score:
@@ -617,6 +665,25 @@ Messages: {report['message_stats']['total_messages']} total"""
 
         self._log("🏁 Infinite loop ended")
 
+    def _maybe_refresh_official_model_registry(self) -> Dict[str, Any]:
+        """Refresh official model registry on a coarse interval (non-blocking fail-open)."""
+        if not self.model_registry_auto_refresh_enabled:
+            return {"success": False, "reason": "disabled"}
+        now_ts = time.time()
+        if (now_ts - self._last_model_registry_refresh_ts) < self.model_registry_refresh_interval_sec:
+            return {"success": False, "reason": "interval_not_reached"}
+        self._last_model_registry_refresh_ts = now_ts
+        try:
+            profile = self.provider_store.get(masked=False)
+            snapshot = refresh_model_registry_from_profile(profile=profile, timeout_sec=6)
+            providers = snapshot.get("providers", {}) if isinstance(snapshot.get("providers"), dict) else {}
+            ok_count = sum(1 for row in providers.values() if isinstance(row, dict) and row.get("status") == "ok")
+            self._log(f"🌐 Official model registry refreshed: providers_ok={ok_count}/{len(providers)}")
+            return {"success": True, "providers": len(providers), "providers_ok": ok_count}
+        except Exception as exc:
+            self._log(f"⚠️ Official model registry refresh failed: {str(exc)}")
+            return {"success": False, "reason": str(exc)}
+
     async def run_parallel_cycle(self) -> Dict:
         """
         Run one parallel improvement cycle
@@ -629,7 +696,10 @@ Messages: {report['message_stats']['total_messages']} total"""
         cycle_result = {
             "iteration": self.iteration,
             "timestamp": cycle_start.isoformat(),
-            "results": {}
+            "results": {},
+            "token_budget": self._get_token_budget_snapshot(),
+            "token_policy_mode": self.token_policy_mode,
+            "token_hard_cap": self._hard_cap_state(),
         }
 
         # PHASE 1: Dispatch all agents IN PARALLEL
@@ -1077,6 +1147,7 @@ Messages: {report['message_stats']['total_messages']} total"""
             self._update_task_status(kanban_task["id"], "in_progress", lease_token=lease_token)
             self._log(f"📋 Working on task: {kanban_task.get('title', 'Unknown')}")
 
+        token_hints = self._runtime_token_hints(critical=False)
         message = AgentMessage(
             from_agent="orion",
             to_agent="nova",
@@ -1097,7 +1168,9 @@ Messages: {report['message_stats']['total_messages']} total"""
                         and self.consecutive_fix_cycles == 0
                         and self.consecutive_no_deploy_cycles == 0
                         and self.consecutive_nova_no_output == 0
-                    ),
+                    ) or bool(token_hints.get("prefer_cost", False)),
+                    "token_pressure_level": token_hints.get("token_pressure_level", "normal"),
+                    "token_budget": token_hints.get("token_budget", {}),
                 },
             }
         )
@@ -1135,9 +1208,215 @@ Messages: {report['message_stats']['total_messages']} total"""
             return True, "recent unresolved feedback"
 
         elapsed = self.iteration - self.last_nova_iteration
-        if elapsed >= self.nova_stable_interval:
-            return True, f"nova cadence interval reached ({elapsed}/{self.nova_stable_interval})"
-        return False, f"stable cadence ({elapsed}/{self.nova_stable_interval})"
+        token_level = str(self._get_token_budget_snapshot().get("level", "normal"))
+        hard_cap = self._hard_cap_state()
+        hard_cap_active = bool(hard_cap.get("active", False))
+        hard_cap_multiplier = int(hard_cap.get("interval_multiplier", 2) or 2)
+        required_interval = self.nova_stable_interval
+        if token_level == "soft":
+            required_interval = max(required_interval, self.nova_soft_interval)
+        elif token_level == "hard":
+            required_interval = max(required_interval, self.nova_hard_interval)
+        if hard_cap_active:
+            required_interval = max(required_interval, self.nova_hard_interval * hard_cap_multiplier)
+        if elapsed >= required_interval:
+            return True, f"nova cadence interval reached ({elapsed}/{required_interval})"
+        if hard_cap_active:
+            return False, f"hard cap cadence ({elapsed}/{required_interval})"
+        if token_level in {"soft", "hard"}:
+            return False, f"{token_level} token pressure cadence ({elapsed}/{required_interval})"
+        return False, f"stable cadence ({elapsed}/{required_interval})"
+
+    def _runtime_token_hints(self, critical: bool = False) -> Dict[str, Any]:
+        """Hints for downstream agents to adapt route choice under token pressure."""
+        token_budget = self._get_token_budget_snapshot()
+        level = str(token_budget.get("level", "normal"))
+        prefer_cost = (level in {"soft", "hard"}) and (not critical)
+        return {
+            "token_budget": token_budget,
+            "token_pressure_level": level,
+            "prefer_cost": prefer_cost,
+            "hard_cap": self._hard_cap_state(),
+        }
+
+    def _hard_cap_state(self) -> Dict[str, Any]:
+        """Emergency cost guard for severe budget overflow."""
+        budget = self._get_token_budget_snapshot()
+        ratio = float(budget.get("budget_ratio", 0.0) or 0.0)
+        active = bool(self.token_hard_cap_enabled and ratio >= self.token_hard_cap_ratio)
+        return {
+            "enabled": bool(self.token_hard_cap_enabled),
+            "active": active,
+            "ratio": round(ratio, 4),
+            "threshold": round(float(self.token_hard_cap_ratio), 4),
+            "interval_multiplier": int(self.token_hard_cap_interval_multiplier),
+        }
+
+    def _token_economics_snapshot(self, event_limit: int = 120, cycle_window: int = 20) -> Dict[str, Any]:
+        """Summarize recent token/cost efficiency using routing telemetry + cycle history."""
+        events = read_recent_routing_events(limit=max(20, int(event_limit)))
+        usage_summary = self.router.get_usage_summary() if hasattr(self, "router") else {}
+        usage_models = usage_summary.get("models") if isinstance(usage_summary, dict) and isinstance(usage_summary.get("models"), dict) else {}
+        usage_tokens_total = int(sum(int((item or {}).get("tokens", 0) or 0) for item in usage_models.values()))
+        usage_cost_total = float(usage_summary.get("total_cost_usd", 0.0) or 0.0) if isinstance(usage_summary, dict) else 0.0
+        total_calls = len(events)
+        success_calls = sum(1 for item in events if bool(item.get("success", False)))
+        failed_calls = max(0, total_calls - success_calls)
+        total_tokens = 0
+        total_cost = 0.0
+        by_agent: Dict[str, Dict[str, Any]] = {}
+        for item in events:
+            usage = item.get("usage") if isinstance(item.get("usage"), dict) else {}
+            tokens = int(usage.get("total_tokens", 0) or 0)
+            cost = float(item.get("estimated_cost_usd", 0.0) or 0.0)
+            agent = str(item.get("agent", "unknown")).strip().lower() or "unknown"
+            total_tokens += max(0, tokens)
+            total_cost += max(0.0, cost)
+            row = by_agent.setdefault(agent, {"calls": 0, "tokens": 0, "cost_usd": 0.0, "success_calls": 0})
+            row["calls"] += 1
+            row["tokens"] += max(0, tokens)
+            row["cost_usd"] += max(0.0, cost)
+            if bool(item.get("success", False)):
+                row["success_calls"] += 1
+
+        for row in by_agent.values():
+            calls = int(row.get("calls", 0) or 0)
+            row["avg_tokens_per_call"] = int((row.get("tokens", 0) or 0) / calls) if calls > 0 else 0
+            row["success_ratio"] = round(float(row.get("success_calls", 0) or 0) / calls, 4) if calls > 0 else 0.0
+            row["cost_usd"] = round(float(row.get("cost_usd", 0.0) or 0.0), 6)
+
+        metric_source = "routing_events"
+        if total_tokens <= 0 and usage_tokens_total > 0:
+            total_tokens = usage_tokens_total
+            metric_source = "router_usage"
+        if total_cost <= 0.0 and usage_cost_total > 0.0:
+            total_cost = usage_cost_total
+            metric_source = "router_usage"
+
+        by_model: Dict[str, Dict[str, Any]] = {}
+        for model_name, row in usage_models.items():
+            calls = int((row or {}).get("calls", 0) or 0)
+            tokens = int((row or {}).get("tokens", 0) or 0)
+            cost = float((row or {}).get("cost_usd", 0.0) or 0.0)
+            by_model[str(model_name)] = {
+                "calls": calls,
+                "tokens": tokens,
+                "cost_usd": round(cost, 6),
+                "avg_tokens_per_call": int(tokens / calls) if calls > 0 else 0,
+            }
+
+        recent_cycles = self.history[-max(3, int(cycle_window)) :] if isinstance(self.history, list) else []
+        deploy_count = sum(1 for item in recent_cycles if bool(item.get("deployed", False)))
+        avg_score = (
+            sum(float(item.get("score", 0.0) or 0.0) for item in recent_cycles) / max(1, len(recent_cycles))
+            if recent_cycles
+            else 0.0
+        )
+        deploy_rate = (deploy_count / len(recent_cycles)) if recent_cycles else 0.0
+        cost_per_deploy = (total_cost / deploy_count) if deploy_count > 0 else None
+        tokens_per_deploy = (total_tokens / deploy_count) if deploy_count > 0 else None
+        success_ratio = (success_calls / total_calls) if total_calls > 0 else 0.0
+
+        return {
+            "window": {
+                "routing_events": total_calls,
+                "cycles": len(recent_cycles),
+            },
+            "calls": {
+                "total": total_calls,
+                "success": success_calls,
+                "failed": failed_calls,
+                "success_ratio": round(success_ratio, 4),
+            },
+            "tokens": {
+                "total": int(total_tokens),
+                "avg_per_call": int(total_tokens / total_calls) if total_calls > 0 else 0,
+                "per_deploy": int(tokens_per_deploy) if tokens_per_deploy is not None else None,
+            },
+            "cost": {
+                "total_usd": round(total_cost, 6),
+                "avg_per_call_usd": round(total_cost / total_calls, 6) if total_calls > 0 else 0.0,
+                "per_deploy_usd": round(cost_per_deploy, 6) if cost_per_deploy is not None else None,
+            },
+            "productivity": {
+                "deploy_count": int(deploy_count),
+                "deploy_rate": round(deploy_rate, 4),
+                "avg_score": round(avg_score, 3),
+            },
+            "metric_source": metric_source,
+            "by_agent": dict(sorted(by_agent.items(), key=lambda x: x[1].get("cost_usd", 0.0), reverse=True)),
+            "by_model": dict(sorted(by_model.items(), key=lambda x: x[1].get("cost_usd", 0.0), reverse=True)),
+            "policy_mode": self.token_policy_mode,
+        }
+
+    def _maybe_tune_token_policy(self, economics: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Auto-tune non-critical cadence for better cost efficiency."""
+        if self.iteration <= 0:
+            return {"changed": False, "mode": self.token_policy_mode, "reason": "iteration_not_started"}
+        if (self.iteration - self.last_token_policy_tune_iteration) < self.token_policy_tune_interval:
+            return {"changed": False, "mode": self.token_policy_mode, "reason": "interval_not_reached"}
+
+        self.last_token_policy_tune_iteration = self.iteration
+        budget = self._get_token_budget_snapshot()
+        ratio = float(budget.get("budget_ratio", 0.0) or 0.0)
+        level = str(budget.get("level", "normal"))
+        hard_cap = self._hard_cap_state()
+        hard_cap_active = bool(hard_cap.get("active", False))
+        hard_cap_multiplier = int(hard_cap.get("interval_multiplier", 2) or 2)
+        econ = economics if isinstance(economics, dict) else self._token_economics_snapshot()
+        productivity = econ.get("productivity") if isinstance(econ.get("productivity"), dict) else {}
+        deploy_rate = float(productivity.get("deploy_rate", 0.0) or 0.0)
+        avg_score = float(productivity.get("avg_score", 0.0) or 0.0)
+        should_economy = hard_cap_active or level in {"soft", "hard"} or ratio >= 0.95 or (deploy_rate < 0.35 and ratio >= 0.75)
+        should_balanced = level == "normal" and ratio < 0.7 and deploy_rate >= 0.45 and avg_score >= 7.0
+
+        previous_mode = self.token_policy_mode
+        if should_economy:
+            self.token_policy_mode = "economy"
+            if hard_cap_active:
+                self.nova_stable_interval = max(
+                    self._base_nova_stable_interval,
+                    self.nova_hard_interval * hard_cap_multiplier,
+                )
+                self.echo_interval = max(
+                    self._base_echo_interval,
+                    self.echo_hard_interval * hard_cap_multiplier,
+                )
+                self.security_audit_interval = max(
+                    self._base_security_audit_interval,
+                    self.security_fallback_audit_interval * hard_cap_multiplier,
+                )
+            else:
+                self.nova_stable_interval = max(self._base_nova_stable_interval, self.nova_soft_interval)
+                self.echo_interval = max(self._base_echo_interval, self.echo_soft_interval)
+                self.security_audit_interval = max(self._base_security_audit_interval, self.security_fallback_audit_interval)
+        elif should_balanced:
+            self.token_policy_mode = "balanced"
+            self.nova_stable_interval = self._base_nova_stable_interval
+            self.echo_interval = self._base_echo_interval
+            self.security_audit_interval = self._base_security_audit_interval
+
+        changed = previous_mode != self.token_policy_mode
+        if changed:
+            self._log(
+                f"🧮 Token policy tuned: {previous_mode} -> {self.token_policy_mode} "
+                f"(budget_ratio={ratio:.2f}, deploy_rate={deploy_rate:.2f}, avg_score={avg_score:.2f})"
+            )
+        return {
+            "changed": changed,
+            "mode": self.token_policy_mode,
+            "previous_mode": previous_mode,
+            "budget_ratio": round(ratio, 4),
+            "deploy_rate": round(deploy_rate, 4),
+            "avg_score": round(avg_score, 3),
+            "level": level,
+            "hard_cap_active": hard_cap_active,
+            "effective_intervals": {
+                "nova_stable_interval": self.nova_stable_interval,
+                "echo_interval": self.echo_interval,
+                "security_audit_interval": self.security_audit_interval,
+            },
+        }
 
     def _cached_nova_output_files(self) -> List[str]:
         """Return existing output files so downstream steps can keep operating when Nova is skipped."""
@@ -1221,17 +1500,34 @@ Messages: {report['message_stats']['total_messages']} total"""
             )
 
         current_fingerprint = self._files_fingerprint()
+        token_level = str(self._get_token_budget_snapshot().get("level", "normal"))
+        hard_cap = self._hard_cap_state()
+        hard_cap_active = bool(hard_cap.get("active", False))
+        hard_cap_multiplier = int(hard_cap.get("interval_multiplier", 2) or 2)
+        required_interval = self.echo_interval
+        if token_level == "soft":
+            required_interval = max(required_interval, self.echo_soft_interval)
+        elif token_level == "hard":
+            required_interval = max(required_interval, self.echo_hard_interval)
+        if hard_cap_active:
+            required_interval = max(required_interval, self.echo_hard_interval * hard_cap_multiplier)
         should_run = (
             self.iteration <= 2
             or not current_fingerprint
             or current_fingerprint != self.last_tested_fingerprint
-            or (self.iteration - self.last_echo_iteration) >= self.echo_interval
+            or (self.iteration - self.last_echo_iteration) >= required_interval
         )
         if not should_run:
             return TaskResult(
                 success=True,
                 agent="Echo",
-                output={"skipped": True, "reason": "No meaningful code changes for retest"},
+                output={
+                    "skipped": True,
+                    "reason": "No meaningful code changes for retest",
+                    "token_pressure_level": token_level,
+                    "required_interval": required_interval,
+                    "hard_cap_active": hard_cap_active,
+                },
                 score=8.0,
                 suggestions=["Retest will run automatically on next code-delta or interval trigger."],
             )
@@ -1253,6 +1549,16 @@ Messages: {report['message_stats']['total_messages']} total"""
                 score=8.0,
                 suggestions=["Enable Pixel from dashboard to resume UI/UX analysis."],
             )
+        should_run, reason = self._should_run_pixel()
+        if not should_run:
+            self._log(f"🪶 Pixel skipped this cycle ({reason})")
+            return TaskResult(
+                success=True,
+                agent="Pixel",
+                output={"skipped": True, "reason": reason, "token_budget": self._get_token_budget_snapshot()},
+                score=8.1,
+                suggestions=["Pixel will auto-resume on periodic cadence while token pressure is elevated."],
+            )
 
         # Get latest screenshot
         screenshot = None
@@ -1267,11 +1573,14 @@ Messages: {report['message_stats']['total_messages']} total"""
             content={
                 "screenshot": screenshot,
                 "context": self.context.to_dict() if self.context else {},
-                "iteration": self.iteration
+                "iteration": self.iteration,
+                "runtime_hints": self._runtime_token_hints(critical=False),
             }
         )
-
-        return await self.agents["pixel"].process(message)
+        result = await self.agents["pixel"].process(message)
+        if hasattr(result, "success") and result.success:
+            self.last_pixel_iteration = self.iteration
+        return result
 
     async def _dispatch_cipher(self, nova_result: TaskResult) -> TaskResult:
         """Dispatch Cipher for security review"""
@@ -1299,7 +1608,8 @@ Messages: {report['message_stats']['total_messages']} total"""
             priority=Priority.CRITICAL,
             content={
                 "code": nova_result.output if nova_result.success else {},
-                "context": self.context.to_dict() if self.context else {}
+                "context": self.context.to_dict() if self.context else {},
+                "runtime_hints": self._runtime_token_hints(critical=True),
             }
         )
 
@@ -1322,10 +1632,20 @@ Messages: {report['message_stats']['total_messages']} total"""
         if current_fingerprint != self.last_security_fingerprint:
             return True, "code fingerprint changed"
 
+        token_budget = self._get_token_budget_snapshot()
+        budget_level = str(token_budget.get("level", "normal"))
+        hard_cap = self._hard_cap_state()
+        hard_cap_active = bool(hard_cap.get("active", False))
+        hard_cap_multiplier = int(hard_cap.get("interval_multiplier", 2) or 2)
         interval = self.security_fallback_audit_interval if used_fallback else self.security_audit_interval
+        if budget_level == "hard":
+            interval = max(interval, self.security_fallback_audit_interval)
+        if hard_cap_active:
+            interval = max(interval, self.security_fallback_audit_interval * hard_cap_multiplier)
         if (self.iteration - self.last_full_security_audit_iteration) >= interval:
             return True, f"periodic interval {interval}"
-
+        if budget_level in {"soft", "hard"}:
+            return False, f"token_guard_{budget_level}: cached fingerprint and interval not reached"
         return False, "cached fingerprint and interval not reached"
 
     def _build_cached_cipher_result(self, reason: str) -> TaskResult:
@@ -1356,7 +1676,8 @@ Messages: {report['message_stats']['total_messages']} total"""
             priority=Priority.LOW,
             content={
                 "context": self.context.to_dict() if self.context else {},
-                "iteration": self.iteration
+                "iteration": self.iteration,
+                "runtime_hints": self._runtime_token_hints(critical=False),
             }
         )
 
@@ -1443,6 +1764,8 @@ Messages: {report['message_stats']['total_messages']} total"""
 
     def _get_status(self) -> Dict:
         """Get current status"""
+        token_budget = self._get_token_budget_snapshot()
+        token_economics = self._token_economics_snapshot()
         return {
             "running": self.running,
             "paused": self.paused,
@@ -1463,6 +1786,10 @@ Messages: {report['message_stats']['total_messages']} total"""
                 "fix_streak_trigger": self.max_fix_streak_before_recovery,
                 "no_output_trigger": self.max_no_output_before_recovery,
             },
+            "token_budget": token_budget,
+            "token_economics": token_economics,
+            "token_policy_mode": self.token_policy_mode,
+            "token_hard_cap": self._hard_cap_state(),
             "context": self.context.to_dict() if self.context else None
         }
 
@@ -1501,6 +1828,71 @@ Messages: {report['message_stats']['total_messages']} total"""
             digest.update(str(self.context.files.get(path, "")).encode("utf-8", errors="ignore"))
             digest.update(b"\0")
         return digest.hexdigest()
+
+    def _get_token_budget_snapshot(self) -> Dict[str, Any]:
+        """Read router budget summary and normalize token pressure level."""
+        fallback = {
+            "total_cost_usd": 0.0,
+            "daily_budget_usd": 0.0,
+            "budget_ratio": 0.0,
+            "level": "normal",
+            "token_guard_enabled": self.token_guard_enabled,
+        }
+        try:
+            summary = self.router.get_usage_summary()
+            if not isinstance(summary, dict):
+                self._last_token_budget = fallback
+                return fallback
+            ratio = float(summary.get("budget_ratio", 0.0) or 0.0)
+            level = "normal"
+            if self.token_guard_enabled:
+                if ratio >= self.token_guard_hard_ratio:
+                    level = "hard"
+                elif ratio >= self.token_guard_soft_ratio:
+                    level = "soft"
+            normalized = {
+                "total_cost_usd": float(summary.get("total_cost_usd", 0.0) or 0.0),
+                "daily_budget_usd": float(summary.get("daily_budget_usd", 0.0) or 0.0),
+                "budget_ratio": ratio,
+                "level": level,
+                "token_guard_enabled": self.token_guard_enabled,
+            }
+            self._last_token_budget = normalized
+            return normalized
+        except Exception:
+            self._last_token_budget = fallback
+            return fallback
+
+    def _should_run_pixel(self) -> Tuple[bool, str]:
+        """Run Pixel less often under token pressure while keeping periodic coverage."""
+        if self.iteration <= 2:
+            return True, "warmup cycles"
+
+        token_budget = self._get_token_budget_snapshot()
+        level = str(token_budget.get("level", "normal"))
+        hard_cap = self._hard_cap_state()
+        hard_cap_active = bool(hard_cap.get("active", False))
+        hard_cap_multiplier = int(hard_cap.get("interval_multiplier", 2) or 2)
+        elapsed = self.iteration - self.last_pixel_iteration
+        if level == "hard":
+            required = self.pixel_hard_interval * (hard_cap_multiplier if hard_cap_active else 1)
+            if elapsed >= required:
+                if hard_cap_active:
+                    return True, f"hard-cap periodic interval {required}"
+                return True, f"hard-pressure periodic interval {required}"
+            if hard_cap_active:
+                return False, f"hard cap active ({elapsed}/{required})"
+            return False, f"hard token pressure ({elapsed}/{required})"
+        if level == "soft":
+            if elapsed >= self.pixel_soft_interval:
+                return True, f"soft-pressure periodic interval {self.pixel_soft_interval}"
+            return False, f"soft token pressure ({elapsed}/{self.pixel_soft_interval})"
+        if hard_cap_active:
+            required = self.pixel_hard_interval * hard_cap_multiplier
+            if elapsed >= required:
+                return True, f"hard-cap periodic interval {required}"
+            return False, f"hard cap active ({elapsed}/{required})"
+        return True, "normal token pressure"
 
     def _update_stability_signals(self, cycle_result: Dict[str, Any]) -> bool:
         """Track repetitive failures and trigger recovery actions when needed."""
@@ -1556,6 +1948,9 @@ Messages: {report['message_stats']['total_messages']} total"""
     def _next_iteration_delay_sec(self) -> int:
         """Adaptive delay to avoid high-cost hot loops during stagnation."""
         delay = 2
+        hard_cap = self._hard_cap_state()
+        if bool(hard_cap.get("active", False)):
+            delay = max(delay, 14)
         if self.consecutive_no_deploy_cycles >= 5:
             delay = max(delay, 4)
         if self.consecutive_no_deploy_cycles >= 10:
