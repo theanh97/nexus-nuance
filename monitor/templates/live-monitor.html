@@ -1204,6 +1204,53 @@
         .message-priority.high { background: #f9731620; color: #f97316; }
         .message-priority.normal { background: #6b728020; color: #6b7280; }
 
+        /* Notifications */
+        .notif-stats {
+            padding: 8px;
+            background: var(--panel-soft);
+            border-radius: 8px;
+        }
+        .notif-item {
+            padding: 10px;
+            border-bottom: 1px solid var(--border);
+        }
+        .notif-item:last-child { border-bottom: none; }
+        .notif-item.unacknowledged {
+            background: rgba(249, 115, 22, 0.1);
+            border-left: 3px solid #f97316;
+        }
+        .notif-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+        .notif-title { font-weight: 600; }
+        .notif-level {
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 9px;
+            text-transform: uppercase;
+            font-weight: 700;
+        }
+        .notif-level.info { background: #3b82f620; color: #3b82f6; }
+        .notif-level.success { background: #22c55e20; color: #22c55e; }
+        .notif-level.warning { background: #f9731620; color: #f97316; }
+        .notif-level.error { background: #ef444420; color: #ef4444; }
+        .notif-level.critical { background: #dc262620; color: #dc2626; }
+        .notif-message { font-size: 12px; color: var(--muted); margin: 4px 0; }
+        .notif-meta { font-size: 10px; color: var(--muted); display: flex; gap: 10px; }
+        .notif-ack-btn {
+            padding: 3px 8px;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            background: var(--panel);
+            color: var(--text);
+            font-size: 10px;
+            cursor: pointer;
+            margin-top: 6px;
+        }
+        .notif-ack-btn:hover { filter: brightness(1.1); }
+
         .intervention-actions {
             margin-top: 8px;
             display: flex;
@@ -1932,6 +1979,31 @@
                 <ul id="feedback-list" class="feedback-list"></ul>
             </article>
 
+            <article class="card" data-view="workspace activity" data-zen="focus">
+                <div class="row">
+                    <h2>🔔 Notifications</h2>
+                    <span class="tiny" id="notif-summary">0 pending</span>
+                </div>
+                <div class="notif-stats" id="notif-stats" style="display:flex;gap:10px;margin-bottom:10px;font-size:11px;">
+                    <span>Unacked: <strong id="notif-unacked">0</strong></span>
+                    <span>Delivered: <strong id="notif-delivered">0</strong></span>
+                </div>
+                <ul id="notif-list" class="activity-list" style="max-height:200px;overflow-y:auto;">
+                    <li class="activity-item"><div class="text">Loading notifications...</div></li>
+                </ul>
+                <div style="margin-top:10px;display:grid;grid-template-columns:1fr auto;gap:8px;">
+                    <input id="notif-message" type="text" placeholder="Send notification to team..." style="padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--panel);color:var(--text);font-size:12px;" />
+                    <button type="button" id="notif-send-btn" style="padding:8px 14px;border:1px solid var(--accent-border);border-radius:6px;background:var(--accent-soft);color:var(--accent);font-size:11px;font-weight:600;cursor:pointer;">Send</button>
+                </div>
+                <select id="notif-level" style="width:100%;margin-top:6px;padding:6px;border:1px solid var(--border);border-radius:6px;background:var(--panel);color:var(--text);font-size:11px;">
+                    <option value="info">ℹ️ Info</option>
+                    <option value="success">✅ Success</option>
+                    <option value="warning" selected>⚠️ Warning</option>
+                    <option value="error">❌ Error</option>
+                    <option value="critical">🚨 Critical</option>
+                </select>
+            </article>
+
             <article class="card" data-view="workspace activity" data-zen="secondary">
                 <div class="row">
                     <h2>Activity Feed</h2>
@@ -2176,6 +2248,13 @@
             msgType: document.getElementById('msg-type'),
             msgContent: document.getElementById('msg-content'),
             msgSendBtn: document.getElementById('msg-send-btn'),
+            notifList: document.getElementById('notif-list'),
+            notifSummary: document.getElementById('notif-summary'),
+            notifUnacked: document.getElementById('notif-unacked'),
+            notifDelivered: document.getElementById('notif-delivered'),
+            notifMessage: document.getElementById('notif-message'),
+            notifLevel: document.getElementById('notif-level'),
+            notifSendBtn: document.getElementById('notif-send-btn'),
             interventionsList: document.getElementById('interventions-list'),
             interventionsSummary: document.getElementById('interventions-summary'),
         };
@@ -2633,6 +2712,7 @@
                 loadKanbanBoard();
                 loadWorkload();
                 loadMessages();
+                loadNotifications();
                 loadInterventions();
             } catch (err) {
                 console.error('Failed to load status', err);
@@ -3000,6 +3080,125 @@
                 refs.msgContent.addEventListener('keypress', (e) => {
                     if (e.key === 'Enter') {
                         sendMessage();
+                    }
+                });
+            }
+        }
+
+        // Human Notifications
+        async function loadNotifications() {
+            try {
+                const response = await fetch('/api/notifications?limit=20');
+                const payload = await response.json();
+                if (!payload || payload.success === false) return;
+                renderNotifications(payload.notifications || [], payload.stats || {});
+            } catch (error) {
+                console.error('Failed to load notifications', error);
+            }
+        }
+
+        function renderNotifications(notifications, stats) {
+            if (!refs.notifList) return;
+
+            // Update stats
+            if (refs.notifSummary) {
+                refs.notifSummary.textContent = `${stats.unacknowledged || 0} pending`;
+            }
+            if (refs.notifUnacked) {
+                refs.notifUnacked.textContent = stats.unacknowledged || 0;
+            }
+            if (refs.notifDelivered) {
+                refs.notifDelivered.textContent = stats.delivered || 0;
+            }
+
+            if (!notifications.length) {
+                refs.notifList.innerHTML = '<li class="activity-item"><div class="text">No notifications yet</div></li>';
+                return;
+            }
+
+            const html = notifications.map((notif) => {
+                const id = escapeHtml(notif.id || '');
+                const title = escapeHtml(notif.title || 'Notification');
+                const message = escapeHtml(String(notif.message || '').slice(0, 100));
+                const level = escapeHtml(notif.level || 'info');
+                const source = escapeHtml(notif.source || 'unknown');
+                const timestamp = formatTime(notif.created_at);
+                const unacked = !notif.acknowledged ? 'unacknowledged' : '';
+
+                return `
+                    <li class="notif-item ${unacked}" data-notif-id="${id}">
+                        <div class="notif-header">
+                            <span class="notif-title">${title}</span>
+                            <span class="notif-level ${level}">${level}</span>
+                        </div>
+                        <div class="notif-message">${message}</div>
+                        <div class="notif-meta">
+                            <span>From: ${source}</span>
+                            <span>${timestamp}</span>
+                        </div>
+                        ${!notif.acknowledged ? `<button type="button" class="notif-ack-btn" data-notif-ack="${id}">Acknowledge</button>` : ''}
+                    </li>
+                `;
+            }).join('');
+
+            refs.notifList.innerHTML = html;
+
+            // Add acknowledge handlers
+            Array.from(refs.notifList.querySelectorAll('[data-notif-ack]')).forEach((btn) => {
+                btn.addEventListener('click', async () => {
+                    const notifId = btn.dataset.notifAck;
+                    if (!notifId) return;
+                    try {
+                        await fetch(`/api/notifications/${notifId}/acknowledge`, { method: 'POST' });
+                        await loadNotifications();
+                    } catch (error) {
+                        console.error('Failed to acknowledge', error);
+                    }
+                });
+            });
+        }
+
+        async function sendNotification() {
+            const message = refs.notifMessage ? refs.notifMessage.value.trim() : '';
+            const level = refs.notifLevel ? refs.notifLevel.value : 'warning';
+
+            if (!message) {
+                notify('Please enter notification message', 'warn', 2000);
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/notifications', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        title: '📢 Dashboard Notification',
+                        message: message,
+                        level: level,
+                        source: 'dashboard',
+                    }),
+                });
+                const payload = await response.json();
+                if (payload.success) {
+                    notify('Notification sent', 'ok', 1500);
+                    if (refs.notifMessage) refs.notifMessage.value = '';
+                    await loadNotifications();
+                } else {
+                    notify(`Failed: ${payload.error || 'unknown'}`, 'danger', 2500);
+                }
+            } catch (error) {
+                notify(`Error: ${error.message}`, 'danger', 2500);
+            }
+        }
+
+        function setupNotificationHandlers() {
+            if (refs.notifSendBtn) {
+                refs.notifSendBtn.addEventListener('click', sendNotification);
+            }
+            if (refs.notifMessage) {
+                refs.notifMessage.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        sendNotification();
                     }
                 });
             }
@@ -4614,10 +4813,12 @@
         initCharts();
         setupTaskFilters();
         setupMessageHandlers();
+        setupNotificationHandlers();
         loadStatus();
         loadKanbanBoard();
         loadWorkload();
         loadMessages();
+        loadNotifications();
         loadInterventions();
         setInterval(loadStatus, 5000);
     </script>

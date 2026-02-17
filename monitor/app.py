@@ -8599,6 +8599,304 @@ def notification_stats():
     })
 
 
+# ============================================================================
+# WEBHOOK INTEGRATION
+# Send notifications to external services (Slack, Discord, Telegram, etc.)
+# ============================================================================
+
+_WEBHOOKS_LOCK = threading.Lock()
+_webhooks: Dict[str, Dict[str, Any]] = {}
+
+# Supported webhook types
+WEBHOOK_TYPES = ["slack", "discord", "telegram", "custom"]
+
+
+def _send_webhook_sync(webhook_id: str, payload: Dict[str, Any]) -> bool:
+    """Send webhook synchronously."""
+    with _WEBHOOKS_LOCK:
+        if webhook_id not in _webhooks:
+            return False
+        webhook = _webhooks[webhook_id]
+
+    url = webhook.get("url", "")
+    webhook_type = webhook.get("type", "custom")
+    headers = webhook.get("headers", {})
+
+    if not url:
+        return False
+
+    try:
+        # Build payload based on type
+        if webhook_type == "slack":
+            data = {
+                "text": payload.get("message", ""),
+                "channel": webhook.get("channel", ""),
+                "username": webhook.get("username", "Jack Automation"),
+                "icon_emoji": webhook.get("icon", ":robot:"),
+            }
+        elif webhook_type == "discord":
+            data = {
+                "content": payload.get("message", ""),
+                "username": webhook.get("username", "Jack Automation"),
+                "avatar_url": webhook.get("avatar_url", ""),
+            }
+        elif webhook_type == "telegram":
+            data = {
+                "chat_id": webhook.get("chat_id", ""),
+                "text": payload.get("message", ""),
+                "parse_mode": "HTML",
+            }
+        else:  # custom
+            data = payload
+
+        # Send request
+        import urllib.request
+        import urllib.parse
+
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(data).encode("utf-8"),
+            headers={"Content-Type": "application/json", **headers},
+            method="POST"
+        )
+
+        with urllib.request.urlopen(req, timeout=10) as response:
+            return response.status < 400
+
+    except Exception as e:
+        logger.error(f"Webhook send error: {e}")
+        return False
+
+
+@app.route('/api/webhooks', methods=['GET'])
+def webhooks_list():
+    """List all configured webhooks."""
+    with _WEBHOOKS_LOCK:
+        webhook_list = []
+        for wid, wh in _webhooks.items():
+            webhook_list.append({
+                "id": wid,
+                "name": wh.get("name", wid),
+                "type": wh.get("type", "custom"),
+                "url": wh.get("url", "")[:20] + "..." if len(wh.get("url", "")) > 20 else wh.get("url", ""),
+                "enabled": wh.get("enabled", True),
+                "events": wh.get("events", []),
+                "created_at": wh.get("created_at"),
+            })
+
+    return jsonify({
+        "success": True,
+        "webhooks": webhook_list,
+        "count": len(webhook_list),
+    })
+
+
+@app.route('/api/webhooks', methods=['POST'])
+def webhook_create():
+    """
+    Create a webhook.
+
+    Request body:
+    {
+        "name": "My Slack",
+        "type": "slack|discord|telegram|custom",
+        "url": "https://...",
+        "channel": "#general",        // for slack
+        "chat_id": "123456",          // for telegram
+        "username": "Bot",            // optional
+        "icon": ":robot:",            // for slack
+        "headers": {},                // custom headers
+        "events": ["error", "critical"],  // events to trigger on
+        "enabled": true
+    }
+    """
+    data = request.get_json() or {}
+
+    name = data.get("name", "")
+    webhook_type = data.get("type", "custom")
+    url = data.get("url", "")
+
+    if not url:
+        return jsonify({
+            "success": False,
+            "error": "URL is required",
+        }), 400
+
+    if webhook_type not in WEBHOOK_TYPES:
+        return jsonify({
+            "success": False,
+            "error": f"Invalid type. Must be one of: {WEBHOOK_TYPES}",
+        }), 400
+
+    webhook_id = data.get("id") or f"webhook_{secrets.token_hex(6)}"
+
+    webhook = {
+        "id": webhook_id,
+        "name": name or webhook_id,
+        "type": webhook_type,
+        "url": url,
+        "channel": data.get("channel", ""),
+        "chat_id": data.get("chat_id", ""),
+        "username": data.get("username", "Jack Automation"),
+        "icon": data.get("icon", ":robot:"),
+        "avatar_url": data.get("avatar_url", ""),
+        "headers": data.get("headers", {}),
+        "events": data.get("events", []),
+        "enabled": data.get("enabled", True),
+        "created_at": datetime.now().isoformat(),
+    }
+
+    with _WEBHOOKS_LOCK:
+        _webhooks[webhook_id] = webhook
+
+    return jsonify({
+        "success": True,
+        "webhook": {
+            "id": webhook_id,
+            "name": webhook["name"],
+            "type": webhook_type,
+        },
+    })
+
+
+@app.route('/api/webhooks/<webhook_id>', methods=['DELETE'])
+def webhook_delete(webhook_id: str):
+    """Delete a webhook."""
+    with _WEBHOOKS_LOCK:
+        if webhook_id in _webhooks:
+            del _webhooks[webhook_id]
+            return jsonify({"success": True, "webhook_id": webhook_id})
+
+    return jsonify({
+        "success": False,
+        "error": f"Webhook not found: {webhook_id}",
+    }), 404
+
+
+@app.route('/api/webhooks/<webhook_id>', methods=['POST'])
+def webhook_update(webhook_id: str):
+    """Update a webhook."""
+    data = request.get_json() or {}
+
+    with _WEBHOOKS_LOCK:
+        if webhook_id not in _webhooks:
+            return jsonify({
+                "success": False,
+                "error": f"Webhook not found: {webhook_id}",
+            }), 404
+
+        webhook = _webhooks[webhook_id]
+
+        # Update allowed fields
+        if "name" in data:
+            webhook["name"] = data["name"]
+        if "url" in data:
+            webhook["url"] = data["url"]
+        if "enabled" in data:
+            webhook["enabled"] = data["enabled"]
+        if "events" in data:
+            webhook["events"] = data["events"]
+        if "channel" in data:
+            webhook["channel"] = data["channel"]
+        if "chat_id" in data:
+            webhook["chat_id"] = data["chat_id"]
+
+        webhook["updated_at"] = datetime.now().isoformat()
+
+    return jsonify({
+        "success": True,
+        "webhook": {
+            "id": webhook_id,
+            "name": webhook["name"],
+            "enabled": webhook["enabled"],
+        },
+    })
+
+
+@app.route('/api/webhooks/<webhook_id>/test', methods=['POST'])
+def webhook_test(webhook_id: str):
+    """Test a webhook by sending a test message."""
+    data = request.get_json() or {}
+    message = data.get("message", "🧪 Test message from Jack Automation")
+
+    with _WEBHOOKS_LOCK:
+        if webhook_id not in _webhooks:
+            return jsonify({
+                "success": False,
+                "error": f"Webhook not found: {webhook_id}",
+            }), 404
+
+    success = _send_webhook_sync(webhook_id, {"message": message})
+
+    return jsonify({
+        "success": success,
+        "webhook_id": webhook_id,
+        "message": "Test sent successfully" if success else "Failed to send",
+    })
+
+
+@app.route('/api/webhooks/send', methods=['POST'])
+def webhook_send():
+    """
+    Send a message via webhook.
+
+    Request body:
+    {
+        "webhook_id": "optional specific webhook",
+        "type": "optional filter by type (slack|discord|telegram)",
+        "message": "Message to send",
+        "level": "info|warning|error|critical"  // filter by event
+    }
+    """
+    data = request.get_json() or {}
+
+    message = data.get("message", "")
+    webhook_id = data.get("webhook_id")
+    webhook_type = data.get("type")
+    level = data.get("level", "info")
+
+    if not message:
+        return jsonify({
+            "success": False,
+            "error": "Message is required",
+        }), 400
+
+    sent_count = 0
+
+    with _WEBHOOKS_LOCK:
+        webhooks_to_send = []
+
+        for wid, wh in _webhooks.items():
+            if not wh.get("enabled", True):
+                continue
+
+            # Filter by specific webhook_id
+            if webhook_id and wid != webhook_id:
+                continue
+
+            # Filter by type
+            if webhook_type and wh.get("type") != webhook_type:
+                continue
+
+            # Filter by events
+            events = wh.get("events", [])
+            if events and level not in events:
+                continue
+
+            webhooks_to_send.append(wid)
+
+    # Send to all matching webhooks
+    for wid in webhooks_to_send:
+        if _send_webhook_sync(wid, {"message": message, "level": level}):
+            sent_count += 1
+
+    return jsonify({
+        "success": sent_count > 0,
+        "sent_count": sent_count,
+        "total_matched": len(webhooks_to_send),
+    })
+
+
 # Auto-generate some notifications on startup
 _add_notification(
     level=NOTIFY_INFO,
@@ -10740,6 +11038,117 @@ try:
     def cleanup_messages():
         """Clean up expired messages."""
         result = _messenger.cleanup()
+        return jsonify(result)
+
+    # ============================================
+    # HUMAN NOTIFICATION API
+    # ============================================
+    from src.core.human_notifier import get_notifier, HumanNotifier
+    _notifier = get_notifier()
+
+    @app.route('/api/notifications', methods=['GET', 'POST'])
+    def handle_notifications():
+        """Send or list human notifications."""
+        if request.method == 'POST':
+            data = request.get_json(silent=True) or {}
+            result = _notifier.notify(
+                title=data.get("title", "Notification"),
+                message=data.get("message", ""),
+                level=data.get("level", "info"),
+                source=data.get("source", "dashboard"),
+                channels=data.get("channels"),
+                metadata=data.get("metadata"),
+                bypass_rate_limit=data.get("bypass_rate_limit", False),
+            )
+            status = 200 if result.get("success") else 429 if result.get("error_code") == "RATE_LIMITED" else 400
+            return jsonify(result), status
+
+        # GET - list notifications
+        limit = request.args.get("limit", 50, type=int)
+        level = request.args.get("level") or None
+        unacknowledged_only = request.args.get("unacknowledged_only", "false").lower() == "true"
+
+        notifications = _notifier.list_notifications(
+            limit=limit,
+            level=level,
+            unacknowledged_only=unacknowledged_only,
+        )
+        stats = _notifier.get_stats()
+
+        return jsonify({
+            "success": True,
+            "notifications": notifications,
+            "stats": stats,
+        })
+
+    @app.route('/api/notifications/stats')
+    def get_notification_stats():
+        """Get notification statistics."""
+        return jsonify({"success": True, "stats": _notifier.get_stats()})
+
+    @app.route('/api/notifications/urgent', methods=['POST'])
+    def send_urgent_notification():
+        """Send urgent notification (bypasses rate limits)."""
+        data = request.get_json(silent=True) or {}
+        result = _notifier.notify_urgent(
+            title=data.get("title", "Urgent"),
+            message=data.get("message", ""),
+            source=data.get("source", "dashboard"),
+            metadata=data.get("metadata"),
+        )
+        return jsonify(result), 200 if result.get("success") else 400
+
+    @app.route('/api/notifications/help', methods=['POST'])
+    def send_help_notification():
+        """Send help request notification."""
+        data = request.get_json(silent=True) or {}
+        result = _notifier.notify_help_needed(
+            from_orion=data.get("from_orion", "unknown"),
+            help_type=data.get("help_type", "general"),
+            description=data.get("description", ""),
+            context=data.get("context"),
+        )
+        return jsonify(result), 200 if result.get("success") else 400
+
+    @app.route('/api/notifications/blocked', methods=['POST'])
+    def send_blocked_notification():
+        """Notify that a task is blocked."""
+        data = request.get_json(silent=True) or {}
+        result = _notifier.notify_task_blocked(
+            task_id=data.get("task_id", ""),
+            task_title=data.get("task_title", ""),
+            blocker=data.get("blocker", "Unknown blocker"),
+            orion_id=data.get("orion_id", "unknown"),
+        )
+        return jsonify(result), 200 if result.get("success") else 400
+
+    @app.route('/api/notifications/milestone', methods=['POST'])
+    def send_milestone_notification():
+        """Notify of a milestone."""
+        data = request.get_json(silent=True) or {}
+        result = _notifier.notify_milestone(
+            milestone=data.get("milestone", "Milestone reached"),
+            details=data.get("details", ""),
+            source=data.get("source", "nexus"),
+        )
+        return jsonify(result), 200
+
+    @app.route('/api/notifications/<notification_id>/acknowledge', methods=['POST'])
+    def acknowledge_notification(notification_id):
+        """Acknowledge a notification."""
+        data = request.get_json(silent=True) or {}
+        result = _notifier.acknowledge_notification(
+            notification_id=notification_id,
+            acknowledged_by=data.get("acknowledged_by", "user"),
+        )
+        status = 200 if result.get("success") else 404
+        return jsonify(result), status
+
+    @app.route('/api/notifications/cleanup', methods=['POST'])
+    def cleanup_notifications():
+        """Clean up old notifications."""
+        max_age_hours = request.args.get("max_age_hours", 168, type=int)
+        result = _notifier.cleanup(max_age_hours=max_age_hours)
         return jsonify(result)
 
 except ImportError as e:
