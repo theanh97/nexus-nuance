@@ -1,6 +1,6 @@
 # Nexus Progress Snapshot
 
-Last updated: 2026-02-17T23:49:23.238081
+Last updated: 2026-02-17T23:53:34.614910
 
 ## Project
 - name: Nexus
@@ -35,9 +35,9 @@ Last updated: 2026-02-17T23:49:23.238081
 - provider: pyautogui
 
 ## Signals (last window)
-- counts: {'error': 6, 'warning': 9, 'success': 9, 'info': 96}
+- counts: {'error': 7, 'warning': 4, 'success': 14, 'info': 95}
 - top_agent: orion
-- latest_event: Guardian monitoring active
+- latest_event: Routing attempt 2/4 -> MiniMax-M2.5
 
 ## Pending
 - pending_decisions: 0
