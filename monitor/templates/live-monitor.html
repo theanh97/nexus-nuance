@@ -2768,6 +2768,9 @@
                     refs.deckInput.value = '';
                 }
             });
+            refs.deckInput.addEventListener('input', () => {
+                refs.deckInput.classList.remove('attn');
+            });
         }
         if (refs.paletteToggle) refs.paletteToggle.addEventListener('click', () => openPalette(''));
         if (refs.commandPalette) {
