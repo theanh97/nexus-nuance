@@ -1,6 +1,6 @@
 # Nexus Progress Snapshot
 
-Last updated: 2026-02-17T23:43:11.781981
+Last updated: 2026-02-17T23:49:23.238081
 
 ## Project
 - name: Nexus
@@ -11,14 +11,14 @@ Last updated: 2026-02-17T23:43:11.781981
 
 ## Orion
 - instance: orion-1 (Orion 1)
-- running: True
+- running: False
 - paused: False
 - pause_reason: 
-- iteration: 4
-- active_flows: 3
-- last_progress_at: 2026-02-17T23:41:21.251822
-- last_cycle_started_at: 2026-02-17T23:41:21.276698
-- last_cycle_finished_at: 2026-02-17T23:41:07.226186
+- iteration: None
+- active_flows: 0
+- last_progress_at: None
+- last_cycle_started_at: None
+- last_cycle_finished_at: None
 
 ## Monitor
 - autopilot_enabled: True
@@ -26,8 +26,8 @@ Last updated: 2026-02-17T23:43:11.781981
 - interval_sec: 10
 - stuck_threshold_sec: 90
 - cooldown_sec: 35
-- last_reason: {'orion-1': 'no_progress:90s'}
-- last_recovery: {'orion-1': '2026-02-17T23:42:51.995165'}
+- last_reason: {}
+- last_recovery: {}
 
 ## Computer Control
 - available: True
@@ -35,9 +35,9 @@ Last updated: 2026-02-17T23:43:11.781981
 - provider: pyautogui
 
 ## Signals (last window)
-- counts: {'error': 5, 'warning': 3, 'success': 14, 'info': 98}
+- counts: {'error': 6, 'warning': 9, 'success': 9, 'info': 96}
 - top_agent: orion
-- latest_event: Monitor supervisor -> orion-1 recovery (no_progress:90s) ok
+- latest_event: Guardian monitoring active
 
 ## Pending
 - pending_decisions: 0

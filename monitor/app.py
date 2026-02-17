@@ -498,7 +498,7 @@ _INTERNAL_LOOPBACK_AUTH_EXEMPT_PATHS = {
     "/",
     "/api/control-plane/workers/register",
     "/api/control-plane/workers/heartbeat",
-    # Automation endpoints (Phase 0-3)
+    # Automation endpoints (Phase 0-4)
     "/api/automation/control",
     "/api/automation/dlq",
     "/api/automation/dlq/clear",
@@ -507,6 +507,9 @@ _INTERNAL_LOOPBACK_AUTH_EXEMPT_PATHS = {
     "/api/automation/sessions/lease",
     "/api/automation/workflow/create",
     "/api/automation/workflow/list",
+    "/api/automation/memory",
+    "/api/automation/memory/analyze",
+    "/api/automation/preferences",
     # Autopilot endpoints
     "/api/hub/autopilot/status",
     "/api/hub/autopilot/config",
@@ -7947,6 +7950,138 @@ _AUTOMATION_SURFACE_REGISTRY: Dict[str, Dict[str, Any]] = {}  # {surface_id: {ty
 _AUTOMATION_WORKFLOW_LOCK = threading.RLock()
 _AUTOMATION_WORKFLOWS: Dict[str, Dict[str, Any]] = {}  # {workflow_id: {name, steps, current_step, state, started_at}}
 
+# Phase 4: Context & Memory for Task Understanding
+_AUTOMATION_CONTEXT_LOCK = threading.RLock()
+_AUTOMATION_TASK_CONTEXTS: Dict[str, Dict[str, Any]] = {}  # {session_id: {context, recent_actions, preferences}}
+
+# Action memory - stores recent actions for learning
+_AUTOMATION_ACTION_MEMORY_LOCK = threading.RLock()
+_AUTOMATION_ACTION_MEMORY: List[Dict[str, Any]] = []  # [{task_type, action, params, result, timestamp, session_id, owner_id}]
+AUTOMATION_ACTION_MEMORY_MAX = 1000
+
+# User preference learning
+_AUTOMATION_USER_PREFERENCES_LOCK = threading.RLock()
+_AUTOMATION_USER_PREFERENCES: Dict[str, Dict[str, Any]] = {}  # {owner_id: {preferred_task_types, frequent_actions, avg_duration_ms}}
+
+
+# Phase 4: Context Functions
+
+def _automation_context_get(session_id: str) -> Dict[str, Any]:
+    """Get context for a session."""
+    with _AUTOMATION_CONTEXT_LOCK:
+        return _AUTOMATION_TASK_CONTEXTS.get(session_id, {"context": {}, "recent_actions": [], "preferences": {}})
+
+
+def _automation_context_update(session_id: str, key: str, value: Any) -> None:
+    """Update context for a session."""
+    with _AUTOMATION_CONTEXT_LOCK:
+        if session_id not in _AUTOMATION_TASK_CONTEXTS:
+            _AUTOMATION_TASK_CONTEXTS[session_id] = {"context": {}, "recent_actions": [], "preferences": {}}
+        _AUTOMATION_TASK_CONTEXTS[session_id]["context"][key] = value
+
+
+def _automation_context_add_action(session_id: str, action: Dict[str, Any]) -> None:
+    """Add action to session context."""
+    with _AUTOMATION_CONTEXT_LOCK:
+        if session_id not in _AUTOMATION_TASK_CONTEXTS:
+            _AUTOMATION_TASK_CONTEXTS[session_id] = {"context": {}, "recent_actions": [], "preferences": {}}
+        ctx = _AUTOMATION_TASK_CONTEXTS[session_id]
+        ctx["recent_actions"].append(action)
+        # Keep only last 50 actions
+        if len(ctx["recent_actions"]) > 50:
+            ctx["recent_actions"] = ctx["recent_actions"][-50:]
+
+
+def _automation_memory_record(task_type: str, action: str, params: Dict, result: Dict, session_id: str, owner_id: str) -> None:
+    """Record action to memory for learning."""
+    with _AUTOMATION_ACTION_MEMORY_LOCK:
+        entry = {
+            "task_type": task_type,
+            "action": action,
+            "params": params,
+            "result": result,
+            "success": result.get("success", False),
+            "timestamp": datetime.now().isoformat(),
+            "session_id": session_id,
+            "owner_id": owner_id,
+        }
+        _AUTOMATION_ACTION_MEMORY.append(entry)
+        # Trim to max size
+        while len(_AUTOMATION_ACTION_MEMORY) > AUTOMATION_ACTION_MEMORY_MAX:
+            _AUTOMATION_ACTION_MEMORY.pop(0)
+
+
+def _automation_memory_get_recent(limit: int = 50, task_type: Optional[str] = None, owner_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Get recent actions from memory."""
+    with _AUTOMATION_ACTION_MEMORY_LOCK:
+        entries = list(_AUTOMATION_ACTION_MEMORY)
+    if task_type:
+        entries = [e for e in entries if e.get("task_type") == task_type]
+    if owner_id:
+        entries = [e for e in entries if e.get("owner_id") == owner_id]
+    return entries[-limit:]
+
+
+def _automation_memory_analyze(task_type: Optional[str] = None) -> Dict[str, Any]:
+    """Analyze action memory for patterns."""
+    with _AUTOMATION_ACTION_MEMORY_LOCK:
+        entries = list(_AUTOMATION_ACTION_MEMORY)
+
+    if task_type:
+        entries = [e for e in entries if e.get("task_type") == task_type]
+
+    if not entries:
+        return {"total_actions": 0, "success_rate": 0, "avg_duration_ms": 0}
+
+    total = len(entries)
+    success = sum(1 for e in entries if e.get("success"))
+
+    # Count action frequencies
+    action_counts: Dict[str, int] = {}
+    for e in entries:
+        key = f"{e.get('task_type')}/{e.get('action')}"
+        action_counts[key] = action_counts.get(key, 0) + 1
+
+    # Most common actions
+    common_actions = sorted(action_counts.items(), key=lambda x: -x[1])[:10]
+
+    return {
+        "total_actions": total,
+        "success_rate": success / total if total > 0 else 0,
+        "action_counts": dict(common_actions),
+        "by_owner": len(set(e.get("owner_id") for e in entries)),
+    }
+
+
+def _automation_preferences_update(owner_id: str, task_type: str, action: str, duration_ms: int) -> None:
+    """Update user preferences based on actions."""
+    with _AUTOMATION_USER_PREFERENCES_LOCK:
+        if owner_id not in _AUTOMATION_USER_PREFERENCES:
+            _AUTOMATION_USER_PREFERENCES[owner_id] = {
+                "preferred_task_types": {},
+                "frequent_actions": {},
+                "total_tasks": 0,
+                "total_duration_ms": 0,
+            }
+        prefs = _AUTOMATION_USER_PREFERENCES[owner_id]
+
+        # Update task type preference
+        prefs["preferred_task_types"][task_type] = prefs["preferred_task_types"].get(task_type, 0) + 1
+
+        # Update action frequency
+        key = f"{task_type}/{action}"
+        prefs["frequent_actions"][key] = prefs["frequent_actions"].get(key, 0) + 1
+
+        # Update totals
+        prefs["total_tasks"] = prefs["total_tasks"] + 1
+        prefs["total_duration_ms"] = prefs["total_duration_ms"] + duration_ms
+
+
+def _automation_preferences_get(owner_id: str) -> Dict[str, Any]:
+    """Get user preferences."""
+    with _AUTOMATION_USER_PREFERENCES_LOCK:
+        return _AUTOMATION_USER_PREFERENCES.get(owner_id, {})
+
 
 # Global automation kill-switch (Phase 0)
 _AUTOMATION_ENABLED = True
@@ -8888,6 +9023,33 @@ def _execute_automation_task(task: Dict[str, Any]) -> Dict[str, Any]:
     task["completed_at"] = datetime.now().isoformat()
     task["duration_ms"] = int((time.time() - started) * 1000)
     _automation_store_task(task)
+
+    # Phase 4: Record to action memory for learning
+    _automation_memory_record(
+        task.get("task_type", ""),
+        task.get("action", ""),
+        task.get("params", {}),
+        task.get("result", {}),
+        task.get("session_id", ""),
+        task.get("owner_id", "")
+    )
+
+    # Phase 4: Update user preferences
+    _automation_preferences_update(
+        task.get("owner_id", ""),
+        task.get("task_type", ""),
+        task.get("action", ""),
+        task.get("duration_ms", 0)
+    )
+
+    # Phase 4: Update session context
+    _automation_context_add_action(task.get("session_id", ""), {
+        "task_type": task.get("task_type"),
+        "action": task.get("action"),
+        "status": task.get("status"),
+        "timestamp": task.get("completed_at"),
+    })
+
     return task
 
 
@@ -9453,6 +9615,68 @@ def automation_workflow_list():
     with _AUTOMATION_WORKFLOW_LOCK:
         workflows = list(_AUTOMATION_WORKFLOWS.values())
     return jsonify({"success": True, "workflows": workflows, "count": len(workflows)})
+
+
+# Phase 4: Context & Memory API Endpoints
+
+@app.route('/api/automation/context/<session_id>', methods=['GET'])
+def automation_context_get(session_id: str):
+    """Get context for a session."""
+    context = _automation_context_get(session_id)
+    return jsonify({"success": True, "session_id": session_id, "context": context})
+
+
+@app.route('/api/automation/context/<session_id>', methods=['PUT'])
+def automation_context_update(session_id: str):
+    """Update context for a session."""
+    data = request.get_json(silent=True) or {}
+    for key, value in data.items():
+        _automation_context_update(session_id, key, value)
+    return jsonify({"success": True, "message": "Context updated"})
+
+
+@app.route('/api/automation/memory', methods=['GET'])
+def automation_memory_list():
+    """Get action memory."""
+    limit = min(100, int(request.args.get("limit", 50)))
+    task_type = request.args.get("task_type") or None
+    owner_id = request.args.get("owner_id") or None
+    entries = _automation_memory_get_recent(limit=limit, task_type=task_type, owner_id=owner_id)
+    return jsonify({"success": True, "count": len(entries), "entries": entries})
+
+
+@app.route('/api/automation/memory/analyze', methods=['GET'])
+def automation_memory_analyze():
+    """Analyze action memory for patterns."""
+    task_type = request.args.get("task_type") or None
+    analysis = _automation_memory_analyze(task_type=task_type)
+    return jsonify({"success": True, "analysis": analysis})
+
+
+@app.route('/api/automation/preferences/<owner_id>', methods=['GET'])
+def automation_preferences_get(owner_id: str):
+    """Get user preferences."""
+    prefs = _automation_preferences_get(owner_id)
+    return jsonify({"success": True, "owner_id": owner_id, "preferences": prefs})
+
+
+@app.route('/api/automation/preferences/<owner_id>/top', methods=['GET'])
+def automation_preferences_top(owner_id: str):
+    """Get top user preferences."""
+    prefs = _automation_preferences_get(owner_id)
+    task_types = prefs.get("preferred_task_types", {})
+    actions = prefs.get("frequent_actions", {})
+
+    top_tasks = sorted(task_types.items(), key=lambda x: -x[1])[:5]
+    top_actions = sorted(actions.items(), key=lambda x: -x[1])[:10]
+
+    return jsonify({
+        "success": True,
+        "owner_id": owner_id,
+        "top_task_types": [{"task_type": t, "count": c} for t, c in top_tasks],
+        "top_actions": [{"action": a, "count": c} for a, c in top_actions],
+        "total_tasks": prefs.get("total_tasks", 0),
+    })
 
 
 @app.route('/api/automation/schedule', methods=['POST'])

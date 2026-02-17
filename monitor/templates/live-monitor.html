@@ -2864,6 +2864,13 @@
         let tourOverlay = null;
 
         function startTour() {
+            // Add keyboard listener to close tour with Escape
+            document.addEventListener('keydown', function tourKeyHandler(e) {
+                if (e.key === 'Escape') {
+                    skipTour();
+                    document.removeEventListener('keydown', tourKeyHandler);
+                }
+            });
             const lang = localStorage.getItem('autodev-lang') || 'vi';
             const steps = TOUR_STEPS[lang] || TOUR_STEPS.vi;
             tourStep = 0;
@@ -2904,6 +2911,9 @@
 
             tourOverlay = document.createElement('div');
             tourOverlay.id = 'tour-overlay';
+            tourOverlay.onclick = function(e) {
+                if (e.target === tourOverlay) skipTour();
+            };
             tourOverlay.style.cssText = `
                 position: fixed;
                 top: 0;
@@ -2957,6 +2967,9 @@
 
             tourOverlay = document.createElement('div');
             tourOverlay.id = 'tour-overlay';
+            tourOverlay.onclick = function(e) {
+                if (e.target === tourOverlay) skipTour();
+            };
             tourOverlay.style.cssText = `
                 position: fixed;
                 top: 0;
