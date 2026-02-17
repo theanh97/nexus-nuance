@@ -2641,6 +2641,11 @@
     <div class="toast-stack" id="toast-stack"></div>
 
     <script>
+        // Global error handler
+        window.onerror = function(msg, url, line, col, error) {
+            console.error('Global error:', msg, 'at line', line);
+            return false;
+        };
         console.log('NEXUS Dashboard loaded');
         const socket = io();
         let iterationHistory = [];
