@@ -1602,6 +1602,7 @@
         let deckPrefillLast = '';
         const cardHideTimers = new WeakMap();
         let lastVisualPulseIteration = -1;
+        const PIXEL_AUTO_STORAGE_KEY = 'autodev-pixel-auto-enabled';
 
         const refs = {
             iterationCounter: document.getElementById('iteration-counter'),
@@ -2670,6 +2671,21 @@
                 notify('Experience: Studio', 'info', 1500);
                 return setExperience('studio', true);
             }
+            if (normalized.includes('pixel auto on')) {
+                try {
+                    localStorage.setItem(PIXEL_AUTO_STORAGE_KEY, 'on');
+                } catch (_) {}
+                notify('Pixel auto mode ON', 'ok', 1500);
+                maybeAutoEnablePixelMode();
+                return;
+            }
+            if (normalized.includes('pixel auto off')) {
+                try {
+                    localStorage.setItem(PIXEL_AUTO_STORAGE_KEY, 'off');
+                } catch (_) {}
+                notify('Pixel auto mode OFF', 'info', 1500);
+                return;
+            }
             if (normalized.includes('pixel')) {
                 notify('Experience: Pixel', 'info', 1500);
                 return setExperience('pixel', true);
@@ -2761,6 +2777,7 @@
             if (persist !== false) {
                 try {
                     localStorage.setItem(EXPERIENCE_STORAGE_KEY, resolved);
+                    localStorage.setItem(PIXEL_AUTO_STORAGE_KEY, 'off');
                 } catch (_) {}
             }
             syncControlDeck();
@@ -2773,6 +2790,22 @@
                 if (['focus', 'balanced', 'studio', 'pixel'].includes(value)) saved = value;
             } catch (_) {}
             setExperience(saved, false);
+        }
+
+        function maybeAutoEnablePixelMode() {
+            let autoState = '';
+            try {
+                autoState = String(localStorage.getItem(PIXEL_AUTO_STORAGE_KEY) || '').toLowerCase();
+            } catch (_) {}
+            if (autoState === 'off') return;
+            if (window.matchMedia('(max-width: 1280px)').matches && String(document.body.dataset.experience || '') !== 'pixel') {
+                setExperience('pixel', false);
+                try {
+                    localStorage.setItem(PIXEL_AUTO_STORAGE_KEY, 'on');
+                    localStorage.setItem(EXPERIENCE_STORAGE_KEY, 'pixel');
+                } catch (_) {}
+                notify('Auto-switched to Pixel mode for compact viewport', 'info', 1800);
+            }
         }
 
         function setDensity(mode, persist) {
@@ -2847,6 +2880,18 @@
                 { id: 'exp_balanced', title: 'Experience: Balance', meta: 'preference', keywords: 'experience balanced', run: () => setExperience('balanced', true) },
                 { id: 'exp_studio', title: 'Experience: Studio', meta: 'preference', keywords: 'experience studio premium', run: () => setExperience('studio', true) },
                 { id: 'exp_pixel', title: 'Experience: Pixel', meta: 'preference', keywords: 'experience pixel compact sharp', run: () => setExperience('pixel', true) },
+                { id: 'pixel_auto_on', title: 'Pixel Auto: On', meta: 'preference', keywords: 'pixel auto responsive compact viewport', run: () => {
+                    try {
+                        localStorage.setItem(PIXEL_AUTO_STORAGE_KEY, 'on');
+                    } catch (_) {}
+                    maybeAutoEnablePixelMode();
+                } },
+                { id: 'pixel_auto_off', title: 'Pixel Auto: Off', meta: 'preference', keywords: 'pixel auto disable manual mode', run: () => {
+                    try {
+                        localStorage.setItem(PIXEL_AUTO_STORAGE_KEY, 'off');
+                    } catch (_) {}
+                    notify('Pixel auto mode OFF', 'info', 1500);
+                } },
                 { id: 'density_comfort', title: 'Density: Comfortable', meta: 'preference', keywords: 'density comfortable spacing', run: () => setDensity('comfortable', true) },
                 { id: 'density_compact', title: 'Density: Compact', meta: 'preference', keywords: 'density compact tighter', run: () => setDensity('compact', true) },
                 { id: 'zen_on', title: 'Zen Mode: On', meta: 'preference', keywords: 'zen focus minimal clean', run: () => setZen(true, true) },
@@ -3295,6 +3340,7 @@
         });
         window.addEventListener('popstate', () => setView(parseViewFromUrl(), false));
         window.addEventListener('resize', () => {
+            maybeAutoEnablePixelMode();
             resizeChartsSafely();
             enforceChartHeightGuard();
         });
@@ -3363,6 +3409,7 @@
         loadZen();
         loadDeckHistory();
         loadChatUiState();
+        maybeAutoEnablePixelMode();
         setView(parseViewFromUrl(), false);
         initCharts();
         loadStatus();

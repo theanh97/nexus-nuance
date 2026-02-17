@@ -172,6 +172,15 @@ def test_status_exposes_adaptive_daily_cadence():
     assert int(daily.get("effective_interval_seconds", 0) or 0) >= int(daily.get("min_interval_seconds", 0) or 0)
 
 
+def test_status_exposes_recovery_playbook():
+    report = get_learning_loop().get_status_report()
+    playbook = report.get("recovery_playbook", {}) if isinstance(report, dict) else {}
+    assert isinstance(playbook, dict)
+    assert "autopause_active" in playbook
+    assert "rollback_lock_active" in playbook
+    assert "actions" in playbook
+
+
 if __name__ == "__main__":
     test_event_to_proposal_v2_flow()
     test_cafe_scores_attached_to_event()
@@ -180,4 +189,5 @@ if __name__ == "__main__":
     test_status_exposes_execution_guardrail()
     test_calibrator_emits_verification_thresholds()
     test_status_exposes_adaptive_daily_cadence()
+    test_status_exposes_recovery_playbook()
     print("test_learning_v2: OK")

@@ -1488,6 +1488,73 @@ class LearningLoop:
             "recommended_solution": recommended_solution,
         }
 
+    def _build_recovery_playbook(self, execution_guardrail: Dict, health_report: Dict, outcome_quality: Dict) -> Dict[str, Any]:
+        actions: List[Dict[str, str]] = []
+        now = datetime.now()
+        anomaly_until_dt = self._parse_time(self.anomaly_autopause_until)
+        rollback_until_dt = self._parse_time(self.rollback_lock_until)
+
+        if anomaly_until_dt and anomaly_until_dt > now:
+            actions.append(
+                {
+                    "priority": "p0",
+                    "title": "Stabilize runtime before resuming v2 pipeline",
+                    "why": f"Anomaly autopause active ({self.anomaly_last_reason})",
+                }
+            )
+            actions.append(
+                {
+                    "priority": "p0",
+                    "title": "Resolve open issues and health degradation",
+                    "why": "Recovery unlock requires high health and low open issues",
+                }
+            )
+
+        if rollback_until_dt and rollback_until_dt > now:
+            actions.append(
+                {
+                    "priority": "p0",
+                    "title": "Keep execution in safe mode until rollback lock clears",
+                    "why": "Consecutive loss streak triggered rollback lock",
+                }
+            )
+
+        if int(health_report.get("open_issues", 0) or 0) > 0:
+            actions.append(
+                {
+                    "priority": "p1",
+                    "title": "Reduce open issues from health checks",
+                    "why": "Open issues directly block fast recovery and safe unlock",
+                }
+            )
+
+        if float(outcome_quality.get("inconclusive_rate", 0.0) or 0.0) > 0.6:
+            actions.append(
+                {
+                    "priority": "p1",
+                    "title": "Increase evidence quality to reduce inconclusive outcomes",
+                    "why": "High inconclusive rate slows policy convergence and recovery confidence",
+                }
+            )
+
+        if not actions:
+            actions.append(
+                {
+                    "priority": "p2",
+                    "title": "Maintain steady learning cadence",
+                    "why": "No active guardrail lock detected",
+                }
+            )
+
+        return {
+            "autopause_active": bool(anomaly_until_dt and anomaly_until_dt > now),
+            "rollback_lock_active": bool(rollback_until_dt and rollback_until_dt > now),
+            "anomaly_reason": self.anomaly_last_reason,
+            "anomaly_recovery_wins_streak": self.anomaly_recovery_wins_streak,
+            "anomaly_recovery_wins_required": self.anomaly_recovery_wins_required,
+            "actions": actions[:5],
+        }
+
     def _run_iteration_self_check(self, results: Dict) -> Dict:
         """Run mandatory self-check for blind spots and stagnation."""
         scan = results.get("scan", {}) if isinstance(results.get("scan"), dict) else {}
@@ -2054,15 +2121,24 @@ class LearningLoop:
         )
         results["v2_guardrail"] = v2_guardrail
         if bool(v2_guardrail.get("paused", False)):
+            pause_reason = str(v2_guardrail.get("reason", "unknown") or "unknown")
             results["v2_pipeline"] = {
                 "paused": True,
-                "pause_reason": str(v2_guardrail.get("reason", "unknown") or "unknown"),
+                "pause_reason": pause_reason,
             }
+            if self.enable_policy_bandit:
+                update_learning_policy(
+                    {
+                        "verdict": "loss",
+                        "selected": get_learning_policy_state().get("selected", {}),
+                        "guardrail_penalty": pause_reason,
+                    }
+                )
             results["actions"].append("v2_pipeline_paused")
             self._append_rnd_note(
                 note_type="v2_pipeline_autopaused",
                 severity="warning",
-                message=f"Paused v2 pipeline due to guardrail: {v2_guardrail.get('reason', 'unknown')}",
+                message=f"Paused v2 pipeline due to guardrail: {pause_reason}",
                 context=v2_guardrail,
             )
         else:
@@ -2634,6 +2710,11 @@ class LearningLoop:
             "grade": grade,
             "issues": issues[:5],
         }
+        recovery_playbook = self._build_recovery_playbook(
+            execution_guardrail=execution_guardrail,
+            health_report=health_report,
+            outcome_quality=outcome_quality,
+        )
 
         return {
             "timestamp": datetime.now().isoformat(),
@@ -2700,6 +2781,7 @@ class LearningLoop:
                 "last_updated": cafe_state.get("last_updated") if isinstance(cafe_state, dict) else None,
             },
             "self_assessment": self_assessment,
+            "recovery_playbook": recovery_playbook,
             "prompt_system": prompt_system_snapshot,
             "focus": focus_report,
             "strategy": {
