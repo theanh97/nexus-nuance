@@ -2096,13 +2096,13 @@
         </div>
         <div class="topbar-right">
             <div class="view-nav" id="view-nav">
-                <button class="view-tab active" type="button" data-view="workspace">Tong Quan</button>
-                <button class="view-tab" type="button" data-view="ops">Van Hanh</button>
-                <button class="view-tab" type="button" data-view="activity">Su Kien</button>
-                <button class="view-tab" type="button" data-view="chat">Chat</button>
-                <button class="view-tab" type="button" data-view="tasks">Cong Viec</button>
-                <button class="view-tab" type="button" data-view="interventions">Can Thiep</button>
-                <button class="view-tab" type="button" data-view="automation">Automation</button>
+                <button class="view-tab active" type="button" data-view="workspace" data-i18n="workspace">Tổng Quan</button>
+                <button class="view-tab" type="button" data-view="ops" data-i18n="ops">Vận Hành</button>
+                <button class="view-tab" type="button" data-view="activity" data-i18n="activity">Sự Kiện</button>
+                <button class="view-tab" type="button" data-view="chat" data-i18n="chat">💬 Chat</button>
+                <button class="view-tab" type="button" data-view="tasks" data-i18n="tasks">Công Việc</button>
+                <button class="view-tab" type="button" data-view="interventions" data-i18n="interventions">Can Thiệp</button>
+                <button class="view-tab" type="button" data-view="automation" data-i18n="automation">🤖 Tự Động Hóa</button>
             </div>
             <div class="pill">Iteration<strong id="iteration-counter">#0000</strong></div>
             <div class="pill">Status<strong id="run-state">--</strong></div>
@@ -2119,7 +2119,8 @@
             <button id="zen-toggle" class="zen-toggle" type="button" title="Focus on core cards">Zen</button>
             <button id="simple-toggle" class="zen-toggle" type="button" title="Show simplified dashboard">Simple</button>
             <button id="palette-toggle" class="palette-toggle" type="button" title="Open command palette">Cmd K</button>
-            <button id="theme-toggle" class="theme-toggle" type="button">Theme</button>
+            <button id="theme-toggle" class="theme-toggle" type="button" title="Chuyển đổi giao diện sáng/tối">Theme</button>
+            <button id="tour-toggle" class="theme-toggle" type="button" title="Hướng dẫn sử dụng" onclick="startTour()">? Help</button>
         </div>
     </header>
 
@@ -2783,6 +2784,116 @@
 
         const ALLOWED_VIEWS = ['workspace', 'ops', 'activity', 'chat', 'tasks', 'interventions', 'automation'];
         const VIEW_STORAGE_KEY = 'autodev-live-view';
+
+        // ==================== ONBOARDING TOUR ====================
+        const TOUR_STEPS = {
+            vi: [
+                { element: '#view-nav', title: 'Điều Hướng Chính', content: 'Chuyển đổi giữa các màn hình: Tổng quan, Vận hành, Sự kiện, Chat, Công việc, Can thiệp, Tự động hóa' },
+                { element: '.chat-panel', title: '💬 Chat Điều Khiển', content: 'Đây là trung tâm điều khiển! Gõ câu hỏi để tương tác với Agents. Ví dụ: "đang làm gì?", "task hiện tại là gì?"' },
+                { element: '#chat-suggestions', title: 'Gợi Ý Nhanh', content: 'Click vào các chip để thực hiện nhanh: Realtime summary, Auto unstick, UI/UX critique, Run one cycle' },
+                { element: '[data-view="automation"]', title: '🤖 Tự Động Hóa', content: 'Điều khiển máy tính: Terminal, Apps, Browser, Mouse, Clipboard, Mail, Messages, Files' },
+                { element: '.topbar-right', title: 'Cài Đặt', content: 'Chuyển đổi theme (sáng/tối), chế độ xem (Focus/Balance/Studio), mật độ hiển thị' },
+            ],
+            en: [
+                { element: '#view-nav', title: 'Main Navigation', content: 'Switch between views: Workspace, Operations, Events, Chat, Tasks, Interventions, Automation' },
+                { element: '.chat-panel', title: '💬 Control Chat', content: 'This is the control center! Type questions to interact with Agents. Example: "what are you doing?", "what is current task?"' },
+                { element: '#chat-suggestions', title: 'Quick Suggestions', content: 'Click chips for quick actions: Realtime summary, Auto unstick, UI/UX critique, Run one cycle' },
+                { element: '[data-view="automation"]', title: '🤖 Automation', content: 'Control your computer: Terminal, Apps, Browser, Mouse, Clipboard, Mail, Messages, Files' },
+                { element: '.topbar-right', title: 'Settings', content: 'Toggle theme (light/dark), view mode (Focus/Balance/Studio), display density' },
+            ]
+        };
+
+        let tourStep = 0;
+        let tourOverlay = null;
+
+        function startTour() {
+            const lang = localStorage.getItem('autodev-lang') || 'vi';
+            const steps = TOUR_STEPS[lang] || TOUR_STEPS.vi;
+            tourStep = 0;
+            showTourStep(steps);
+        }
+
+        function showTourStep(steps) {
+            if (tourOverlay) tourOverlay.remove();
+            if (tourStep >= steps.length) {
+                localStorage.setItem('tour-completed', 'true');
+                return;
+            }
+
+            const step = steps[tourStep];
+            const element = document.querySelector(step.element);
+            if (!element) {
+                tourStep++;
+                showTourStep(steps);
+                return;
+            }
+
+            // Create overlay
+            tourOverlay = document.createElement('div');
+            tourOverlay.id = 'tour-overlay';
+            tourOverlay.style.cssText = `
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background: rgba(0,0,0,0.7);
+                z-index: 10000;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+            `;
+
+            const card = document.createElement('div');
+            card.style.cssText = `
+                background: linear-gradient(135deg, #1e1e2e 0%, #2d2d44 100%);
+                border-radius: 16px;
+                padding: 24px;
+                max-width: 420px;
+                color: white;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+                border: 1px solid rgba(99, 102, 241, 0.3);
+            `;
+
+            const rect = element.getBoundingClientRect();
+            card.innerHTML = `
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                    <h3 style="margin:0;font-size:18px;color:#6366f1;">${step.title}</h3>
+                    <span style="font-size:12px;color:#888;">${tourStep + 1}/${steps.length}</span>
+                </div>
+                <p style="color:#ccc;line-height:1.6;margin-bottom:20px;">${step.content}</p>
+                <div style="display:flex;gap:10px;justify-content:flex-end;">
+                    <button onclick="skipTour()" style="padding:8px 16px;border:none;background:#444;color:#fff;border-radius:8px;cursor:pointer;">Bỏ qua</button>
+                    <button onclick="nextTourStep()" style="padding:8px 20px;border:none;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border-radius:8px;cursor:pointer;font-weight:600;">Tiếp theo →</button>
+                </div>
+            `;
+
+            tourOverlay.appendChild(card);
+            document.body.appendChild(tourOverlay);
+
+            // Highlight element
+            element.style.position = 'relative';
+            element.style.zIndex = '10001';
+        }
+
+        function nextTourStep() {
+            const lang = localStorage.getItem('autodev-lang') || 'vi';
+            const steps = TOUR_STEPS[lang] || TOUR_STEPS.vi;
+            tourStep++;
+            showTourStep(steps);
+        }
+
+        function skipTour() {
+            if (tourOverlay) tourOverlay.remove();
+            localStorage.setItem('tour-completed', 'true');
+        }
+
+        // Auto-start tour for first-time users
+        document.addEventListener('DOMContentLoaded', () => {
+            if (!localStorage.getItem('tour-completed')) {
+                setTimeout(startTour, 1500);
+            }
+        });
 
         const TASK_COLUMNS = [
             { id: 'backlog', label: 'Backlog' },
@@ -5389,6 +5500,13 @@
         // ==================== LANGUAGE SYSTEM ====================
         const translations = {
             vi: {
+                workspace: "Tổng Quan",
+                ops: "Vận Hành",
+                activity: "Sự Kiện",
+                chat: "💬 Chat",
+                tasks: "Công Việc",
+                interventions: "Can Thiệp",
+                automation: "🤖 Tự Động Hóa",
                 execute_task: "Thực Thi Tác Vụ",
                 task_type: "Loại Tác Vụ",
                 action: "Hành Động",
@@ -5424,6 +5542,13 @@
                 error: "Lỗi!",
             },
             en: {
+                workspace: "Workspace",
+                ops: "Operations",
+                activity: "Events",
+                chat: "💬 Chat",
+                tasks: "Tasks",
+                interventions: "Interventions",
+                automation: "🤖 Automation",
                 execute_task: "Execute Task",
                 task_type: "Task Type",
                 action: "Action",
