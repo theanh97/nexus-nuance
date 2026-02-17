@@ -1142,6 +1142,68 @@
         }
         .priority-stat .count { font-weight: 700; }
 
+        /* Messages card */
+        .messages-stats {
+            display: flex;
+            gap: 16px;
+            margin-bottom: 10px;
+            padding: 8px;
+            background: var(--panel-soft);
+            border-radius: 8px;
+        }
+        .messages-list {
+            background: var(--panel-soft);
+            border-radius: 8px;
+            padding: 8px;
+        }
+        .message-item {
+            padding: 10px;
+            border-bottom: 1px solid var(--border);
+            font-size: 12px;
+        }
+        .message-item:last-child { border-bottom: none; }
+        .message-item.unread {
+            background: rgba(59, 130, 246, 0.1);
+            border-left: 3px solid var(--accent);
+        }
+        .message-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+        .message-from { font-weight: 600; color: var(--accent); }
+        .message-type {
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 9px;
+            text-transform: uppercase;
+            font-weight: 700;
+        }
+        .message-type.direct { background: #3b82f620; color: #3b82f6; }
+        .message-type.broadcast { background: #8b5cf620; color: #8b5cf6; }
+        .message-type.help_request { background: #f9731620; color: #f97316; }
+        .message-type.task_handoff { background: #22c55e20; color: #22c55e; }
+        .message-type.status_update { background: #6b728020; color: #6b7280; }
+        .message-content {
+            color: var(--text);
+            margin: 4px 0;
+            line-height: 1.4;
+        }
+        .message-meta {
+            display: flex;
+            gap: 10px;
+            color: var(--muted);
+            font-size: 10px;
+        }
+        .message-priority {
+            padding: 1px 5px;
+            border-radius: 3px;
+            font-size: 9px;
+        }
+        .message-priority.urgent { background: #ef444420; color: #ef4444; }
+        .message-priority.high { background: #f9731620; color: #f97316; }
+        .message-priority.normal { background: #6b728020; color: #6b7280; }
+
         .intervention-actions {
             margin-top: 8px;
             display: flex;
@@ -1821,6 +1883,33 @@
                     <div class="workload-item"><div class="workload-name">Loading...</div></div>
                 </div>
             </article>
+
+            <article class="card" data-view="workspace tasks" data-zen="secondary">
+                <div class="row">
+                    <h2>Inter-ORION Messages</h2>
+                    <span class="tiny" id="messages-summary">0 messages</span>
+                </div>
+                <div class="messages-stats" id="messages-stats">
+                    <span class="tiny">unread: <strong id="msg-unread">0</strong></span>
+                    <span class="tiny">pending response: <strong id="msg-pending">0</strong></span>
+                </div>
+                <div class="messages-list" id="messages-list" style="max-height:200px;overflow-y:auto;">
+                    <div class="tiny" style="padding:8px;color:var(--muted)">Loading messages...</div>
+                </div>
+                <div class="message-compose" style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr auto;gap:6px;">
+                    <select id="msg-to-orion" style="padding:6px;border:1px solid var(--border);border-radius:6px;background:var(--panel);color:var(--text);font-size:11px;">
+                        <option value="">Select ORION...</option>
+                    </select>
+                    <select id="msg-type" style="padding:6px;border:1px solid var(--border);border-radius:6px;background:var(--panel);color:var(--text);font-size:11px;">
+                        <option value="direct">Direct</option>
+                        <option value="help_request">Help Request</option>
+                        <option value="task_handoff">Task Handoff</option>
+                        <option value="broadcast">Broadcast</option>
+                        <option value="status_update">Status</option>
+                    </select>
+                    <button type="button" id="msg-send-btn" style="padding:6px 12px;border:1px solid var(--accent-border);border-radius:6px;background:var(--accent-soft);color:var(--accent);font-size:11px;font-weight:600;cursor:pointer;">Send</button>
+                </div>
+                <input id="msg-content" type="text" placeholder="Message content..." style="width:100%;margin-top:6px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--panel);color:var(--text);font-size:12px;" />
             </article>
 
             <article class="card" data-view="workspace interventions" data-zen="focus">
@@ -2079,6 +2168,14 @@
             p1Count: document.getElementById('p1-count'),
             p2Count: document.getElementById('p2-count'),
             p3Count: document.getElementById('p3-count'),
+            messagesList: document.getElementById('messages-list'),
+            messagesSummary: document.getElementById('messages-summary'),
+            msgUnread: document.getElementById('msg-unread'),
+            msgPending: document.getElementById('msg-pending'),
+            msgToOrion: document.getElementById('msg-to-orion'),
+            msgType: document.getElementById('msg-type'),
+            msgContent: document.getElementById('msg-content'),
+            msgSendBtn: document.getElementById('msg-send-btn'),
             interventionsList: document.getElementById('interventions-list'),
             interventionsSummary: document.getElementById('interventions-summary'),
         };
@@ -2535,6 +2632,7 @@
                 updateDashboard(data);
                 loadKanbanBoard();
                 loadWorkload();
+                loadMessages();
                 loadInterventions();
             } catch (err) {
                 console.error('Failed to load status', err);
@@ -2778,6 +2876,133 @@
             ` : '';
 
             refs.workloadGrid.innerHTML = items + unassignedItem;
+        }
+
+        // Inter-ORION Messaging
+        let currentOrionList = [];
+
+        async function loadMessages() {
+            try {
+                const response = await fetch('/api/hub/messages?limit=30');
+                const payload = await response.json();
+                if (!payload || payload.success === false) return;
+                renderMessages(payload.messages || [], payload.stats || {});
+                updateOrionSelect();
+            } catch (error) {
+                console.error('Failed to load messages', error);
+            }
+        }
+
+        function renderMessages(messages, stats) {
+            if (!refs.messagesList) return;
+
+            // Update stats
+            if (refs.messagesSummary) {
+                refs.messagesSummary.textContent = `${messages.length} messages`;
+            }
+            if (refs.msgUnread) {
+                refs.msgUnread.textContent = stats.unread || 0;
+            }
+            if (refs.msgPending) {
+                refs.msgPending.textContent = stats.pending_responses || 0;
+            }
+
+            if (!messages.length) {
+                refs.messagesList.innerHTML = '<div class="tiny" style="padding:8px;color:var(--muted)">No messages yet</div>';
+                return;
+            }
+
+            const html = messages.slice(0, 20).map((msg) => {
+                const fromOrion = escapeHtml(msg.from_orion || 'unknown');
+                const toOrion = msg.to_orion === '*' ? 'All' : escapeHtml(msg.to_orion || '?');
+                const msgType = escapeHtml(msg.message_type || 'direct');
+                const content = escapeHtml(String(msg.content || '').slice(0, 150));
+                const priority = escapeHtml(msg.priority || 'normal');
+                const timestamp = formatTime(msg.timestamp);
+                const unreadClass = msg.read ? '' : 'unread';
+                const requiresResponse = msg.requires_response && !msg.responded;
+
+                return `
+                    <div class="message-item ${unreadClass}" data-message-id="${escapeHtml(msg.id)}">
+                        <div class="message-header">
+                            <span class="message-from">${fromOrion} → ${toOrion}</span>
+                            <span class="message-type ${msgType.replace('_', '-')}">${msgType.replace('_', ' ')}</span>
+                        </div>
+                        <div class="message-content">${content}</div>
+                        <div class="message-meta">
+                            <span>${timestamp}</span>
+                            <span class="message-priority ${priority}">${priority}</span>
+                            ${requiresResponse ? '<span style="color:#f97316">⚠️ awaiting response</span>' : ''}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            refs.messagesList.innerHTML = html;
+        }
+
+        async function sendMessage() {
+            const toOrion = refs.msgToOrion ? refs.msgToOrion.value : '';
+            const msgType = refs.msgType ? refs.msgType.value : 'direct';
+            const content = refs.msgContent ? refs.msgContent.value.trim() : '';
+
+            if (!content) {
+                notify('Please enter message content', 'warn', 2000);
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/hub/messages', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        from_orion: 'dashboard',
+                        to_orion: toOrion || '*',
+                        message_type: msgType,
+                        content: content,
+                        priority: 'normal',
+                    }),
+                });
+                const payload = await response.json();
+                if (payload.success) {
+                    notify('Message sent', 'ok', 1500);
+                    if (refs.msgContent) refs.msgContent.value = '';
+                    await loadMessages();
+                } else {
+                    notify(`Failed: ${payload.error || 'unknown'}`, 'danger', 2500);
+                }
+            } catch (error) {
+                notify(`Error: ${error.message}`, 'danger', 2500);
+            }
+        }
+
+        async function updateOrionSelect() {
+            if (!refs.msgToOrion) return;
+
+            try {
+                const response = await fetch('/api/hub/orions');
+                const payload = await response.json();
+                const orions = payload.orions || {};
+                currentOrionList = Object.keys(orions);
+
+                refs.msgToOrion.innerHTML = '<option value="">Broadcast (All)</option>' +
+                    currentOrionList.map((id) => `<option value="${escapeHtml(id)}">${escapeHtml(id)}</option>`).join('');
+            } catch (error) {
+                console.error('Failed to load ORIONs for select', error);
+            }
+        }
+
+        function setupMessageHandlers() {
+            if (refs.msgSendBtn) {
+                refs.msgSendBtn.addEventListener('click', sendMessage);
+            }
+            if (refs.msgContent) {
+                refs.msgContent.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        sendMessage();
+                    }
+                });
+            }
         }
 
         function renderInterventions(queue, summary) {
@@ -4388,9 +4613,11 @@
         setView(parseViewFromUrl(), false);
         initCharts();
         setupTaskFilters();
+        setupMessageHandlers();
         loadStatus();
         loadKanbanBoard();
         loadWorkload();
+        loadMessages();
         loadInterventions();
         setInterval(loadStatus, 5000);
     </script>

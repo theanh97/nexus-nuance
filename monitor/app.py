@@ -8127,6 +8127,234 @@ def automation_control():
     }), 400
 
 
+# ============================================================================
+# SCHEDULED AUTOMATION
+# Schedule tasks to run automatically at intervals
+# ============================================================================
+
+_AUTOMATION_SCHEDULER_LOCK = threading.Lock()
+_automation_scheduled_tasks: Dict[str, Dict[str, Any]] = {}
+_automation_scheduler_running = False
+_automation_scheduler_thread: Optional[threading.Thread] = None
+
+
+def _automation_scheduler_loop():
+    """Background loop to check and execute scheduled tasks."""
+    global _automation_scheduler_running
+
+    while _automation_scheduler_running:
+        try:
+            now = time.time()
+            with _AUTOMATION_SCHEDULER_LOCK:
+                for schedule_id, schedule in list(_automation_scheduled_tasks.items()):
+                    if not schedule.get("enabled", True):
+                        continue
+
+                    # Check if it's time to run
+                    interval_sec = schedule.get("interval_sec", 60)
+                    last_run = schedule.get("last_run", 0)
+
+                    if now - last_run >= interval_sec:
+                        # Execute the task
+                        schedule["last_run"] = now
+                        schedule["run_count"] = schedule.get("run_count", 0) + 1
+
+                        task_type = schedule.get("task_type")
+                        action = schedule.get("action")
+                        params = schedule.get("params", {})
+
+                        if task_type and action:
+                            task = _create_automation_task(task_type, action, params)
+                            result_task = _execute_automation_task(task)
+                            schedule["last_result"] = {
+                                "status": result_task["status"],
+                                "success": result_task["status"] == "completed",
+                            }
+
+        except Exception as e:
+            logger.error(f"Automation scheduler error: {e}")
+
+        time.sleep(5)  # Check every 5 seconds
+
+
+def _start_automation_scheduler():
+    """Start the automation scheduler background thread."""
+    global _automation_scheduler_running, _automation_scheduler_thread
+
+    if _automation_scheduler_running:
+        return
+
+    _automation_scheduler_running = True
+    _automation_scheduler_thread = threading.Thread(target=_automation_scheduler_loop, daemon=True)
+    _automation_scheduler_thread.start()
+    logger.info("Automation scheduler started")
+
+
+def _stop_automation_scheduler():
+    """Stop the automation scheduler."""
+    global _automation_scheduler_running
+    _automation_scheduler_running = False
+
+
+# Start scheduler on module load
+_start_automation_scheduler()
+
+
+@app.route('/api/automation/schedule', methods=['POST'])
+def automation_schedule_create():
+    """
+    Create a scheduled automation task.
+
+    Request body:
+    {
+        "schedule_id": "optional_custom_id",
+        "task_type": "terminal|app|...",
+        "action": "execute|list_running|...",
+        "params": {...},
+        "interval_sec": 60,  // seconds between runs
+        "enabled": true
+    }
+    """
+    data = request.get_json() or {}
+
+    schedule_id = data.get("schedule_id") or f"schedule_{int(time.time() * 1000)}"
+    task_type = data.get("task_type", "")
+    action = data.get("action", "")
+    params = data.get("params", {})
+    interval_sec = max(10, int(data.get("interval_sec", 60)))
+    enabled = data.get("enabled", True)
+
+    # Validate task type
+    if task_type not in AUTOMATION_TASK_TYPES:
+        return jsonify({
+            "success": False,
+            "error": f"Invalid task_type. Must be one of: {AUTOMATION_TASK_TYPES}",
+        }), 400
+
+    schedule = {
+        "schedule_id": schedule_id,
+        "task_type": task_type,
+        "action": action,
+        "params": params,
+        "interval_sec": interval_sec,
+        "enabled": enabled,
+        "created_at": datetime.now().isoformat(),
+        "last_run": 0,
+        "run_count": 0,
+        "last_result": None,
+    }
+
+    with _AUTOMATION_SCHEDULER_LOCK:
+        _automation_scheduled_tasks[schedule_id] = schedule
+
+    return jsonify({
+        "success": True,
+        "schedule": schedule,
+    })
+
+
+@app.route('/api/automation/schedule/<schedule_id>', methods=['DELETE'])
+def automation_schedule_delete(schedule_id: str):
+    """Delete a scheduled automation task."""
+    with _AUTOMATION_SCHEDULER_LOCK:
+        if schedule_id in _automation_scheduled_tasks:
+            del _automation_scheduled_tasks[schedule_id]
+            return jsonify({"success": True, "schedule_id": schedule_id})
+
+    return jsonify({
+        "success": False,
+        "error": f"Schedule not found: {schedule_id}",
+    }), 404
+
+
+@app.route('/api/automation/schedule/<schedule_id>', methods=['POST'])
+def automation_schedule_update(schedule_id: str):
+    """
+    Update a scheduled automation task.
+
+    Request body:
+    {
+        "enabled": true/false,
+        "interval_sec": 60,
+        "params": {...}
+    }
+    """
+    data = request.get_json() or {}
+
+    with _AUTOMATION_SCHEDULER_LOCK:
+        if schedule_id not in _automation_scheduled_tasks:
+            return jsonify({
+                "success": False,
+                "error": f"Schedule not found: {schedule_id}",
+            }), 404
+
+        schedule = _automation_scheduled_tasks[schedule_id]
+
+        if "enabled" in data:
+            schedule["enabled"] = data["enabled"]
+        if "interval_sec" in data:
+            schedule["interval_sec"] = max(10, int(data["interval_sec"]))
+        if "params" in data:
+            schedule["params"] = data["params"]
+
+        schedule["updated_at"] = datetime.now().isoformat()
+
+    return jsonify({
+        "success": True,
+        "schedule": schedule,
+    })
+
+
+@app.route('/api/automation/schedules')
+def automation_schedules_list():
+    """List all scheduled automation tasks."""
+    with _AUTOMATION_SCHEDULER_LOCK:
+        schedules = list(_automation_scheduled_tasks.values())
+
+    return jsonify({
+        "success": True,
+        "count": len(schedules),
+        "schedules": schedules,
+    })
+
+
+@app.route('/api/automation/schedule/<schedule_id>/run', methods=['POST'])
+def automation_schedule_run_now(schedule_id: str):
+    """Manually trigger a scheduled task to run now."""
+    with _AUTOMATION_SCHEDULER_LOCK:
+        if schedule_id not in _automation_scheduled_tasks:
+            return jsonify({
+                "success": False,
+                "error": f"Schedule not found: {schedule_id}",
+            }), 404
+
+        schedule = _automation_scheduled_tasks[schedule_id]
+
+    # Execute immediately
+    task = _create_automation_task(
+        schedule["task_type"],
+        schedule["action"],
+        schedule["params"]
+    )
+    result_task = _execute_automation_task(task)
+
+    # Update schedule
+    with _AUTOMATION_SCHEDULER_LOCK:
+        _automation_scheduled_tasks[schedule_id]["last_run"] = time.time()
+        _automation_scheduled_tasks[schedule_id]["run_count"] = _automation_scheduled_tasks[schedule_id].get("run_count", 0) + 1
+        _automation_scheduled_tasks[schedule_id]["last_result"] = {
+            "status": result_task["status"],
+            "success": result_task["status"] == "completed",
+        }
+
+    return jsonify({
+        "success": result_task["status"] == "completed",
+        "task_id": result_task["task_id"],
+        "status": result_task["status"],
+        "result": result_task.get("result"),
+    })
+
+
 @app.route('/api/model-routing/status')
 def get_model_routing_status():
     """Get model routing, token usage, and budget summary."""
@@ -10112,6 +10340,145 @@ try:
                 "token_budget": (plan.get("agent_coordination") or {}).get("token_budget", {}),
             }
         )
+
+    # ============================================
+    # INTER-ORION MESSAGING API
+    # ============================================
+    from src.core.orion_messenger import get_messenger, OrionMessenger
+    _messenger = get_messenger()
+
+    @app.route('/api/hub/messages', methods=['GET', 'POST'])
+    def handle_messages():
+        """Send or list inter-ORION messages."""
+        if request.method == 'POST':
+            data = request.get_json(silent=True) or {}
+            result = _messenger.send_message(
+                from_orion=data.get("from_orion", "unknown"),
+                to_orion=data.get("to_orion"),
+                message_type=data.get("message_type", "direct"),
+                content=data.get("content", ""),
+                priority=data.get("priority", "normal"),
+                metadata=data.get("metadata"),
+                related_task_id=data.get("related_task_id"),
+                requires_response=data.get("requires_response", False),
+                response_to=data.get("response_to"),
+            )
+            status = 200 if result.get("success") else 400
+            return jsonify(result), status
+
+        # GET - list messages
+        orion_id = request.args.get("orion_id", "")
+        unread_only = request.args.get("unread_only", "false").lower() == "true"
+        message_type = request.args.get("message_type") or None
+        limit = request.args.get("limit", 50, type=int)
+        since = request.args.get("since") or None
+
+        if orion_id:
+            result = _messenger.get_messages(
+                orion_id=orion_id,
+                unread_only=unread_only,
+                message_type=message_type,
+                limit=limit,
+                since=since,
+            )
+        else:
+            # Return all recent messages (admin view)
+            result = {
+                "success": True,
+                "messages": _messenger._read_messages()[-limit:],
+                "stats": _messenger.get_stats(),
+            }
+        return jsonify(result)
+
+    @app.route('/api/hub/messages/stats')
+    def get_message_stats():
+        """Get messaging statistics."""
+        return jsonify({"success": True, "stats": _messenger.get_stats()})
+
+    @app.route('/api/hub/messages/<message_id>/read', methods=['POST'])
+    def mark_message_read(message_id):
+        """Mark a message as read."""
+        data = request.get_json(silent=True) or {}
+        result = _messenger.mark_read(
+            message_id=message_id,
+            read_by=data.get("read_by", "dashboard"),
+        )
+        status = 200 if result.get("success") else 404
+        return jsonify(result), status
+
+    @app.route('/api/hub/messages/<message_id>/respond', methods=['POST'])
+    def respond_to_message(message_id):
+        """Respond to a message."""
+        data = request.get_json(silent=True) or {}
+        result = _messenger.respond_to_message(
+            message_id=message_id,
+            from_orion=data.get("from_orion", "unknown"),
+            response_content=data.get("response_content", ""),
+            response_type=data.get("response_type", "direct"),
+        )
+        status = 200 if result.get("success") else 400
+        return jsonify(result), status
+
+    @app.route('/api/hub/conversation/<orion_a>/<orion_b>')
+    def get_conversation(orion_a, orion_b):
+        """Get conversation between two ORIONs."""
+        limit = request.args.get("limit", 50, type=int)
+        result = _messenger.get_conversation(
+            orion_a=orion_a,
+            orion_b=orion_b,
+            limit=limit,
+        )
+        return jsonify(result)
+
+    @app.route('/api/hub/broadcast', methods=['POST'])
+    def broadcast_message():
+        """Broadcast a message to all ORIONs."""
+        data = request.get_json(silent=True) or {}
+        result = _messenger.send_message(
+            from_orion=data.get("from_orion", "system"),
+            to_orion="*",
+            message_type="broadcast",
+            content=data.get("content", ""),
+            priority=data.get("priority", "normal"),
+            metadata=data.get("metadata"),
+        )
+        status = 200 if result.get("success") else 400
+        return jsonify(result), status
+
+    @app.route('/api/hub/help-request', methods=['POST'])
+    def send_help_request():
+        """Send a help request."""
+        data = request.get_json(silent=True) or {}
+        result = _messenger.request_help(
+            from_orion=data.get("from_orion", "unknown"),
+            help_type=data.get("help_type", "general"),
+            description=data.get("description", ""),
+            related_task_id=data.get("related_task_id"),
+            urgency=data.get("urgency", "normal"),
+        )
+        status = 200 if result.get("success") else 400
+        return jsonify(result), status
+
+    @app.route('/api/hub/task-handoff', methods=['POST'])
+    def send_task_handoff():
+        """Hand off a task to another ORION."""
+        data = request.get_json(silent=True) or {}
+        result = _messenger.handoff_task(
+            from_orion=data.get("from_orion", "unknown"),
+            to_orion=data.get("to_orion", ""),
+            task_id=data.get("task_id", ""),
+            task_title=data.get("task_title", ""),
+            handoff_reason=data.get("handoff_reason", ""),
+            context=data.get("context"),
+        )
+        status = 200 if result.get("success") else 400
+        return jsonify(result), status
+
+    @app.route('/api/hub/messages/cleanup', methods=['POST'])
+    def cleanup_messages():
+        """Clean up expired messages."""
+        result = _messenger.cleanup()
+        return jsonify(result)
 
 except ImportError as e:
     print(f"⚠️ Multi-Orion Hub not available: {e}")

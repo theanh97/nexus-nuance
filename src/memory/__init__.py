@@ -296,6 +296,11 @@ from .cafe_calibrator import (
     get_cafe_calibrator,
 )
 
+from .team_persona import (
+    TeamPersonaStore,
+    get_team_persona_store,
+)
+
 __all__ = [
     # Memory
     "MemoryManager", "get_memory", "remember", "recall",
@@ -396,6 +401,9 @@ __all__ = [
     "select_learning_policy", "update_learning_policy", "get_learning_policy_state", "apply_policy_drift_guard",
     "CAFEScorer", "get_cafe_scorer",
     "CafeCalibrator", "get_cafe_calibrator",
+
+    # Team Persona (NEW - team member understanding)
+    "TeamPersonaStore", "get_team_persona_store",
 ]
 
 __version__ = "1.0.0"

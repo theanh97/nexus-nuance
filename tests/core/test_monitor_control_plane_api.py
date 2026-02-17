@@ -1095,3 +1095,158 @@ def test_agents_coordination_dispatch_deduplicates_repeated_goal(client, monkeyp
     assert second_payload["execution"]["executed"] is False
     assert second_payload["execution"]["deduplicated"] is True
     assert len(calls) == sent_after_first
+
+
+# ============================================
+# Inter-ORION Messaging Tests
+# ============================================
+
+
+def test_send_direct_message(client):
+    """Test sending a direct message between ORIONs."""
+    response = client.post(
+        "/api/hub/messages",
+        json={
+            "from_orion": "orion-alpha",
+            "to_orion": "orion-beta",
+            "message_type": "direct",
+            "content": "Hello from alpha!",
+            "priority": "normal",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert "message" in payload
+    assert payload["message"]["from_orion"] == "orion-alpha"
+    assert payload["message"]["to_orion"] == "orion-beta"
+    assert payload["message"]["message_type"] == "direct"
+
+
+def test_send_broadcast_message(client):
+    """Test sending a broadcast message."""
+    response = client.post(
+        "/api/hub/messages",
+        json={
+            "from_orion": "orion-alpha",
+            "to_orion": "*",
+            "message_type": "broadcast",
+            "content": "Status update: All systems operational",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["message"]["to_orion"] == "*"
+
+
+def test_get_messages_for_orion(client):
+    """Test getting messages for a specific ORION."""
+    # Send a message first
+    client.post(
+        "/api/hub/messages",
+        json={
+            "from_orion": "orion-alpha",
+            "to_orion": "orion-beta",
+            "message_type": "direct",
+            "content": "Test message",
+        },
+    )
+
+    # Get messages for orion-beta
+    response = client.get("/api/hub/messages?orion_id=orion-beta")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert "messages" in payload
+    assert len(payload["messages"]) >= 1
+
+
+def test_help_request(client):
+    """Test sending a help request."""
+    response = client.post(
+        "/api/hub/help-request",
+        json={
+            "from_orion": "orion-alpha",
+            "help_type": "security",
+            "description": "Need help with security audit",
+            "urgency": "high",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["message"]["message_type"] == "help_request"
+    assert payload["message"]["requires_response"] is True
+
+
+def test_task_handoff(client):
+    """Test handing off a task to another ORION."""
+    response = client.post(
+        "/api/hub/task-handoff",
+        json={
+            "from_orion": "orion-alpha",
+            "to_orion": "orion-beta",
+            "task_id": "task-123",
+            "task_title": "Implement feature X",
+            "handoff_reason": "Shifting focus to priority P0 task",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["message"]["message_type"] == "task_handoff"
+    assert payload["message"]["related_task_id"] == "task-123"
+
+
+def test_mark_message_read(client):
+    """Test marking a message as read."""
+    # Send a message first
+    send_resp = client.post(
+        "/api/hub/messages",
+        json={
+            "from_orion": "orion-alpha",
+            "to_orion": "orion-beta",
+            "message_type": "direct",
+            "content": "Test for read marking",
+        },
+    )
+    msg_id = send_resp.get_json()["message"]["id"]
+
+    # Mark as read
+    response = client.post(
+        f"/api/hub/messages/{msg_id}/read",
+        json={"read_by": "orion-beta"},
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["message"]["read"] is True
+
+
+def test_message_stats(client):
+    """Test getting message statistics."""
+    # Send some messages
+    client.post("/api/hub/messages", json={"from_orion": "a", "to_orion": "b", "message_type": "direct", "content": "1"})
+    client.post("/api/hub/messages", json={"from_orion": "a", "to_orion": "*", "message_type": "broadcast", "content": "2"})
+
+    response = client.get("/api/hub/messages/stats")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert "stats" in payload
+    assert payload["stats"]["total_messages"] >= 2
+
+
+def test_get_conversation(client):
+    """Test getting conversation between two ORIONs."""
+    # Send messages both ways
+    client.post("/api/hub/messages", json={"from_orion": "orion-a", "to_orion": "orion-b", "message_type": "direct", "content": "Hi B"})
+    client.post("/api/hub/messages", json={"from_orion": "orion-b", "to_orion": "orion-a", "message_type": "direct", "content": "Hi A"})
+
+    response = client.get("/api/hub/conversation/orion-a/orion-b")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert "messages" in payload
+    assert len(payload["messages"]) >= 2

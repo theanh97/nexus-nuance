@@ -18,6 +18,7 @@ from src.core.agent import AsyncAgent
 from src.core.message import AgentMessage, MessageType, Priority, TaskResult, ProjectContext
 from src.core.computer_controller import get_computer_controller
 from src.core.multi_orion_hub import get_multi_orion_hub
+from src.core.orion_messenger import get_messenger
 from src.memory.autonomous_improver import get_autonomous_improver
 from src.memory.learning_loop import get_learning_loop
 
@@ -93,6 +94,12 @@ class Orion(AsyncAgent):
         self.self_improvement_interval = int(os.getenv("SELF_IMPROVEMENT_INTERVAL", "10"))
         self.improver = get_autonomous_improver()
         self.learning_loop = get_learning_loop()
+
+        # Inter-ORION messaging
+        self.messenger = get_messenger()
+        self.message_check_interval_sec = max(5, int(os.getenv("ORION_MESSAGE_CHECK_INTERVAL_SEC", "15")))
+        self._last_message_check_at: float = 0.0
+        self._pending_help_responses: List[Dict[str, Any]] = []
 
     async def start(self):
         """Start Orion and all agents"""
@@ -204,6 +211,139 @@ class Orion(AsyncAgent):
             }
         return snapshot
 
+    # ============================================
+    # Inter-ORION Messaging
+    # ============================================
+
+    def check_messages(self) -> List[Dict[str, Any]]:
+        """Check for new messages addressed to this ORION."""
+        now = time.time()
+        if now - self._last_message_check_at < self.message_check_interval_sec:
+            return []
+
+        self._last_message_check_at = now
+        try:
+            result = self.messenger.get_messages(
+                orion_id=self.instance_id,
+                unread_only=True,
+                limit=10,
+            )
+            messages = result.get("messages", [])
+
+            # Process help requests
+            for msg in messages:
+                if msg.get("message_type") == "help_request" and not msg.get("responded"):
+                    self._handle_help_request(msg)
+
+            return messages
+        except Exception as e:
+            self._log(f"⚠️ Failed to check messages: {e}")
+            return []
+
+    def send_message_to_orion(
+        self,
+        to_orion: str,
+        content: str,
+        message_type: str = "direct",
+        priority: str = "normal",
+        related_task_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Send a message to another ORION."""
+        try:
+            result = self.messenger.send_message(
+                from_orion=self.instance_id,
+                to_orion=to_orion,
+                message_type=message_type,
+                content=content,
+                priority=priority,
+                related_task_id=related_task_id,
+            )
+            if result.get("success"):
+                self._log(f"📨 Sent {message_type} to {to_orion}")
+            return result
+        except Exception as e:
+            self._log(f"⚠️ Failed to send message: {e}")
+            return {"success": False, "error": str(e)}
+
+    def broadcast_status(self, status: str, current_task: Optional[str] = None) -> Dict[str, Any]:
+        """Broadcast status to all ORIONs."""
+        try:
+            result = self.messenger.broadcast_status(
+                from_orion=self.instance_id,
+                status=status,
+                current_task=current_task,
+                workload=len([t for t in self.history[-20:] if t.get("timestamp")]),
+            )
+            return result
+        except Exception as e:
+            self._log(f"⚠️ Failed to broadcast status: {e}")
+            return {"success": False, "error": str(e)}
+
+    def request_help(
+        self,
+        help_type: str,
+        description: str,
+        related_task_id: Optional[str] = None,
+        urgency: str = "normal",
+    ) -> Dict[str, Any]:
+        """Request help from other ORIONs."""
+        try:
+            result = self.messenger.request_help(
+                from_orion=self.instance_id,
+                help_type=help_type,
+                description=description,
+                related_task_id=related_task_id,
+                urgency=urgency,
+            )
+            if result.get("success"):
+                self._log(f"🆘 Sent help request: {help_type}")
+            return result
+        except Exception as e:
+            self._log(f"⚠️ Failed to request help: {e}")
+            return {"success": False, "error": str(e)}
+
+    def handoff_task(
+        self,
+        to_orion: str,
+        task_id: str,
+        task_title: str,
+        handoff_reason: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Hand off a task to another ORION."""
+        try:
+            result = self.messenger.handoff_task(
+                from_orion=self.instance_id,
+                to_orion=to_orion,
+                task_id=task_id,
+                task_title=task_title,
+                handoff_reason=handoff_reason,
+                context=context,
+            )
+            if result.get("success"):
+                self._log(f"📤 Handed off task {task_id} to {to_orion}")
+            return result
+        except Exception as e:
+            self._log(f"⚠️ Failed to handoff task: {e}")
+            return {"success": False, "error": str(e)}
+
+    def _handle_help_request(self, msg: Dict[str, Any]) -> None:
+        """Handle an incoming help request."""
+        help_type = (msg.get("metadata") or {}).get("help_type", "general")
+        from_orion = msg.get("from_orion", "unknown")
+
+        # Check if we can help based on our current state and capabilities
+        can_help = not self.paused and len(self.history[-5:]) < 3  # Not too busy
+
+        if can_help:
+            self._pending_help_responses.append({
+                "message_id": msg.get("id"),
+                "from_orion": from_orion,
+                "help_type": help_type,
+                "content": msg.get("content", ""),
+            })
+            self._log(f"🤝 Can help {from_orion} with {help_type}")
+
     async def process(self, message: AgentMessage) -> TaskResult:
         """Process incoming message (usually from user)"""
 
@@ -266,6 +406,17 @@ class Orion(AsyncAgent):
             self._log(f"\n{'='*60}")
             self._log(f"🔄 ITERATION #{self.iteration}")
             self._log(f"{'='*60}")
+
+            # Check for inter-ORION messages
+            messages = self.check_messages()
+            if messages:
+                self._log(f"📨 {len(messages)} new message(s) received")
+
+            # Periodic status broadcast (every 10 iterations)
+            if self.iteration % 10 == 0:
+                status = "paused" if self.paused else "running"
+                current_task = self.history[-1].get("task", "idle") if self.history else "idle"
+                self.broadcast_status(status, current_task[:50] if current_task else None)
 
             try:
                 # Run one parallel cycle
