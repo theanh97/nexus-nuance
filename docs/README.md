@@ -297,6 +297,8 @@ DEFAULT_SINGLE_MODEL=minimax/MiniMax-M2.5
 | `GET /api/slo/summary` | Balanced SLO summary |
 | `GET /api/events/digest` | Event digest |
 
+Prometheus alert rules for OpenClaw metrics are in `monitoring/prometheus/openclaw-alerts.yml`.
+
 `full_auto` behavior:
 - User pause is treated as temporary in automation context; Orion is auto-resumed after `MONITOR_FULL_AUTO_USER_PAUSE_MAX_SEC`.
 - `pause_autopilot` becomes a maintenance lease in `full_auto` (not an infinite OFF) via `MONITOR_FULL_AUTO_MAINTENANCE_LEASE_SEC`.

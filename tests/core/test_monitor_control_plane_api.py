@@ -209,3 +209,220 @@ def test_slo_summary_endpoint(client):
     assert payload["success"] is True
     assert "slo" in payload
     assert "detail" in payload["slo"]
+
+
+def _install_openclaw_test_queue(monkeypatch) -> None:
+    manager = monitor_app._OpenClawCommandManager()
+    manager.set_executor(
+        lambda command_type, payload: {
+            "success": True,
+            "result": {"ok": True, "command_type": command_type, "action": payload.get("action", "")},
+        }
+    )
+    monkeypatch.setattr(monitor_app, "_openclaw_command_manager", manager)
+    monkeypatch.setattr(monitor_app, "OPENCLAW_QUEUE_ENABLED", True)
+    monkeypatch.setattr(monitor_app, "API_RATE_LIMIT_OPENCLAW_PER_MIN", 10_000)
+    monkeypatch.setattr(monitor_app, "OPENCLAW_AUTO_IDEMPOTENCY_ENABLED", True)
+    monkeypatch.setattr(monitor_app, "OPENCLAW_AUTO_IDEMPOTENCY_WINDOW_SEC", 120)
+
+
+def _idempotent_hits(client) -> int:
+    metrics = client.get("/api/openclaw/metrics")
+    assert metrics.status_code == 200
+    payload = metrics.get_json()
+    return int(payload["metrics"]["counters"]["queue_idempotent_hit"])
+
+
+def test_openclaw_browser_burst_reuses_idempotent_request(client, monkeypatch):
+    monkeypatch.setattr(monitor_app, "_collect_token_info", lambda force_refresh=False: _healthy_token_info())
+    _install_openclaw_test_queue(monkeypatch)
+
+    before_hits = _idempotent_hits(client)
+    session_id = f"burst-browser-{int(datetime.now().timestamp() * 1000)}"
+    payload = {
+        "action": "open",
+        "url": "http://127.0.0.1:5050/",
+        "mode": "async",
+        "source": "manual",
+        "session_id": session_id,
+        "route_mode": "direct",
+    }
+
+    first = client.post("/api/openclaw/browser", json=payload)
+    second = client.post("/api/openclaw/browser", json=payload)
+    third = client.post("/api/openclaw/browser", json=payload)
+
+    assert first.status_code == 202
+    assert second.status_code == 202
+    assert third.status_code == 202
+
+    first_body = first.get_json()
+    second_body = second.get_json()
+    third_body = third.get_json()
+
+    assert first_body["success"] is True
+    assert first_body["accepted"] is True
+    assert first_body["request_id"]
+    assert first_body["idempotent_replay"] is False
+    assert second_body["request_id"] == first_body["request_id"]
+    assert third_body["request_id"] == first_body["request_id"]
+    assert second_body["idempotent_replay"] is True or third_body["idempotent_replay"] is True
+
+    after_hits = _idempotent_hits(client)
+    assert after_hits >= before_hits + 1
+
+
+def test_openclaw_flow_dashboard_burst_uses_queue_idempotency(client, monkeypatch):
+    monkeypatch.setattr(monitor_app, "_collect_token_info", lambda force_refresh=False: _healthy_token_info())
+    _install_openclaw_test_queue(monkeypatch)
+
+    before_hits = _idempotent_hits(client)
+    session_id = f"burst-flow-{int(datetime.now().timestamp() * 1000)}"
+    payload = {
+        "chat_text": "status",
+        "approve": True,
+        "deny": False,
+        "mode": "async",
+        "source": "manual",
+        "session_id": session_id,
+        "route_mode": "direct",
+    }
+
+    responses = [client.post("/api/openclaw/flow/dashboard", json=payload) for _ in range(3)]
+
+    assert all(resp.status_code == 202 for resp in responses)
+    bodies = [resp.get_json() for resp in responses]
+    assert all(body["success"] is True for body in bodies)
+    assert all(body["accepted"] is True for body in bodies)
+    request_ids = [body["request_id"] for body in bodies]
+    assert request_ids[0]
+    assert request_ids[1] == request_ids[0]
+    assert request_ids[2] == request_ids[0]
+
+    after_hits = _idempotent_hits(client)
+    assert after_hits >= before_hits + 1
+
+
+def test_hub_task_create_returns_version(client):
+    response = client.post(
+        "/api/hub/tasks",
+        json={
+            "title": "Leaseable task",
+            "description": "Ensure version is returned",
+            "priority": "high",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["task"]["id"]
+    assert isinstance(payload.get("version"), int)
+
+
+def test_hub_task_create_rejects_stale_expected_version(client):
+    first = client.post(
+        "/api/hub/tasks",
+        json={
+            "title": "Task 1",
+            "description": "fresh",
+            "expected_version": 0,
+        },
+    )
+    assert first.status_code == 200
+
+    stale = client.post(
+        "/api/hub/tasks",
+        json={
+            "title": "Task 2",
+            "description": "stale",
+            "expected_version": 0,
+        },
+    )
+    assert stale.status_code == 409
+    stale_payload = stale.get_json()
+    assert stale_payload["success"] is False
+    assert stale_payload["error_code"] == "VERSION_CONFLICT"
+
+
+def test_hub_task_lease_claim_heartbeat_release_flow(client):
+    created = client.post(
+        "/api/hub/tasks",
+        json={"title": "Claim me", "description": "lease flow"},
+    )
+    task_payload = created.get_json()
+    task_id = task_payload["task"]["id"]
+
+    claim = client.post(
+        f"/api/hub/tasks/{task_id}/claim",
+        json={"owner_id": "orion:A", "lease_sec": 90},
+    )
+    assert claim.status_code == 200
+    claim_body = claim.get_json()
+    lease_token = claim_body["lease"]["lease_token"]
+
+    conflict = client.post(
+        f"/api/hub/tasks/{task_id}/claim",
+        json={"owner_id": "orion:B", "lease_sec": 90},
+    )
+    assert conflict.status_code == 409
+    conflict_body = conflict.get_json()
+    assert conflict_body["error_code"] == "LEASE_CONFLICT"
+
+    heartbeat = client.post(
+        f"/api/hub/tasks/{task_id}/heartbeat",
+        json={"owner_id": "orion:A", "lease_token": lease_token, "lease_sec": 120},
+    )
+    assert heartbeat.status_code == 200
+    hb_body = heartbeat.get_json()
+    assert hb_body["success"] is True
+
+    release = client.post(
+        f"/api/hub/tasks/{task_id}/release",
+        json={"owner_id": "orion:A", "lease_token": lease_token, "next_status": "todo"},
+    )
+    assert release.status_code == 200
+
+    reclaim = client.post(
+        f"/api/hub/tasks/{task_id}/claim",
+        json={"owner_id": "orion:B", "lease_sec": 90},
+    )
+    assert reclaim.status_code == 200
+
+
+def test_hub_task_update_respects_lease_owner(client):
+    created = client.post(
+        "/api/hub/tasks",
+        json={"title": "Protected task", "description": "lease update guard"},
+    )
+    task_id = created.get_json()["task"]["id"]
+
+    claim = client.post(
+        f"/api/hub/tasks/{task_id}/claim",
+        json={"owner_id": "orion:owner", "lease_sec": 120},
+    )
+    lease_token = claim.get_json()["lease"]["lease_token"]
+
+    blocked = client.put(
+        f"/api/hub/tasks/{task_id}",
+        json={
+            "status": "review",
+            "owner_id": "orion:other",
+            "lease_token": "bad-token",
+        },
+    )
+    assert blocked.status_code == 423
+    blocked_payload = blocked.get_json()
+    assert blocked_payload["error_code"] == "LEASE_CONFLICT"
+
+    allowed = client.put(
+        f"/api/hub/tasks/{task_id}",
+        json={
+            "status": "review",
+            "owner_id": "orion:owner",
+            "lease_token": lease_token,
+        },
+    )
+    assert allowed.status_code == 200
+    allowed_payload = allowed.get_json()
+    assert allowed_payload["success"] is True
+    assert allowed_payload["task"]["status"] == "review"

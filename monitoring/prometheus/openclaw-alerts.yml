@@ -1,0 +1,32 @@
+groups:
+  - name: openclaw-automation
+    rules:
+      - alert: OpenClawFlowFailuresBurst
+        expr: increase(monitor_openclaw_flow_failures_total[5m]) >= 3
+        for: 5m
+        labels:
+          severity: warning
+          service: openclaw
+        annotations:
+          summary: OpenClaw flow failures are increasing
+          description: OpenClaw flow failures crossed threshold in the last 5 minutes. Check /api/openclaw/metrics and /api/openclaw/metrics/prometheus.
+
+      - alert: OpenClawCliFailuresBurst
+        expr: increase(monitor_openclaw_cli_failures_total[5m]) >= 3
+        for: 5m
+        labels:
+          severity: warning
+          service: openclaw
+        annotations:
+          summary: OpenClaw CLI failures are increasing
+          description: OpenClaw CLI failures crossed threshold in the last 5 minutes. Inspect gateway health and command execution paths.
+
+      - alert: OpenClawQueueIdempotentReplaySpike
+        expr: increase(monitor_openclaw_queue_idempotent_hit_total[5m]) >= 20
+        for: 10m
+        labels:
+          severity: warning
+          service: openclaw
+        annotations:
+          summary: OpenClaw idempotent replay spikes detected
+          description: Queue idempotent replay hits are high, indicating noisy or repeated callers for OpenClaw endpoints.

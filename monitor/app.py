@@ -7674,33 +7674,119 @@ try:
 
     @app.route('/api/hub/tasks', methods=['GET', 'POST'])
     def manage_tasks():
-        """Create or list tasks"""
+        """Create or list tasks."""
         if request.method == 'POST':
             data = request.get_json(silent=True) or {}
-            task = _hub.create_task(
+            expected_version = data.get("expected_version")
+            result = _hub.create_task_safe(
                 title=data.get("title", "New Task"),
                 description=data.get("description", ""),
                 priority=data.get("priority", "medium"),
-                assigned_to=data.get("assigned_to")
+                assigned_to=data.get("assigned_to"),
+                expected_version=expected_version,
             )
-            return jsonify({"success": True, "task": task})
-        return jsonify({"success": True, "tasks": _hub.tasks})
+            status = 200 if result.get("success") else (409 if result.get("error_code") == "VERSION_CONFLICT" else 400)
+            return jsonify(result), status
+
+        tasks = _hub.list_tasks()
+        metrics = _hub.get_metrics()
+        return jsonify(
+            {
+                "success": True,
+                "tasks": tasks,
+                "version": metrics.get("state_version", 0),
+                "updated_at": metrics.get("state_updated_at"),
+            }
+        )
 
     @app.route('/api/hub/tasks/<task_id>', methods=['PUT', 'DELETE'])
     def update_task(task_id):
-        """Update task status or delete"""
+        """Update, assign, or delete a task with version-safe operations."""
         if request.method == 'DELETE':
-            _hub.tasks = [t for t in _hub.tasks if t.get("id") != task_id]
-            _hub.save_state()
-            return jsonify({"success": True})
+            expected_version = request.args.get("expected_version")
+            result = _hub.delete_task_safe(task_id, expected_version=expected_version)
+            status = 200 if result.get("success") else (409 if result.get("error_code") == "VERSION_CONFLICT" else 404)
+            return jsonify(result), status
+
         data = request.get_json(silent=True) or {}
+        expected_version = data.get("expected_version")
         if "status" in data:
-            task = _hub.update_task_status(task_id, data["status"])
+            result = _hub.update_task_status_safe(
+                task_id,
+                data["status"],
+                expected_version=expected_version,
+                owner_id=data.get("owner_id"),
+                lease_token=data.get("lease_token"),
+                force=bool(data.get("force", False)),
+            )
         elif "assigned_to" in data:
-            task = _hub.assign_task(task_id, data["assigned_to"])
+            result = _hub.assign_task_safe(task_id, data["assigned_to"], expected_version=expected_version)
         else:
-            task = {}
-        return jsonify({"success": True, "task": task})
+            result = {"success": False, "error": "No update action provided", "error_code": "NO_ACTION"}
+
+        if result.get("success"):
+            status = 200
+        else:
+            code = str(result.get("error_code", ""))
+            if code == "VERSION_CONFLICT":
+                status = 409
+            elif code in {"TASK_NOT_FOUND"}:
+                status = 404
+            elif code in {"LEASE_CONFLICT"}:
+                status = 423
+            else:
+                status = 400
+        return jsonify(result), status
+
+    @app.route('/api/hub/tasks/<task_id>/claim', methods=['POST'])
+    def claim_hub_task(task_id):
+        data = request.get_json(silent=True) or {}
+        result = _hub.claim_task(
+            task_id=task_id,
+            owner_id=data.get("owner_id", ""),
+            lease_sec=data.get("lease_sec"),
+            expected_version=data.get("expected_version"),
+        )
+        if result.get("success"):
+            status = 200
+        else:
+            code = str(result.get("error_code", ""))
+            status = 409 if code in {"VERSION_CONFLICT", "LEASE_CONFLICT"} else 400
+        return jsonify(result), status
+
+    @app.route('/api/hub/tasks/<task_id>/heartbeat', methods=['POST'])
+    def heartbeat_hub_task_lease(task_id):
+        data = request.get_json(silent=True) or {}
+        result = _hub.heartbeat_task_lease(
+            task_id=task_id,
+            owner_id=data.get("owner_id", ""),
+            lease_token=data.get("lease_token", ""),
+            lease_sec=data.get("lease_sec"),
+            expected_version=data.get("expected_version"),
+        )
+        if result.get("success"):
+            status = 200
+        else:
+            code = str(result.get("error_code", ""))
+            status = 409 if code in {"VERSION_CONFLICT", "LEASE_CONFLICT", "LEASE_EXPIRED"} else 400
+        return jsonify(result), status
+
+    @app.route('/api/hub/tasks/<task_id>/release', methods=['POST'])
+    def release_hub_task_lease(task_id):
+        data = request.get_json(silent=True) or {}
+        result = _hub.release_task_lease(
+            task_id=task_id,
+            owner_id=data.get("owner_id", ""),
+            lease_token=data.get("lease_token", ""),
+            expected_version=data.get("expected_version"),
+            next_status=data.get("next_status"),
+        )
+        if result.get("success"):
+            status = 200
+        else:
+            code = str(result.get("error_code", ""))
+            status = 409 if code in {"VERSION_CONFLICT", "LEASE_CONFLICT"} else 400
+        return jsonify(result), status
 
     @app.route('/api/hub/orions')
     def get_hub_orions():

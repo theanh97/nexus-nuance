@@ -18,6 +18,19 @@
             --card-padding: 16px;
             --layout-width: 1400px;
             --layout-gap: 16px;
+            --layout-main-col: minmax(0, 2.2fr);
+            --layout-side-col: minmax(320px, 1fr);
+            --fs-body: clamp(13px, 0.2vw + 12.2px, 14px);
+            --fs-brand-title: clamp(17px, 0.34vw + 15.8px, 20px);
+            --fs-brand-subtitle: clamp(11px, 0.12vw + 10.6px, 12.5px);
+            --fs-card-title: clamp(13px, 0.18vw + 12.4px, 15px);
+            --fs-ui: clamp(11px, 0.16vw + 10.5px, 12.5px);
+            --fs-micro: clamp(10px, 0.08vw + 9.7px, 11px);
+            --fs-metric-label: clamp(10px, 0.1vw + 9.8px, 11.5px);
+            --fs-metric-value: clamp(20px, 0.86vw + 16px, 26px);
+            --fs-metric-sub: clamp(10px, 0.12vw + 9.8px, 11.5px);
+            --fs-table: clamp(11px, 0.2vw + 10.4px, 12.5px);
+            --fs-connection: clamp(10px, 0.12vw + 9.7px, 11.5px);
         }
 
         body[data-theme="dark"], html[data-theme="dark"] {
@@ -66,6 +79,7 @@
 
         body {
             font-family: var(--font-sans);
+            font-size: var(--fs-body);
             background: radial-gradient(circle at 10% 10%, var(--accent-soft) 0%, transparent 30%), var(--bg);
             color: var(--text);
             min-height: 100vh;
@@ -106,12 +120,12 @@
         }
 
         .brand h1 {
-            font-size: 18px;
+            font-size: var(--fs-brand-title);
             letter-spacing: 0.2px;
         }
 
         .brand p {
-            font-size: 12px;
+            font-size: var(--fs-brand-subtitle);
             color: var(--muted);
         }
 
@@ -187,7 +201,7 @@
             border-radius: 999px;
             background: var(--panel);
             color: var(--muted);
-            font-size: 12px;
+            font-size: var(--fs-ui);
             font-weight: 600;
             padding: 7px 11px;
             cursor: pointer;
@@ -203,7 +217,7 @@
             border: 1px solid var(--border);
             border-radius: 999px;
             padding: 7px 12px;
-            font-size: 12px;
+            font-size: var(--fs-ui);
             background: var(--panel);
             color: var(--muted);
             white-space: nowrap;
@@ -259,7 +273,7 @@
             margin: 16px auto;
             padding: 0 16px 18px;
             display: grid;
-            grid-template-columns: minmax(0, 2.2fr) minmax(320px, 1fr);
+            grid-template-columns: var(--layout-main-col) var(--layout-side-col);
             gap: var(--layout-gap);
         }
 
@@ -275,7 +289,9 @@
             border-radius: var(--card-radius);
             box-shadow: var(--shadow);
             padding: var(--card-padding);
-            transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+            opacity: 1;
+            transform: translateY(0);
+            transition: opacity 0.18s ease, transform 0.2s ease, border-color 0.18s ease, box-shadow 0.18s ease;
         }
 
         .card:hover {
@@ -285,13 +301,24 @@
         }
 
         .card h2 {
-            font-size: 14px;
+            font-size: var(--fs-card-title);
             margin-bottom: 10px;
             letter-spacing: 0.2px;
         }
 
         .card.is-hidden {
             display: none;
+        }
+
+        .card.is-entering {
+            opacity: 0;
+            transform: translateY(6px);
+        }
+
+        .card.is-leaving {
+            opacity: 0;
+            transform: translateY(6px);
+            pointer-events: none;
         }
 
         .summary-head {
@@ -346,7 +373,7 @@
         }
 
         .metric-label {
-            font-size: 11px;
+            font-size: var(--fs-metric-label);
             color: var(--muted);
             text-transform: uppercase;
             margin-bottom: 6px;
@@ -355,13 +382,13 @@
 
         .metric-value {
             font-family: var(--font-mono);
-            font-size: 24px;
+            font-size: var(--fs-metric-value);
             font-weight: 600;
             color: var(--text);
         }
 
         .metric-sub {
-            font-size: 11px;
+            font-size: var(--fs-metric-sub);
             color: var(--muted);
             margin-top: 4px;
         }
@@ -405,7 +432,7 @@
         .agents-table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 12px;
+            font-size: var(--fs-table);
             table-layout: fixed;
         }
 
@@ -484,12 +511,12 @@
 
         .tiny {
             color: var(--muted);
-            font-size: 11px;
+            font-size: var(--fs-micro);
             font-family: var(--font-mono);
         }
 
         .text {
-            font-size: 12px;
+            font-size: var(--fs-ui);
             color: var(--text);
             word-break: break-word;
         }
@@ -692,6 +719,8 @@
             --card-padding: 14px;
             --layout-width: 1280px;
             --layout-gap: 14px;
+            --layout-main-col: minmax(0, 2.45fr);
+            --layout-side-col: minmax(300px, 0.95fr);
         }
 
         body[data-experience="balanced"] {
@@ -699,6 +728,8 @@
             --card-padding: 16px;
             --layout-width: 1400px;
             --layout-gap: 16px;
+            --layout-main-col: minmax(0, 2.2fr);
+            --layout-side-col: minmax(320px, 1fr);
         }
 
         body[data-experience="studio"] {
@@ -706,6 +737,8 @@
             --card-padding: 18px;
             --layout-width: 1520px;
             --layout-gap: 18px;
+            --layout-main-col: minmax(0, 2fr);
+            --layout-side-col: minmax(350px, 1.1fr);
         }
 
         body[data-density="compact"] {
@@ -850,7 +883,7 @@
             border: 1px solid var(--border);
             border-radius: 999px;
             padding: 8px 12px;
-            font-size: 11px;
+            font-size: var(--fs-connection);
             background: var(--panel);
             box-shadow: var(--shadow);
             z-index: 60;
@@ -1245,10 +1278,14 @@
 
         @media (prefers-reduced-motion: reduce) {
             .card,
+            .card.is-entering,
+            .card.is-leaving,
             .chat-chip,
             .chat-msg {
                 transition: none !important;
                 animation: none !important;
+                transform: none !important;
+                opacity: 1 !important;
             }
         }
     </style>
@@ -1536,6 +1573,7 @@
         const actionLocks = { refresh: false, pause: false, resume: false, spawn: false, improve: false };
         let deckSuggestedCommand = '';
         let deckPrefillLast = '';
+        const cardHideTimers = new WeakMap();
 
         const refs = {
             iterationCounter: document.getElementById('iteration-counter'),
@@ -2598,13 +2636,41 @@
             const resolved = ALLOWED_VIEWS.includes(String(view)) ? String(view) : 'workspace';
             activeView = resolved;
             document.body.dataset.activeView = resolved;
+            const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
             refs.viewTabs.forEach((button) => {
                 button.classList.toggle('active', button.dataset.view === resolved);
             });
             refs.cards.forEach((card) => {
                 const tokens = String(card.dataset.view || 'workspace').split(/\s+/).filter(Boolean);
                 const visible = resolved === 'workspace' ? tokens.includes('workspace') : tokens.includes(resolved);
-                card.classList.toggle('is-hidden', !visible);
+                const isHidden = card.classList.contains('is-hidden');
+                const pendingHide = cardHideTimers.get(card);
+                if (pendingHide) {
+                    window.clearTimeout(pendingHide);
+                    cardHideTimers.delete(card);
+                }
+                card.classList.remove('is-entering', 'is-leaving');
+                if (reduceMotion) {
+                    card.classList.toggle('is-hidden', !visible);
+                    return;
+                }
+                if (visible) {
+                    if (isHidden) {
+                        card.classList.remove('is-hidden');
+                        card.classList.add('is-entering');
+                        requestAnimationFrame(() => {
+                            card.classList.remove('is-entering');
+                        });
+                    }
+                } else if (!isHidden) {
+                    card.classList.add('is-leaving');
+                    const timerId = window.setTimeout(() => {
+                        card.classList.add('is-hidden');
+                        card.classList.remove('is-leaving');
+                        cardHideTimers.delete(card);
+                    }, 190);
+                    cardHideTimers.set(card, timerId);
+                }
             });
             if (syncUrl) {
                 const url = new URL(window.location.href);

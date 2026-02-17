@@ -11,7 +11,7 @@ import json
 import os
 import time
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from pathlib import Path
 import threading
 
@@ -123,6 +123,19 @@ class LearningLoop:
         )
         self.daily_self_learning_max_experiments = int(os.getenv("DAILY_SELF_LEARNING_MAX_EXPERIMENTS", "3"))
         self.daily_self_learning_max_ideas = int(os.getenv("DAILY_SELF_LEARNING_MAX_IDEAS", "6"))
+        self.daily_self_learning_min_interval = max(
+            60, int(os.getenv("DAILY_SELF_LEARNING_MIN_INTERVAL_SECONDS", "3600"))
+        )
+        self.daily_self_learning_max_interval = max(
+            self.daily_self_learning_min_interval,
+            int(os.getenv("DAILY_SELF_LEARNING_MAX_INTERVAL_SECONDS", "172800")),
+        )
+        self.daily_self_learning_stagnation_factor = max(
+            0.1, float(os.getenv("DAILY_SELF_LEARNING_STAGNATION_FACTOR", "0.5") or 0.5)
+        )
+        self.daily_self_learning_instability_factor = max(
+            1.0, float(os.getenv("DAILY_SELF_LEARNING_INSTABILITY_FACTOR", "2.0") or 2.0)
+        )
         self.enable_daily_notes = os.getenv("ENABLE_DAILY_RND_NOTES", "true").lower() == "true"
         self.rnd_notes_max_message_length = int(os.getenv("RND_NOTE_MAX_MESSAGE_CHARS", "800"))
         self.enable_iteration_self_check = os.getenv("ENABLE_ITERATION_SELF_CHECK", "true").lower() == "true"
@@ -179,6 +192,20 @@ class LearningLoop:
         self.normal_mode_successes = 0
         self.normal_mode_losses = 0
         self.normal_mode_last_reason = "not_evaluated"
+        self.anomaly_guard_enabled = os.getenv("ENABLE_ANOMALY_AUTOPAUSE", "true").strip().lower() == "true"
+        self.anomaly_open_issues_threshold = int(os.getenv("ANOMALY_OPEN_ISSUES_THRESHOLD", "3"))
+        self.anomaly_health_threshold = float(os.getenv("ANOMALY_HEALTH_SCORE_THRESHOLD", "55") or 55)
+        self.anomaly_error_count_threshold = int(os.getenv("ANOMALY_ERROR_COUNT_THRESHOLD", "4"))
+        self.anomaly_autopause_cooldown_sec = int(os.getenv("ANOMALY_AUTOPAUSE_COOLDOWN_SECONDS", "1800"))
+        self.anomaly_autopause_until: Optional[str] = None
+        self.anomaly_last_reason: str = "none"
+        self.daily_cadence_min_switch_seconds = int(os.getenv("DAILY_CADENCE_MIN_SWITCH_SECONDS", "900"))
+        self.daily_cadence_last_adjusted_at: Optional[str] = None
+        self.daily_cadence_last_reason: str = "baseline"
+        self.rollback_lock_loss_streak_threshold = int(os.getenv("ROLLBACK_LOCK_LOSS_STREAK_THRESHOLD", "2"))
+        self.rollback_lock_cooldown_seconds = int(os.getenv("ROLLBACK_LOCK_COOLDOWN_SECONDS", "3600"))
+        self.verification_loss_streak = 0
+        self.rollback_lock_until: Optional[str] = None
         self.window_learning_opportunities = 0
         self.window_improvement_opportunities = 0
         self.no_opportunity_iterations = 0
@@ -240,6 +267,12 @@ class LearningLoop:
                 self.normal_mode_successes = int(data.get("normal_mode_successes", 0))
                 self.normal_mode_losses = int(data.get("normal_mode_losses", 0))
                 self.normal_mode_last_reason = str(data.get("normal_mode_last_reason", self.normal_mode_last_reason))
+                self.anomaly_autopause_until = data.get("anomaly_autopause_until")
+                self.anomaly_last_reason = str(data.get("anomaly_last_reason", self.anomaly_last_reason))
+                self.daily_cadence_last_adjusted_at = data.get("daily_cadence_last_adjusted_at")
+                self.daily_cadence_last_reason = str(data.get("daily_cadence_last_reason", self.daily_cadence_last_reason))
+                self.verification_loss_streak = int(data.get("verification_loss_streak", 0))
+                self.rollback_lock_until = data.get("rollback_lock_until")
                 loaded_focus = str(data.get("current_focus_area", self.current_focus_area)).strip().lower()
                 if loaded_focus in self.FOCUS_AREAS:
                     self.current_focus_area = loaded_focus
@@ -271,6 +304,12 @@ class LearningLoop:
                 "normal_mode_successes": self.normal_mode_successes,
                 "normal_mode_losses": self.normal_mode_losses,
                 "normal_mode_last_reason": self.normal_mode_last_reason,
+                "anomaly_autopause_until": self.anomaly_autopause_until,
+                "anomaly_last_reason": self.anomaly_last_reason,
+                "daily_cadence_last_adjusted_at": self.daily_cadence_last_adjusted_at,
+                "daily_cadence_last_reason": self.daily_cadence_last_reason,
+                "verification_loss_streak": self.verification_loss_streak,
+                "rollback_lock_until": self.rollback_lock_until,
                 "current_focus_area": self.current_focus_area,
                 "last_cafe_calibration": self.last_cafe_calibration,
                 "last_updated": datetime.now().isoformat()
@@ -656,6 +695,17 @@ class LearningLoop:
         cooldown_remaining = 0
         if cooldown_until_dt:
             cooldown_remaining = max(0, int((cooldown_until_dt - now).total_seconds()))
+
+        anomaly_until_dt = self._parse_time(self.anomaly_autopause_until)
+        anomaly_remaining = 0
+        if anomaly_until_dt:
+            anomaly_remaining = max(0, int((anomaly_until_dt - now).total_seconds()))
+
+        rollback_until_dt = self._parse_time(self.rollback_lock_until)
+        rollback_remaining = 0
+        if rollback_until_dt:
+            rollback_remaining = max(0, int((rollback_until_dt - now).total_seconds()))
+
         return {
             "canary_enabled": self.enable_normal_mode_canary,
             "executor_real_apply_enabled": bool(getattr(self.executor_v2, "enable_real_apply", False)),
@@ -668,10 +718,23 @@ class LearningLoop:
             "normal_mode_successes": self.normal_mode_successes,
             "normal_mode_losses": self.normal_mode_losses,
             "normal_mode_last_reason": self.normal_mode_last_reason,
+            "anomaly_autopause_enabled": self.anomaly_guard_enabled,
+            "anomaly_autopause_until": self.anomaly_autopause_until,
+            "anomaly_autopause_remaining_sec": anomaly_remaining,
+            "anomaly_last_reason": self.anomaly_last_reason,
+            "rollback_lock_until": self.rollback_lock_until,
+            "rollback_lock_remaining_sec": rollback_remaining,
+            "verification_loss_streak": self.verification_loss_streak,
+            "rollback_lock_loss_streak_threshold": self.rollback_lock_loss_streak_threshold,
         }
 
     def _select_execution_mode_for_proposal(self, proposal: Dict) -> Dict[str, str]:
         default_mode = self.execution_mode_default if self.execution_mode_default in {"safe", "normal"} else "safe"
+        now = datetime.now()
+        rollback_lock_until_dt = self._parse_time(self.rollback_lock_until)
+        if rollback_lock_until_dt and rollback_lock_until_dt > now:
+            self.normal_mode_last_reason = "rollback_lock_active"
+            return {"mode": "safe", "reason": self.normal_mode_last_reason}
         if default_mode != "normal":
             self.normal_mode_last_reason = "default_safe_mode"
             return {"mode": "safe", "reason": self.normal_mode_last_reason}
@@ -712,13 +775,19 @@ class LearningLoop:
         verdict = str(verdict).strip().lower()
         if verdict == "loss":
             self.normal_mode_losses += 1
+            self.verification_loss_streak += 1
             self.normal_mode_cooldown_until = (now + timedelta(seconds=max(60, self.normal_mode_cooldown_sec))).isoformat()
+            if self.verification_loss_streak >= max(1, self.rollback_lock_loss_streak_threshold):
+                self.rollback_lock_until = (
+                    now + timedelta(seconds=max(60, self.rollback_lock_cooldown_seconds))
+                ).isoformat()
             self.proposal_engine_v2.mark_status(
                 proposal_id,
                 "verified",
                 rollback_guardrail_triggered=True,
                 rollback_reason="loss_detected_after_normal_mode_execution",
                 rollback_triggered_at=now.isoformat(),
+                rollback_lock_until=self.rollback_lock_until,
             )
             self._append_rnd_note(
                 note_type="normal_mode_guardrail_cooldown",
@@ -727,10 +796,58 @@ class LearningLoop:
                 context={
                     "proposal_id": proposal_id,
                     "cooldown_until": self.normal_mode_cooldown_until,
+                    "verification_loss_streak": self.verification_loss_streak,
+                    "rollback_lock_until": self.rollback_lock_until,
                 },
             )
         elif verdict == "win":
             self.normal_mode_successes += 1
+            self.verification_loss_streak = 0
+        else:
+            self.verification_loss_streak = 0
+
+    def _should_autopause_v2_pipeline(self, health: Dict, errors_count: int) -> Dict[str, Any]:
+        if not self.anomaly_guard_enabled:
+            self.anomaly_last_reason = "disabled"
+            return {"paused": False, "reason": "disabled"}
+
+        now = datetime.now()
+        autopause_until_dt = self._parse_time(self.anomaly_autopause_until)
+        if autopause_until_dt and autopause_until_dt > now:
+            self.anomaly_last_reason = "cooldown_active"
+            return {
+                "paused": True,
+                "reason": "cooldown_active",
+                "cooldown_remaining_sec": int((autopause_until_dt - now).total_seconds()),
+            }
+
+        open_issues = int((health or {}).get("open_issues", 0) or 0)
+        try:
+            health_score = float((health or {}).get("health_score", 100.0) or 100.0)
+        except (TypeError, ValueError):
+            health_score = 100.0
+
+        reason = ""
+        if open_issues >= max(1, self.anomaly_open_issues_threshold):
+            reason = "open_issues_threshold_exceeded"
+        elif health_score <= float(self.anomaly_health_threshold):
+            reason = "health_score_below_threshold"
+        elif int(errors_count or 0) >= max(1, self.anomaly_error_count_threshold):
+            reason = "runtime_error_spike"
+
+        if reason:
+            self.anomaly_autopause_until = (
+                now + timedelta(seconds=max(60, self.anomaly_autopause_cooldown_sec))
+            ).isoformat()
+            self.anomaly_last_reason = reason
+            return {
+                "paused": True,
+                "reason": reason,
+                "cooldown_remaining_sec": max(60, self.anomaly_autopause_cooldown_sec),
+            }
+
+        self.anomaly_last_reason = "healthy"
+        return {"paused": False, "reason": "healthy"}
 
     def _daily_notes_path(self, dt: Optional[datetime] = None) -> Path:
         ts = dt or datetime.now()
@@ -818,6 +935,60 @@ class LearningLoop:
         except Exception:
             return []
 
+    def _effective_daily_self_learning_interval(self, health_report: Optional[Dict] = None) -> Dict[str, Any]:
+        baseline = max(60, int(self.daily_self_learning_interval))
+        target_interval = float(baseline)
+        target_reasons: List[str] = ["baseline"]
+
+        if self.no_learning_streak >= self.self_check_warn_streak or self.no_improvement_streak >= self.self_check_warn_streak:
+            target_interval *= self.daily_self_learning_stagnation_factor
+            target_reasons.append("stagnation_accelerate")
+
+        report = health_report if isinstance(health_report, dict) else health_check()
+        try:
+            health_score = float(report.get("health_score", 100.0) or 100.0)
+        except (TypeError, ValueError):
+            health_score = 100.0
+        open_issues = int(report.get("open_issues", 0) or 0)
+        unstable = open_issues > 0 or health_score < 75.0
+        if unstable:
+            target_interval = float(baseline) * self.daily_self_learning_instability_factor
+            target_reasons = ["instability_slowdown"]
+
+        target_interval = max(float(self.daily_self_learning_min_interval), target_interval)
+        target_interval = min(float(self.daily_self_learning_max_interval), target_interval)
+
+        now = datetime.now()
+        last_adjusted_at = self._parse_time(self.daily_cadence_last_adjusted_at)
+        previous_reason = str(self.daily_cadence_last_reason or "baseline")
+        target_reason = ",".join(target_reasons)
+        if (
+            last_adjusted_at
+            and previous_reason != target_reason
+            and (now - last_adjusted_at).total_seconds() < max(0, self.daily_cadence_min_switch_seconds)
+        ):
+            reasons = [previous_reason, "anti_thrashing_hold"]
+            interval = float(baseline)
+            if "stagnation_accelerate" in previous_reason:
+                interval = float(baseline) * self.daily_self_learning_stagnation_factor
+            if "instability_slowdown" in previous_reason:
+                interval = float(baseline) * self.daily_self_learning_instability_factor
+            interval = max(float(self.daily_self_learning_min_interval), interval)
+            interval = min(float(self.daily_self_learning_max_interval), interval)
+        else:
+            interval = target_interval
+            reasons = target_reasons
+            self.daily_cadence_last_adjusted_at = now.isoformat()
+            self.daily_cadence_last_reason = target_reason
+
+        return {
+            "interval_seconds": int(round(interval)),
+            "reason": ",".join(reasons),
+            "baseline_seconds": baseline,
+            "health_score": round(health_score, 2),
+            "open_issues": open_issues,
+        }
+
     def _should_run_daily_self_learning(self) -> bool:
         """Determine whether the daily autonomous self-learning cycle should run."""
         if not self.enable_daily_self_learning:
@@ -825,7 +996,8 @@ class LearningLoop:
         last_run = self._parse_time(self.last_daily_self_learning)
         if not last_run:
             return True
-        interval_seconds = max(60, int(self.daily_self_learning_interval))
+        effective = self._effective_daily_self_learning_interval()
+        interval_seconds = max(60, int(effective.get("interval_seconds", self.daily_self_learning_interval)))
         return datetime.now() - last_run >= timedelta(seconds=interval_seconds)
 
     def _generate_daily_improvement_ideas(
@@ -1834,24 +2006,42 @@ class LearningLoop:
         results["improvements"] = improvement_summary
 
         # 3b. Run v2 proposal -> execute -> verify pipeline.
-        try:
-            v2_summary = self._run_v2_proposal_cycle(results)
-            results["v2_pipeline"] = v2_summary
-            if (
-                int(v2_summary.get("created", 0)) > 0
-                or int(v2_summary.get("executed", 0)) > 0
-                or int(v2_summary.get("verified", 0)) > 0
-            ):
-                results["actions"].append("v2_pipeline")
-        except Exception as e:
-            track_error(
-                "SYSTEM",
-                "v2_pipeline_error",
-                str(e),
-                context={"iteration": self.iteration},
-                recoverable=True,
+        v2_guardrail = self._should_autopause_v2_pipeline(
+            health=results.get("health", {}),
+            errors_count=len(results.get("errors", [])),
+        )
+        results["v2_guardrail"] = v2_guardrail
+        if bool(v2_guardrail.get("paused", False)):
+            results["v2_pipeline"] = {
+                "paused": True,
+                "pause_reason": str(v2_guardrail.get("reason", "unknown") or "unknown"),
+            }
+            results["actions"].append("v2_pipeline_paused")
+            self._append_rnd_note(
+                note_type="v2_pipeline_autopaused",
+                severity="warning",
+                message=f"Paused v2 pipeline due to guardrail: {v2_guardrail.get('reason', 'unknown')}",
+                context=v2_guardrail,
             )
-            results["errors"].append({"step": "v2_pipeline", "error": str(e)})
+        else:
+            try:
+                v2_summary = self._run_v2_proposal_cycle(results)
+                results["v2_pipeline"] = v2_summary
+                if (
+                    int(v2_summary.get("created", 0)) > 0
+                    or int(v2_summary.get("executed", 0)) > 0
+                    or int(v2_summary.get("verified", 0)) > 0
+                ):
+                    results["actions"].append("v2_pipeline")
+            except Exception as e:
+                track_error(
+                    "SYSTEM",
+                    "v2_pipeline_error",
+                    str(e),
+                    context={"iteration": self.iteration},
+                    recoverable=True,
+                )
+                results["errors"].append({"step": "v2_pipeline", "error": str(e)})
 
         # 3c. Calibrate CAFE model biases from recent evidence.
         if self._should_run_cafe_calibration():
@@ -2132,10 +2322,14 @@ class LearningLoop:
         daily_self_learning_all = self.get_today_daily_self_learning(limit=200)
         daily_self_learning_recent = daily_self_learning_all[:3]
         last_daily_run_time = self._parse_time(self.last_daily_self_learning)
+        daily_interval_meta = self._effective_daily_self_learning_interval(health_report=health_report)
+        effective_daily_interval_seconds = int(
+            daily_interval_meta.get("interval_seconds", max(60, int(self.daily_self_learning_interval)))
+        )
         next_daily_run_in_seconds = 0
         if self.enable_daily_self_learning and last_daily_run_time:
             elapsed = (datetime.now() - last_daily_run_time).total_seconds()
-            next_daily_run_in_seconds = max(0, int(self.daily_self_learning_interval - elapsed))
+            next_daily_run_in_seconds = max(0, int(effective_daily_interval_seconds - elapsed))
         prompt_system_snapshot = self.prompt_system.get_snapshot(limit=5)
         focus_report = self._build_focus_report(
             health_report=health_report,
@@ -2417,6 +2611,15 @@ class LearningLoop:
             "daily_self_learning": {
                 "enabled": self.enable_daily_self_learning,
                 "interval_seconds": self.daily_self_learning_interval,
+                "effective_interval_seconds": effective_daily_interval_seconds,
+                "cadence_reason": str(daily_interval_meta.get("reason", "baseline") or "baseline"),
+                "cadence_min_switch_seconds": self.daily_cadence_min_switch_seconds,
+                "cadence_last_adjusted_at": self.daily_cadence_last_adjusted_at,
+                "cadence_last_reason": self.daily_cadence_last_reason,
+                "min_interval_seconds": self.daily_self_learning_min_interval,
+                "max_interval_seconds": self.daily_self_learning_max_interval,
+                "stagnation_factor": self.daily_self_learning_stagnation_factor,
+                "instability_factor": self.daily_self_learning_instability_factor,
                 "max_experiments": self.daily_self_learning_max_experiments,
                 "max_ideas": self.daily_self_learning_max_ideas,
                 "last_run": self.last_daily_self_learning,
@@ -2431,11 +2634,22 @@ class LearningLoop:
             "learning_event_quality": learning_event_quality,
             "policy_state": policy_state,
             "execution_guardrail": execution_guardrail,
+            "v2_guardrail": {
+                "enabled": self.anomaly_guard_enabled,
+                "autopause_until": self.anomaly_autopause_until,
+                "last_reason": self.anomaly_last_reason,
+            },
             "cafe": {
                 "enabled": self.enable_cafe_calibration,
                 "last_calibration": self.last_cafe_calibration,
                 "model_bias_count": len(cafe_state.get("model_bias", {})) if isinstance(cafe_state, dict) else 0,
                 "model_bias": cafe_state.get("model_bias", {}) if isinstance(cafe_state, dict) else {},
+                "verification_thresholds": (
+                    cafe_state.get("verification_thresholds", {}) if isinstance(cafe_state, dict) else {}
+                ),
+                "verification_threshold_summary": (
+                    cafe_state.get("verification_threshold_summary", {}) if isinstance(cafe_state, dict) else {}
+                ),
                 "last_updated": cafe_state.get("last_updated") if isinstance(cafe_state, dict) else None,
             },
             "self_assessment": self_assessment,

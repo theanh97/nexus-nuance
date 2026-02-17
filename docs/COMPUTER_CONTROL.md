@@ -22,6 +22,7 @@ Updated: 2026-02-16
   - `GET /api/openclaw/queue` (queue snapshot + control-plane workers/circuits).
   - `GET /api/openclaw/metrics` (JSON counters + attach/token snapshot; optional `?events=1&limit=20`).
   - `GET /api/openclaw/metrics/prometheus` (Prometheus exposition format, ready for scrape).
+  - Prometheus alert rules file: `monitoring/prometheus/openclaw-alerts.yml`.
 - Control-plane:
   - `GET /api/control-plane/workers` (registered workers, alive workers, circuit states, blocked failure classes).
   - `POST /api/control-plane/workers/register`
@@ -47,6 +48,14 @@ Updated: 2026-02-16
 - `policy_auto_approved`, `policy_manual_required`, `policy_denied`: quyết định policy tự động/manual/deny.
 - `dispatch_remote`, `dispatch_failover`: số lần dispatch sang worker khác hoặc failover.
 - `circuit_opened`, `circuit_blocked`: trạng thái bảo vệ circuit-breaker theo worker/failure class.
+
+### Prometheus alerts (OpenClaw)
+
+Rule file: `monitoring/prometheus/openclaw-alerts.yml`
+
+- `OpenClawFlowFailuresBurst` theo dõi `monitor_openclaw_flow_failures_total`
+- `OpenClawCliFailuresBurst` theo dõi `monitor_openclaw_cli_failures_total`
+- `OpenClawQueueIdempotentReplaySpike` theo dõi `monitor_openclaw_queue_idempotent_hit_total`
 
 ## Action hỗ trợ
 

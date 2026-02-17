@@ -14,6 +14,7 @@ from pathlib import Path
 from src.core.agent import AsyncAgent
 from src.core.message import AgentMessage, MessageType, Priority, TaskResult, ProjectContext
 from src.core.computer_controller import get_computer_controller
+from src.core.multi_orion_hub import get_multi_orion_hub
 from src.memory.autonomous_improver import get_autonomous_improver
 from src.memory.learning_loop import get_learning_loop
 
@@ -553,47 +554,72 @@ class Orion(AsyncAgent):
         except Exception as e:
             self._log(f"⚠️ Self-improvement error: {str(e)}")
 
+    def _orion_lease_owner_id(self) -> str:
+        """Stable owner identifier for claiming hub tasks."""
+        return f"orion:{self.name.lower()}"
+
     def _get_next_task_from_kanban(self) -> Optional[Dict]:
-        """Get next task from Kanban to work on"""
+        """Claim next eligible Kanban task via hub lease ownership."""
         try:
-            kanban_file = Path("data/multi_orion_state.json")
-            if not kanban_file.exists():
-                return None
+            hub = get_multi_orion_hub()
+            snapshot = hub.get_snapshot()
+            tasks = snapshot.get("tasks", []) if isinstance(snapshot.get("tasks"), list) else []
+            current_version = int(snapshot.get("version") or 0)
 
-            with open(kanban_file) as f:
-                data = json.load(f)
-
-            tasks = data.get("tasks", [])
-
-            # Find first task in backlog or todo
             for task in tasks:
-                if task.get("status") in ["backlog", "todo"]:
-                    return task
+                if not isinstance(task, dict):
+                    continue
+                if str(task.get("status") or "") not in {"backlog", "todo"}:
+                    continue
+                task_id = str(task.get("id") or "").strip()
+                if not task_id:
+                    continue
+                claim = hub.claim_task(
+                    task_id=task_id,
+                    owner_id=self._orion_lease_owner_id(),
+                    lease_sec=180,
+                    expected_version=current_version,
+                )
+                if claim.get("success"):
+                    leased_task = claim.get("task") if isinstance(claim.get("task"), dict) else dict(task)
+                    lease_info = claim.get("lease") if isinstance(claim.get("lease"), dict) else {}
+                    if lease_info:
+                        leased_task["lease"] = lease_info
+                    return leased_task
+
+                error_code = str(claim.get("error_code", "")).upper()
+                if error_code == "VERSION_CONFLICT":
+                    snapshot = hub.get_snapshot()
+                    tasks = snapshot.get("tasks", []) if isinstance(snapshot.get("tasks"), list) else []
+                    current_version = int(snapshot.get("version") or 0)
+                    continue
 
             return None
         except Exception as e:
             self._log(f"⚠️ Kanban read error: {str(e)}")
             return None
 
-    def _update_task_status(self, task_id: str, new_status: str):
-        """Update task status in Kanban"""
+    def _update_task_status(self, task_id: str, new_status: str, lease_token: str = ""):
+        """Update task status in Kanban using lease-aware safe update."""
         try:
-            kanban_file = Path("data/multi_orion_state.json")
-            if not kanban_file.exists():
+            hub = get_multi_orion_hub()
+            owner_id = self._orion_lease_owner_id()
+            result = hub.update_task_status_safe(
+                task_id=task_id,
+                new_status=new_status,
+                owner_id=owner_id,
+                lease_token=lease_token,
+            )
+            if not result.get("success"):
+                self._log(f"⚠️ Kanban update rejected: {result.get('error_code') or result.get('error')}")
                 return
-
-            with open(kanban_file) as f:
-                data = json.load(f)
-
-            for task in data.get("tasks", []):
-                if task.get("id") == task_id:
-                    task["status"] = new_status
-                    task["updated_at"] = datetime.now().isoformat()
-                    break
-
-            with open(kanban_file, 'w') as f:
-                json.dump(data, f, indent=2)
-
+            if new_status in {"done", "review", "todo", "backlog"} and lease_token:
+                hub.release_task_lease(
+                    task_id=task_id,
+                    owner_id=owner_id,
+                    lease_token=lease_token,
+                    next_status=new_status,
+                )
         except Exception as e:
             self._log(f"⚠️ Kanban update error: {str(e)}")
 
@@ -607,7 +633,10 @@ class Orion(AsyncAgent):
 
         # If there's a Kanban task, move it to in_progress
         if kanban_task:
-            self._update_task_status(kanban_task["id"], "in_progress")
+            lease_token = ""
+            if isinstance(kanban_task.get("lease"), dict):
+                lease_token = str(kanban_task.get("lease", {}).get("lease_token", ""))
+            self._update_task_status(kanban_task["id"], "in_progress", lease_token=lease_token)
             self._log(f"📋 Working on task: {kanban_task.get('title', 'Unknown')}")
 
         message = AgentMessage(

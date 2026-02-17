@@ -1,12 +1,52 @@
 """Outcome verification for executed experiments."""
 
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional
+from time import sleep
+from typing import Any, Dict, List, Optional
 import os
 
 from .proposal_engine import get_proposal_engine_v2
 from .self_debugger import health_check
 from .storage_v2 import get_storage_v2
+
+
+DEFAULT_VERIFICATION_THRESHOLDS: Dict[str, float] = {
+    "health_improve": 1.0,
+    "health_decline": -1.0,
+    "latency_improve_ms": -100.0,
+    "latency_regress_ms": 200.0,
+    "success_improve": 0.02,
+    "success_regress": -0.02,
+    "weak_signal_abs_health": 0.5,
+    "weak_signal_abs_latency_ms": 50.0,
+    "weak_signal_abs_success_rate": 0.01,
+    "pending_recheck_confidence_max": 0.58,
+}
+
+VERIFICATION_THRESHOLD_BOUNDS: Dict[str, tuple[float, float]] = {
+    "health_improve": (0.6, 1.2),
+    "health_decline": (-1.2, -0.6),
+    "latency_improve_ms": (-180.0, -60.0),
+    "latency_regress_ms": (120.0, 280.0),
+    "success_improve": (0.01, 0.03),
+    "success_regress": (-0.03, -0.01),
+    "weak_signal_abs_health": (0.35, 0.8),
+    "weak_signal_abs_latency_ms": (30.0, 120.0),
+    "weak_signal_abs_success_rate": (0.006, 0.03),
+    "pending_recheck_confidence_max": (0.52, 0.68),
+}
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        numeric = float(lo)
+    if numeric < lo:
+        return lo
+    if numeric > hi:
+        return hi
+    return numeric
 
 
 class OutcomeVerifier:
@@ -15,8 +55,102 @@ class OutcomeVerifier:
         self.proposals = get_proposal_engine_v2()
         self.holdout_enabled = os.getenv("VERIFICATION_HOLDOUT_ENABLED", "true").strip().lower() == "true"
         self.holdout_seconds = int(os.getenv("VERIFICATION_HOLDOUT_SECONDS", "180"))
+        self.multi_sample_enabled = os.getenv("VERIFICATION_MULTI_SAMPLE_ENABLED", "true").strip().lower() == "true"
+        self.multi_sample_count = max(1, min(5, int(os.getenv("VERIFICATION_MULTI_SAMPLE_COUNT", "3") or 3)))
+        self.multi_sample_interval_seconds = max(
+            0.0,
+            min(30.0, float(os.getenv("VERIFICATION_MULTI_SAMPLE_INTERVAL_SECONDS", "0") or 0.0)),
+        )
 
-    def _verdict(self, before: Dict[str, Any], after: Dict[str, Any], run_artifacts: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _resolve_thresholds(self, raw: Any) -> Dict[str, float]:
+        source = raw if isinstance(raw, dict) else {}
+        resolved: Dict[str, float] = {}
+        for key, default in DEFAULT_VERIFICATION_THRESHOLDS.items():
+            lo, hi = VERIFICATION_THRESHOLD_BOUNDS.get(key, (float(default), float(default)))
+            resolved[key] = _clamp(source.get(key, default), lo, hi)
+        return resolved
+
+    def _load_verification_thresholds(self) -> Dict[str, float]:
+        try:
+            from .cafe_calibrator import get_cafe_calibrator
+
+            state = get_cafe_calibrator().get_state()
+            if isinstance(state, dict):
+                return self._resolve_thresholds(state.get("verification_thresholds"))
+        except Exception:
+            pass
+        return self._resolve_thresholds({})
+
+    def _collect_after_snapshot(self) -> Dict[str, Any]:
+        sample_target = self.multi_sample_count if self.multi_sample_enabled else 1
+        sample_target = max(1, int(sample_target))
+        interval = max(0.0, float(self.multi_sample_interval_seconds))
+
+        samples: List[Dict[str, Any]] = []
+        for idx in range(sample_target):
+            sample = health_check()
+            if isinstance(sample, dict):
+                samples.append(sample)
+            if idx < sample_target - 1 and interval > 0:
+                sleep(interval)
+
+        if not samples:
+            return {
+                "after": {},
+                "meta": {
+                    "sample_count": 0,
+                    "requested_sample_count": sample_target,
+                    "sample_interval_seconds": interval,
+                    "aggregation": "mean",
+                },
+            }
+
+        def _avg_float(path: List[str], default: float = 0.0) -> float:
+            values: List[float] = []
+            for row in samples:
+                node: Any = row
+                for key in path:
+                    node = node.get(key) if isinstance(node, dict) else None
+                try:
+                    values.append(float(node or 0.0))
+                except (TypeError, ValueError):
+                    continue
+            if not values:
+                return float(default)
+            return float(sum(values) / len(values))
+
+        def _avg_int(path: List[str], default: int = 0) -> int:
+            return int(round(_avg_float(path, float(default))))
+
+        aggregated = {
+            "health_score": round(_avg_float(["health_score"], 0.0), 4),
+            "open_issues": _avg_int(["open_issues"], 0),
+            "status": str(samples[-1].get("status", "")),
+            "timestamp": datetime.now().isoformat(),
+            "recent_stats": {
+                "total_errors": _avg_int(["recent_stats", "total_errors"], 0),
+                "avg_duration_ms": round(_avg_float(["recent_stats", "avg_duration_ms"], 0.0), 4),
+                "success_rate": round(_avg_float(["recent_stats", "success_rate"], 0.0), 6),
+            },
+        }
+
+        return {
+            "after": aggregated,
+            "meta": {
+                "sample_count": len(samples),
+                "requested_sample_count": sample_target,
+                "sample_interval_seconds": interval,
+                "aggregation": "mean",
+            },
+        }
+
+    def _verdict(
+        self,
+        before: Dict[str, Any],
+        after: Dict[str, Any],
+        run_artifacts: Optional[Dict[str, Any]] = None,
+        thresholds: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, Any]:
         b_health = float(before.get("health_score", 0) or 0)
         a_health = float(after.get("health_score", 0) or 0)
         b_issues = int(before.get("open_issues", 0) or 0)
@@ -29,6 +163,8 @@ class OutcomeVerifier:
         a_duration = float(a_stats.get("avg_duration_ms", 0) or 0)
         b_success = float(b_stats.get("success_rate", 0.0) or 0.0)
         a_success = float(a_stats.get("success_rate", 0.0) or 0.0)
+
+        thresholds = self._resolve_thresholds(thresholds)
 
         delta_health = round(a_health - b_health, 4)
         delta_issues = a_issues - b_issues
@@ -43,10 +179,10 @@ class OutcomeVerifier:
         negatives = 0
         reasons = []
 
-        if delta_health >= 1.0:
+        if delta_health >= thresholds["health_improve"]:
             positives += 1
             reasons.append("health_score_improved")
-        elif delta_health <= -1.0:
+        elif delta_health <= thresholds["health_decline"]:
             negatives += 1
             reasons.append("health_score_declined")
 
@@ -64,17 +200,17 @@ class OutcomeVerifier:
             negatives += 1
             reasons.append("errors_increased")
 
-        if delta_duration_ms <= -100:
+        if delta_duration_ms <= thresholds["latency_improve_ms"]:
             positives += 1
             reasons.append("latency_improved")
-        elif delta_duration_ms >= 200:
+        elif delta_duration_ms >= thresholds["latency_regress_ms"]:
             negatives += 1
             reasons.append("latency_regressed")
 
-        if delta_success_rate >= 0.02:
+        if delta_success_rate >= thresholds["success_improve"]:
             positives += 1
             reasons.append("success_rate_improved")
-        elif delta_success_rate <= -0.02:
+        elif delta_success_rate <= thresholds["success_regress"]:
             negatives += 1
             reasons.append("success_rate_regressed")
 
@@ -137,7 +273,7 @@ class OutcomeVerifier:
                 finished_at_dt = None
 
         before = ((target.get("artifacts") or {}).get("baseline_health") or {})
-        after = health_check()
+        thresholds = self._load_verification_thresholds()
         existing_verification = target.get("verification", {}) if isinstance(target.get("verification"), dict) else {}
         previous_attempts = int(existing_verification.get("attempts", 0) or 0)
         proposals = self.storage.get_proposals_v2().get("proposals", [])
@@ -213,6 +349,13 @@ class OutcomeVerifier:
                         "verified_at": datetime.now().isoformat(),
                         "holdout_pending": True,
                         "next_recheck_after": evidence.get("next_recheck_after"),
+                        "sampling": {
+                            "sample_count": 0,
+                            "requested_sample_count": int(self.multi_sample_count),
+                            "sample_interval_seconds": float(self.multi_sample_interval_seconds),
+                            "aggregation": "holdout_pending",
+                        },
+                        "thresholds": thresholds,
                     },
                 })
                 proposal_id = target.get("proposal_id")
@@ -233,8 +376,20 @@ class OutcomeVerifier:
                     "pending_recheck": True,
                 }
 
+        after_snapshot = self._collect_after_snapshot()
+        after = after_snapshot.get("after", {}) if isinstance(after_snapshot.get("after"), dict) else {}
+        sample_meta = after_snapshot.get("meta", {}) if isinstance(after_snapshot.get("meta"), dict) else {}
+        if not after:
+            after = health_check()
+            sample_meta = {
+                "sample_count": 1,
+                "requested_sample_count": 1,
+                "sample_interval_seconds": 0.0,
+                "aggregation": "single_snapshot",
+            }
+
         run_artifacts = target.get("artifacts", {}) if isinstance(target.get("artifacts"), dict) else {}
-        verdict_data = self._verdict(before, after, run_artifacts=run_artifacts)
+        verdict_data = self._verdict(before, after, run_artifacts=run_artifacts, thresholds=thresholds)
         verdict_data["delta"]["proposal_throughput"] = after_throughput["executed_or_verified"] - before_throughput["executed_or_verified"]
         verdict_data["delta"]["verified_count"] = after_throughput["verified"] - before_throughput["verified"]
         throughput_gain = int(verdict_data["delta"].get("proposal_throughput", 0) or 0)
@@ -257,15 +412,15 @@ class OutcomeVerifier:
             signals["positives"] = int(signals.get("positives", 0) or 0) + 1
             verdict_data["signals"] = signals
         weak_signal = (
-            abs(float(verdict_data["delta"].get("health_score", 0.0) or 0.0)) < 0.5
+            abs(float(verdict_data["delta"].get("health_score", 0.0) or 0.0)) < thresholds["weak_signal_abs_health"]
             and int(verdict_data["delta"].get("open_issues", 0) or 0) == 0
             and int(verdict_data["delta"].get("total_errors", 0) or 0) == 0
-            and abs(float(verdict_data["delta"].get("avg_duration_ms", 0.0) or 0.0)) < 50.0
-            and abs(float(verdict_data["delta"].get("success_rate", 0.0) or 0.0)) < 0.01
+            and abs(float(verdict_data["delta"].get("avg_duration_ms", 0.0) or 0.0)) < thresholds["weak_signal_abs_latency_ms"]
+            and abs(float(verdict_data["delta"].get("success_rate", 0.0) or 0.0)) < thresholds["weak_signal_abs_success_rate"]
         )
         pending_recheck = (
             verdict_data.get("verdict") == "inconclusive"
-            and float(verdict_data.get("confidence", 0.0) or 0.0) < 0.58
+            and float(verdict_data.get("confidence", 0.0) or 0.0) < thresholds["pending_recheck_confidence_max"]
             and weak_signal
         )
         evidence = {
@@ -287,6 +442,13 @@ class OutcomeVerifier:
                 "estimated_cost_usd": float(run_artifacts.get("estimated_cost_usd", 0.0) or 0.0),
                 "result": str(run_artifacts.get("result", "") or ""),
             },
+            "verification_sampling": {
+                "sample_count": int(sample_meta.get("sample_count", 0) or 0),
+                "requested_sample_count": int(sample_meta.get("requested_sample_count", 0) or 0),
+                "sample_interval_seconds": float(sample_meta.get("sample_interval_seconds", 0.0) or 0.0),
+                "aggregation": str(sample_meta.get("aggregation", "mean") or "mean"),
+            },
+            "verification_thresholds": thresholds,
             "pending_recheck": pending_recheck,
             "attempt": previous_attempts + 1,
         }
@@ -310,6 +472,8 @@ class OutcomeVerifier:
                 "pending_recheck": pending_recheck,
                 "attempts": previous_attempts + 1,
                 "verified_at": datetime.now().isoformat(),
+                "sampling": evidence.get("verification_sampling", {}),
+                "thresholds": thresholds,
             },
         })
 
