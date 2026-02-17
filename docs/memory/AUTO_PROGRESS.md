@@ -1,6 +1,6 @@
 # Nexus Progress Snapshot
 
-Last updated: 2026-02-17T00:24:01.347406
+Last updated: 2026-02-17T04:25:42Z
 
 ## Project
 - name: Nexus
@@ -35,9 +35,15 @@ Last updated: 2026-02-17T00:24:01.347406
 - provider: pyautogui
 
 ## Signals (last window)
-- counts: {'error': 36, 'warning': 2, 'success': 1, 'info': 81}
+- counts: {'error': 0, 'warning': 9, 'success': 12, 'info': 98}
 - top_agent: orion
-- latest_event: Monitor autopilot maintenance lease (50s) by dashboard
+- latest_event: Self-improvement complete: 0 applied, 0 pending
 
 ## Pending
 - pending_decisions: 0
+
+## Self-Learning Upgrades
+- CAFE loop added for event/evidence quality gating.
+- Automatic CAFE calibration for per-model confidence bias.
+- Verification holdout window to reduce premature inconclusive verdicts.
+- Self-assessment score exposed in status for health and stagnation checks.

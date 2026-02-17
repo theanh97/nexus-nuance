@@ -10,6 +10,8 @@
 - `SYNTHETIC_OPPORTUNITY_THRESHOLD=3`
 - `VERIFICATION_RETRY_INTERVAL_SECONDS=300`
 - `VERIFICATION_RETRY_MAX_ATTEMPTS=3`
+- `VERIFICATION_HOLDOUT_ENABLED=true`
+- `VERIFICATION_HOLDOUT_SECONDS=180`
 - `ENABLE_NORMAL_MODE_CANARY=true`
 - `NORMAL_MODE_MAX_PER_HOUR=1`
 - `NORMAL_MODE_MIN_PRIORITY=0.9`
@@ -17,13 +19,19 @@
 - `NORMAL_MODE_COOLDOWN_SECONDS=1800`
 - `ENABLE_EXECUTOR_REAL_APPLY=false` (default safety)
 - `EXECUTOR_REAL_APPLY_MAX_PATCHES=1`
+- `ENABLE_CAFE_LOOP=true`
+- `ENABLE_CAFE_CALIBRATION=true`
+- `CAFE_CALIBRATION_INTERVAL_SECONDS=21600`
+- `CAFE_MODEL_CONF_BIAS_JSON=` (optional)
 
 ## Operational Checks
 1. `python3 scripts/start.py --status`
 2. Verify sections:
 - `Proposal Funnel`
 - `Outcome Quality`
+- `Holdout pending runs` should be stable or trending down.
 - `Policy State`
+- `CAFE Calibration`
 - `Opportunity Windows`
 - Ensure `pending_recheck_runs` does not grow unbounded.
 - Check `trend_24h` and `trend_7d` verdict distribution.
@@ -63,3 +71,7 @@
 - Learning loop retries verification periodically based on:
   - `VERIFICATION_RETRY_INTERVAL_SECONDS`
   - `VERIFICATION_RETRY_MAX_ATTEMPTS`
+- When `VERIFICATION_HOLDOUT_ENABLED=true`, early verification is deferred:
+  - Evidence is created with `holdout_pending=true`.
+  - Recheck waits until `next_recheck_after`.
+  - Holdout evidence is excluded from win/loss/inconclusive rollups.

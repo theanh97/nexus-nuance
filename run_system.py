@@ -1602,6 +1602,11 @@ async def main():
     parser = argparse.ArgumentParser(description="Auto Dev Loop - Complete System")
     parser.add_argument("--goal", "-g", type=str, default=None, help="Project goal")
     parser.add_argument("--demo", action="store_true", help="Run demo (1 iteration)")
+    parser.add_argument(
+        "--force-stale-lock",
+        action="store_true",
+        help="Clear stale autodev_runtime lock and retry startup once",
+    )
     default_host = str(os.getenv("DASHBOARD_HOST", "localhost")).strip() or "localhost"
     try:
         default_port = int(os.getenv("DASHBOARD_PORT", "5000"))
@@ -1618,13 +1623,28 @@ async def main():
     runtime_guard = ProcessSingleton(name="autodev_runtime", lock_path=lock_path)
     acquired, owner = runtime_guard.acquire(extra={"entrypoint": "run_system.py"})
     if not acquired:
-        owner_pid = owner.get("pid", "unknown") if isinstance(owner, dict) else "unknown"
-        owner_started = owner.get("started_at", "unknown") if isinstance(owner, dict) else "unknown"
-        print("⚠️ Another AutoDev runtime is already running.")
-        print(f"   Lock: {lock_path}")
-        print(f"   Owner PID: {owner_pid}")
-        print(f"   Started: {owner_started}")
-        raise SystemExit(1)
+        lock_snapshot = ProcessSingleton.inspect(lock_path)
+        force_stale = bool(args.force_stale_lock) or str(
+            os.getenv("AUTODEV_FORCE_STALE_LOCK_CLEANUP", "false")
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        should_clear = force_stale and bool(lock_snapshot.get("stale"))
+        if should_clear:
+            try:
+                if Path(lock_path).exists():
+                    Path(lock_path).unlink()
+                    acquired, owner = runtime_guard.acquire(extra={"entrypoint": "run_system.py"})
+            except Exception:
+                acquired = False
+        if not acquired:
+            owner_pid = owner.get("pid", "unknown") if isinstance(owner, dict) else "unknown"
+            owner_started = owner.get("started_at", "unknown") if isinstance(owner, dict) else "unknown"
+            print("⚠️ Another AutoDev runtime is already running.")
+            print(f"   Lock: {lock_path}")
+            print(f"   Owner PID: {owner_pid}")
+            print(f"   Started: {owner_started}")
+            print(f"   Stale: {lock_snapshot.get('stale')}")
+            print("   Hint: use --force-stale-lock or AUTODEV_FORCE_STALE_LOCK_CLEANUP=true to recover.")
+            raise SystemExit(1)
     runtime_guard.start_heartbeat(interval_seconds=15)
 
     system = AutoDevSystem()

@@ -3,6 +3,7 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 import hashlib
+import os
 
 from .storage_v2 import get_storage_v2
 
@@ -10,8 +11,21 @@ from .storage_v2 import get_storage_v2
 class ProposalEngineV2:
     def __init__(self):
         self.storage = get_storage_v2()
-        self.create_threshold = float(__import__("os").getenv("PROPOSAL_V2_CREATE_THRESHOLD", "0.62"))
-        self.auto_approve_threshold = float(__import__("os").getenv("PROPOSAL_V2_AUTO_APPROVE_THRESHOLD", "0.82"))
+        self.create_threshold = float(os.getenv("PROPOSAL_V2_CREATE_THRESHOLD", "0.62"))
+        self.auto_approve_threshold = float(os.getenv("PROPOSAL_V2_AUTO_APPROVE_THRESHOLD", "0.82"))
+        self.enable_cafe = os.getenv("ENABLE_CAFE_LOOP", "true").strip().lower() == "true"
+        self.cafe_allow_blocked = os.getenv("CAFE_ALLOW_BLOCKED_PROPOSALS", "false").strip().lower() == "true"
+
+    def _clamp(self, value: float) -> float:
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            value = 0.0
+        if value < 0.0:
+            return 0.0
+        if value > 1.0:
+            return 1.0
+        return value
 
     def _priority(self, value: float, novelty: float, confidence: float, risk: float) -> float:
         raw = (0.40 * value) + (0.25 * novelty) + (0.20 * confidence) - (0.15 * risk)
@@ -66,10 +80,21 @@ class ProposalEngineV2:
             stream = self._event_stream(event)
             if stream == "non_production" and not include_non_production:
                 continue
-            value = float(event.get("value_score", 0.0) or 0.0)
-            novelty = float(event.get("novelty_score", 0.0) or 0.0)
-            confidence = float(event.get("confidence", value) or value)
-            risk = float(event.get("risk_score", 0.0) or 0.0)
+            value = self._clamp(event.get("value_score", 0.0) or 0.0)
+            novelty = self._clamp(event.get("novelty_score", 0.0) or 0.0)
+            confidence = self._clamp(event.get("confidence", value) or value)
+            risk = self._clamp(event.get("risk_score", 0.0) or 0.0)
+
+            cafe = event.get("cafe") if isinstance(event.get("cafe"), dict) else None
+            if self.enable_cafe and cafe:
+                if bool(cafe.get("blocked", False)) and not self.cafe_allow_blocked:
+                    continue
+                helpful = self._clamp(cafe.get("helpful", value))
+                harmless = self._clamp(cafe.get("harmless", 1.0 - risk))
+                cafe_conf = self._clamp(cafe.get("confidence", confidence))
+                value = self._clamp((value * 0.7) + (helpful * 0.3))
+                risk = self._clamp(max(risk, 1.0 - harmless))
+                confidence = self._clamp((confidence + cafe_conf) / 2.0)
             priority = self._priority(value, novelty, confidence, risk)
             if priority < self.create_threshold:
                 continue
@@ -104,7 +129,16 @@ class ProposalEngineV2:
                     "source": event.get("source"),
                     "event_type": event.get("event_type"),
                     "event_stream": stream,
+                    "model": event.get("model"),
                     "auto_approved": auto_approve,
+                    "cafe": {
+                        "score": cafe.get("score") if isinstance(cafe, dict) else None,
+                        "confidence": cafe.get("confidence") if isinstance(cafe, dict) else None,
+                        "helpful": cafe.get("helpful") if isinstance(cafe, dict) else None,
+                        "harmless": cafe.get("harmless") if isinstance(cafe, dict) else None,
+                        "reliability": cafe.get("reliability") if isinstance(cafe, dict) else None,
+                        "blocked": cafe.get("blocked") if isinstance(cafe, dict) else None,
+                    },
                 },
             }
             proposals.append(proposal)

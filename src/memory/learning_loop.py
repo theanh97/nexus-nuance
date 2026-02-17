@@ -161,6 +161,10 @@ class LearningLoop:
         self.synthetic_opportunity_threshold = int(os.getenv("SYNTHETIC_OPPORTUNITY_THRESHOLD", "3"))
         self.verification_retry_interval_sec = int(os.getenv("VERIFICATION_RETRY_INTERVAL_SECONDS", "300"))
         self.verification_retry_max_attempts = int(os.getenv("VERIFICATION_RETRY_MAX_ATTEMPTS", "3"))
+        self.enable_cafe_calibration = os.getenv("ENABLE_CAFE_CALIBRATION", "true").strip().lower() == "true"
+        self.cafe_calibration_interval_sec = int(os.getenv("CAFE_CALIBRATION_INTERVAL_SECONDS", "21600"))
+        self.last_cafe_calibration: Optional[str] = None
+        self.last_cafe_calibration_summary: Dict = {}
         self.enable_normal_mode_canary = os.getenv("ENABLE_NORMAL_MODE_CANARY", "true").strip().lower() == "true"
         self.normal_mode_max_per_hour = int(os.getenv("NORMAL_MODE_MAX_PER_HOUR", "1"))
         self.normal_mode_min_priority = float(os.getenv("NORMAL_MODE_MIN_PRIORITY", "0.9"))
@@ -239,6 +243,7 @@ class LearningLoop:
                 loaded_focus = str(data.get("current_focus_area", self.current_focus_area)).strip().lower()
                 if loaded_focus in self.FOCUS_AREAS:
                     self.current_focus_area = loaded_focus
+                self.last_cafe_calibration = data.get("last_cafe_calibration")
             except Exception:
                 # Start fresh on corrupted state.
                 pass
@@ -267,6 +272,7 @@ class LearningLoop:
                 "normal_mode_losses": self.normal_mode_losses,
                 "normal_mode_last_reason": self.normal_mode_last_reason,
                 "current_focus_area": self.current_focus_area,
+                "last_cafe_calibration": self.last_cafe_calibration,
                 "last_updated": datetime.now().isoformat()
             }, f, indent=2)
 
@@ -316,6 +322,12 @@ class LearningLoop:
             )
 
         # Feed normalized event stream for proposal v2.
+        model_hint = (
+            interaction.get("model")
+            or (interaction.get("details") or {}).get("model")
+            or (interaction.get("context") or {}).get("model")
+            or (interaction.get("context") or {}).get("selected_model")
+        )
         self._record_learning_event(
             {
                 "ts": datetime.now().isoformat(),
@@ -323,6 +335,7 @@ class LearningLoop:
                 "event_type": interaction.get("type", "interaction"),
                 "content": str(interaction.get("error") or interaction.get("details") or "")[:400],
                 "context": interaction.get("context", {}) if isinstance(interaction.get("context"), dict) else {},
+                "model": model_hint,
                 "novelty_score": 0.6 if interaction.get("significant", False) else 0.35,
                 "value_score": 0.75 if interaction.get("success") else 0.65,
                 "risk_score": 0.25 if interaction.get("success") else 0.55,
@@ -1344,6 +1357,25 @@ class LearningLoop:
             return None
         return self.storage_v2.record_learning_event(event)
 
+    def _should_run_cafe_calibration(self) -> bool:
+        if not self.enable_cafe_calibration:
+            return False
+        last = self._parse_time(self.last_cafe_calibration)
+        if not last:
+            return True
+        return (datetime.now() - last).total_seconds() > max(60, self.cafe_calibration_interval_sec)
+
+    def _run_cafe_calibration(self) -> Dict:
+        try:
+            from .cafe_calibrator import get_cafe_calibrator
+        except Exception:
+            return {"ok": False, "error": "cafe_calibrator_unavailable"}
+        calibrator = get_cafe_calibrator()
+        summary = calibrator.calibrate()
+        self.last_cafe_calibration = summary.get("last_updated") or datetime.now().isoformat()
+        self.last_cafe_calibration_summary = summary if isinstance(summary, dict) else {}
+        return summary
+
     def _events_from_scan(self, scan_results: Dict) -> List[Dict]:
         events: List[Dict] = []
         if not isinstance(scan_results, dict):
@@ -1539,6 +1571,9 @@ class LearningLoop:
                         verdict_confidence=final_confidence,
                     )
                 finalized_exhausted += 1
+                continue
+            next_recheck_after = self._parse_time(verification.get("next_recheck_after"))
+            if next_recheck_after and now < next_recheck_after:
                 continue
             last_verified_at = self._parse_time(verification.get("verified_at"))
             if last_verified_at and (now - last_verified_at).total_seconds() < max(10, self.verification_retry_interval_sec):
@@ -1817,6 +1852,22 @@ class LearningLoop:
                 recoverable=True,
             )
             results["errors"].append({"step": "v2_pipeline", "error": str(e)})
+
+        # 3c. Calibrate CAFE model biases from recent evidence.
+        if self._should_run_cafe_calibration():
+            try:
+                cafe_summary = self._run_cafe_calibration()
+                results["cafe_calibration"] = cafe_summary
+                results["actions"].append("cafe_calibration")
+            except Exception as e:
+                track_error(
+                    "SYSTEM",
+                    "cafe_calibration_error",
+                    str(e),
+                    context={"iteration": self.iteration},
+                    recoverable=True,
+                )
+                results["errors"].append({"step": "cafe_calibration", "error": str(e)})
 
         # 4. Advanced learning review
         if self._should_run_advanced_review():
@@ -2174,6 +2225,8 @@ class LearningLoop:
         verdict_counts = {"win": 0, "loss": 0, "inconclusive": 0}
         for run in runs:
             verification = run.get("verification", {}) if isinstance(run.get("verification"), dict) else {}
+            if bool(verification.get("holdout_pending", False)):
+                continue
             verdict = str(verification.get("verdict", "")).strip().lower()
             if verdict in verdict_counts:
                 verdict_counts[verdict] += 1
@@ -2181,10 +2234,13 @@ class LearningLoop:
         evidence_rows = self.storage_v2.list_outcome_evidence(limit=500)
         pending_recheck_runs = 0
         retry_exhausted_runs = 0
+        holdout_pending_runs = 0
         for run in runs:
             verification = run.get("verification", {}) if isinstance(run.get("verification"), dict) else {}
             if bool(verification.get("pending_recheck", False)):
                 pending_recheck_runs += 1
+            if bool(verification.get("holdout_pending", False)):
+                holdout_pending_runs += 1
             if bool(verification.get("retry_exhausted", False)):
                 retry_exhausted_runs += 1
         trend_24h = {"win": 0, "loss": 0, "inconclusive": 0}
@@ -2206,7 +2262,7 @@ class LearningLoop:
                     ts_dt = datetime.fromisoformat(str(ts))
                 except Exception:
                     ts_dt = None
-            if verdict in trend_24h and ts_dt:
+            if verdict in trend_24h and ts_dt and not bool(evd.get("holdout_pending", False)):
                 age_sec = (now_dt - ts_dt).total_seconds()
                 if age_sec <= 24 * 3600:
                     trend_24h[verdict] += 1
@@ -2256,6 +2312,7 @@ class LearningLoop:
             "avg_execution_duration_ms": _avg(execution_duration_values),
             "evidence_samples": len(evidence_rows),
             "pending_recheck_runs": pending_recheck_runs,
+            "holdout_pending_runs": holdout_pending_runs,
             "retry_exhausted_runs": retry_exhausted_runs,
             "trend_24h": trend_24h,
             "trend_7d": trend_7d,
@@ -2300,6 +2357,47 @@ class LearningLoop:
 
         policy_state = get_learning_policy_state() if self.enable_policy_bandit else {}
         execution_guardrail = self._execution_guardrail_snapshot()
+        cafe_state = {}
+        try:
+            from .cafe_calibrator import get_cafe_calibrator
+            cafe_state = get_cafe_calibrator().get_state()
+        except Exception:
+            cafe_state = {}
+        quality_score = 0.0
+        issues = []
+        try:
+            health_score = float(health_report.get("health_score", 0) or 0.0)
+        except (TypeError, ValueError):
+            health_score = 0.0
+        inconclusive_rate = float(outcome_quality.get("inconclusive_rate", 1.0) or 1.0)
+        production_ratio = float(learning_event_quality.get("production_ratio", 0.0) or 0.0)
+        no_improvement = int(self.no_improvement_streak or 0)
+        quality_score = (
+            max(0.0, min(100.0, health_score))
+            + (1.0 - min(1.0, max(0.0, inconclusive_rate))) * 40.0
+            + production_ratio * 20.0
+            - min(30.0, float(no_improvement))
+        )
+        quality_score = max(0.0, min(100.0, quality_score))
+        if health_score < 75:
+            issues.append("health_degraded")
+        if inconclusive_rate > 0.6:
+            issues.append("high_inconclusive_rate")
+        if production_ratio < 0.8:
+            issues.append("low_production_ratio")
+        if no_improvement >= self.self_check_warn_streak:
+            issues.append("stagnation_detected")
+        if quality_score >= 75:
+            grade = "good"
+        elif quality_score >= 50:
+            grade = "needs_improvement"
+        else:
+            grade = "critical"
+        self_assessment = {
+            "score": round(quality_score, 2),
+            "grade": grade,
+            "issues": issues[:5],
+        }
 
         return {
             "timestamp": datetime.now().isoformat(),
@@ -2333,6 +2431,14 @@ class LearningLoop:
             "learning_event_quality": learning_event_quality,
             "policy_state": policy_state,
             "execution_guardrail": execution_guardrail,
+            "cafe": {
+                "enabled": self.enable_cafe_calibration,
+                "last_calibration": self.last_cafe_calibration,
+                "model_bias_count": len(cafe_state.get("model_bias", {})) if isinstance(cafe_state, dict) else 0,
+                "model_bias": cafe_state.get("model_bias", {}) if isinstance(cafe_state, dict) else {},
+                "last_updated": cafe_state.get("last_updated") if isinstance(cafe_state, dict) else None,
+            },
+            "self_assessment": self_assessment,
             "prompt_system": prompt_system_snapshot,
             "focus": focus_report,
             "strategy": {
@@ -2391,6 +2497,11 @@ class LearningLoop:
             f"- Win Rate: {report.get('outcome_quality', {}).get('win_rate', 0)}",
             f"- Inconclusive Rate: {report.get('outcome_quality', {}).get('inconclusive_rate', 0)}",
             f"- Avg Confidence: {report.get('outcome_quality', {}).get('avg_confidence', 0)}",
+            "",
+            "## 🧮 CAFE Calibration",
+            f"- Enabled: {report.get('cafe', {}).get('enabled', False)}",
+            f"- Last Calibration: {report.get('cafe', {}).get('last_calibration', 'N/A')}",
+            f"- Model Bias Count: {report.get('cafe', {}).get('model_bias_count', 0)}",
             "",
             "## 🛡️ Execution Guardrail",
             f"- Canary Enabled: {report.get('execution_guardrail', {}).get('canary_enabled', False)}",

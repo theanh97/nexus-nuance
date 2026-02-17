@@ -1,7 +1,8 @@
 """Outcome verification for executed experiments."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
+import os
 
 from .proposal_engine import get_proposal_engine_v2
 from .self_debugger import health_check
@@ -12,6 +13,8 @@ class OutcomeVerifier:
     def __init__(self):
         self.storage = get_storage_v2()
         self.proposals = get_proposal_engine_v2()
+        self.holdout_enabled = os.getenv("VERIFICATION_HOLDOUT_ENABLED", "true").strip().lower() == "true"
+        self.holdout_seconds = int(os.getenv("VERIFICATION_HOLDOUT_SECONDS", "180"))
 
     def _verdict(self, before: Dict[str, Any], after: Dict[str, Any], run_artifacts: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         b_health = float(before.get("health_score", 0) or 0)
@@ -124,6 +127,15 @@ class OutcomeVerifier:
         if not target:
             return {"ok": False, "error": "run_not_found", "experiment_id": experiment_id}
 
+        run_artifacts = target.get("artifacts", {}) if isinstance(target.get("artifacts"), dict) else {}
+        finished_at = target.get("finished_at") or run_artifacts.get("finished_at")
+        finished_at_dt = None
+        if finished_at:
+            try:
+                finished_at_dt = datetime.fromisoformat(str(finished_at))
+            except Exception:
+                finished_at_dt = None
+
         before = ((target.get("artifacts") or {}).get("baseline_health") or {})
         after = health_check()
         existing_verification = target.get("verification", {}) if isinstance(target.get("verification"), dict) else {}
@@ -139,6 +151,88 @@ class OutcomeVerifier:
             "executed_or_verified": executed_count,
             "verified": verified_count,
         }
+        if self.holdout_enabled and finished_at_dt:
+            now = datetime.now()
+            holdout_until = finished_at_dt + timedelta(seconds=max(30, self.holdout_seconds))
+            if now < holdout_until:
+                evidence = {
+                    "id": f"evd_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}",
+                    "experiment_id": experiment_id,
+                    "metrics_before": before,
+                    "metrics_after": {},
+                    "delta": {
+                        "health_score": 0.0,
+                        "open_issues": 0,
+                        "total_errors": 0,
+                        "avg_duration_ms": 0.0,
+                        "success_rate": 0.0,
+                    },
+                    "verdict": "inconclusive",
+                    "confidence": 0.45,
+                    "signals": {
+                        "positives": 0,
+                        "negatives": 0,
+                        "reasons": ["holdout_window"],
+                        "execution_success": bool(run_artifacts.get("execution_success", True)),
+                        "execution_status": str(run_artifacts.get("result", "")),
+                        "run_duration_ms": int(run_artifacts.get("duration_ms", 0) or 0),
+                    },
+                    "notes": "Holdout window active; deferred verification",
+                    "ts": datetime.now().isoformat(),
+                    "throughput_before": {"executed_or_verified": 0, "verified": 0},
+                    "throughput_after": {"executed_or_verified": 0, "verified": 0},
+                    "execution": {
+                        "status": str(target.get("execution_status", "")),
+                        "duration_ms": int(run_artifacts.get("duration_ms", 0) or 0),
+                        "estimated_cost_usd": float(run_artifacts.get("estimated_cost_usd", 0.0) or 0.0),
+                        "result": str(run_artifacts.get("result", "") or ""),
+                    },
+                    "pending_recheck": True,
+                    "attempt": previous_attempts + 1,
+                    "holdout_pending": True,
+                    "next_recheck_after": holdout_until.isoformat(),
+                }
+                proposal = run_artifacts.get("proposal", {}) if isinstance(run_artifacts, dict) else {}
+                if isinstance(proposal, dict):
+                    meta = proposal.get("metadata", {}) if isinstance(proposal.get("metadata"), dict) else {}
+                    if meta.get("model"):
+                        evidence["model"] = meta.get("model")
+                try:
+                    from .cafe_loop import get_cafe_scorer
+                    evidence["cafe"] = get_cafe_scorer().score_evidence(evidence)
+                except Exception:
+                    pass
+                evidence_id = self.storage.record_outcome_evidence(evidence)
+                self.storage.update_experiment_run(experiment_id, {
+                    "verification": {
+                        "evidence_id": evidence_id,
+                        "verdict": evidence["verdict"],
+                        "confidence": evidence["confidence"],
+                        "pending_recheck": True,
+                        "attempts": previous_attempts + 1,
+                        "verified_at": datetime.now().isoformat(),
+                        "holdout_pending": True,
+                        "next_recheck_after": evidence.get("next_recheck_after"),
+                    },
+                })
+                proposal_id = target.get("proposal_id")
+                if proposal_id:
+                    self.proposals.mark_status(
+                        proposal_id,
+                        "executed",
+                        verification_pending=True,
+                        verification_last_attempt_at=datetime.now().isoformat(),
+                        verdict=evidence["verdict"],
+                        verdict_confidence=evidence["confidence"],
+                        evidence_id=evidence_id,
+                    )
+                return {
+                    "ok": True,
+                    "evidence": evidence,
+                    "evidence_id": evidence_id,
+                    "pending_recheck": True,
+                }
+
         run_artifacts = target.get("artifacts", {}) if isinstance(target.get("artifacts"), dict) else {}
         verdict_data = self._verdict(before, after, run_artifacts=run_artifacts)
         verdict_data["delta"]["proposal_throughput"] = after_throughput["executed_or_verified"] - before_throughput["executed_or_verified"]
@@ -196,6 +290,16 @@ class OutcomeVerifier:
             "pending_recheck": pending_recheck,
             "attempt": previous_attempts + 1,
         }
+        proposal = run_artifacts.get("proposal", {}) if isinstance(run_artifacts, dict) else {}
+        if isinstance(proposal, dict):
+            meta = proposal.get("metadata", {}) if isinstance(proposal.get("metadata"), dict) else {}
+            if meta.get("model"):
+                evidence["model"] = meta.get("model")
+        try:
+            from .cafe_loop import get_cafe_scorer
+            evidence["cafe"] = get_cafe_scorer().score_evidence(evidence)
+        except Exception:
+            pass
         evidence_id = self.storage.record_outcome_evidence(evidence)
 
         self.storage.update_experiment_run(experiment_id, {

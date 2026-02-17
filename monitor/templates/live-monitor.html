@@ -371,10 +371,12 @@
             grid-template-columns: 1fr 1fr;
             gap: 10px;
             align-items: stretch;
+            grid-auto-rows: 280px;
         }
 
         .performance-card {
             overflow: hidden;
+            contain: layout paint;
         }
 
         .chart-wrap {
@@ -526,6 +528,27 @@
             transition: height 0.2s ease;
         }
 
+        .chat-panel.resizing {
+            user-select: none;
+        }
+
+        .chat-resize-handle {
+            width: 64px;
+            height: 6px;
+            margin: 7px auto 8px;
+            border-radius: 999px;
+            background: var(--border);
+            cursor: ns-resize;
+            touch-action: none;
+            transition: background 0.15s ease, transform 0.15s ease;
+        }
+
+        .chat-resize-handle:hover,
+        .chat-panel.resizing .chat-resize-handle {
+            background: var(--accent-border);
+            transform: scaleX(1.06);
+        }
+
         .chat-messages {
             overflow: auto;
             display: flex;
@@ -559,6 +582,15 @@
             align-self: flex-start;
             background: var(--panel);
             color: var(--text);
+        }
+
+        .chat-msg.system {
+            align-self: center;
+            background: var(--accent-soft);
+            border-color: var(--accent-border);
+            color: var(--text);
+            max-width: 100%;
+            font-size: calc(11px * var(--chat-font-scale));
         }
 
         .chat-time {
@@ -925,11 +957,18 @@
             cursor: not-allowed;
         }
 
+        .deck-btn.busy {
+            border-color: var(--accent-border);
+            background: var(--accent-soft);
+            color: var(--accent);
+        }
+
         .deck-input-wrap {
             display: flex;
             align-items: center;
             gap: 6px;
             min-width: 0;
+            position: relative;
         }
 
         .deck-input {
@@ -949,6 +988,46 @@
         .deck-input.attn {
             border-color: var(--warn);
             box-shadow: 0 0 0 2px color-mix(in srgb, var(--warn-soft) 40%, transparent);
+        }
+
+        .deck-autocomplete {
+            position: absolute;
+            left: 0;
+            right: 0;
+            top: calc(100% + 4px);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--panel);
+            box-shadow: var(--shadow);
+            max-height: 220px;
+            overflow: auto;
+            z-index: 90;
+        }
+
+        .deck-autocomplete[hidden] {
+            display: none;
+        }
+
+        .deck-ac-item {
+            border: 0;
+            width: 100%;
+            text-align: left;
+            background: transparent;
+            color: var(--text);
+            padding: 8px 10px;
+            font-size: 12px;
+            cursor: pointer;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .deck-ac-item:last-child {
+            border-bottom: 0;
+        }
+
+        .deck-ac-item.active,
+        .deck-ac-item:hover {
+            background: var(--accent-soft);
+            color: var(--accent);
         }
 
         .deck-suggest {
@@ -1355,9 +1434,10 @@
                             <div class="chat-time">now</div>
                         </div>
                     </div>
+                    <div class="chat-resize-handle" id="chat-resize-handle" title="Kéo để thay đổi chiều cao chat"></div>
                     <div class="chat-typing" id="chat-typing" style="display:none">processing...</div>
                     <div class="chat-input-row">
-                        <input id="chat-input" type="text" placeholder="Nhập lệnh/feedback hoặc gõ 1, 2, 3..." />
+                        <input id="chat-input" type="text" placeholder="Nhập tự nhiên hoặc gõ 1/2/3, /nexus_rules..." />
                         <button type="button" onclick="sendChatMessage()">Send</button>
                     </div>
                     <div class="chat-suggestions" id="chat-suggestions">
@@ -1366,20 +1446,20 @@
                         <button type="button" class="chat-chip" data-prompt="đánh giá nhanh UI/UX hiện tại và đề xuất nâng cấp ngay">UI/UX critique</button>
                         <button type="button" class="chat-chip" data-prompt="chạy 1 vòng Orion rồi báo kết quả ngắn gọn">Run one cycle</button>
                     </div>
-                    <div class="chat-time">Bạn có thể chat tự nhiên; `1/2/3` đổi view, `Z` bật Zen, `/` focus Deck, `↑/↓` history, `Shift+Enter` chạy Auto Priority.</div>
+                    <div class="chat-time">Trong chat: `1/2/3` = summary/control/unstick, `/nexus_rules` = nhắc rules. Ngoài input: `1..5` đổi view, `Z` bật Zen, `/` focus Deck.</div>
                 </div>
             </article>
 
             <article class="card" data-view="activity chat" data-zen="secondary">
                 <h2>Quick Actions</h2>
                 <div class="actions">
-                    <button class="btn primary" onclick="triggerImprovement()">Trigger Improve</button>
-                    <button class="btn" onclick="refreshAll()">Refresh</button>
-                    <button class="btn" onclick="pauseSystem()">Pause</button>
-                    <button class="btn" onclick="resumeSystem()">Resume</button>
-                    <button class="btn" onclick="spawnOrion()">Spawn Orion</button>
-                    <button class="btn" onclick="openChat()">Focus Chat</button>
-                    <button class="btn" onclick="setView('tasks', true)">Open Tasks</button>
+                    <button class="btn primary" id="quick-trigger" onclick="triggerImprovement()">Trigger Improve</button>
+                    <button class="btn" id="quick-refresh" onclick="refreshAll()">Refresh</button>
+                    <button class="btn" id="quick-pause" onclick="pauseSystem()">Pause</button>
+                    <button class="btn" id="quick-resume" onclick="resumeSystem()">Resume</button>
+                    <button class="btn" id="quick-spawn" onclick="spawnOrion()">Spawn Orion</button>
+                    <button class="btn" id="quick-chat" onclick="openChat()">Focus Chat</button>
+                    <button class="btn" id="quick-tasks" onclick="setView('tasks', true)">Open Tasks</button>
                 </div>
             </article>
         </aside>
@@ -1402,6 +1482,7 @@
         <div class="deck-input-wrap">
             <input id="deck-command-input" class="deck-input" type="text" placeholder="Type natural command... e.g. gỡ kẹt Orion, open tasks, compact mode" />
             <button class="deck-btn primary" id="deck-send" type="button">Run</button>
+            <div class="deck-autocomplete" id="deck-autocomplete" hidden></div>
         </div>
         <div class="deck-suggest" id="deck-suggest">
             <div class="deck-suggest-main">
@@ -1450,6 +1531,9 @@
         const chatUiState = { fontScale: 1, panelHeight: 320, maximized: false };
         const paletteState = { open: false, query: '', selectedIndex: 0, items: [] };
         const deckState = { history: [], historyIndex: -1 };
+        const deckAutocompleteState = { open: false, items: [], index: 0 };
+        const chatResizeState = { dragging: false, startY: 0, startHeight: 320 };
+        const actionLocks = { refresh: false, pause: false, resume: false, spawn: false, improve: false };
         let deckSuggestedCommand = '';
         let deckPrefillLast = '';
 
@@ -1476,6 +1560,8 @@
             learningInconclusive: document.getElementById('learning-inconclusive'),
             agentsBody: document.getElementById('agents-body'),
             agentsTableWrap: document.querySelector('.agents-table-wrap'),
+            performanceCard: document.querySelector('.performance-card'),
+            performanceCharts: document.querySelector('.performance-card .charts'),
             feedbackList: document.getElementById('feedback-list'),
             feedbackCount: document.getElementById('feedback-count'),
             activityList: document.getElementById('activity-list'),
@@ -1492,18 +1578,26 @@
             deckZen: document.getElementById('deck-zen'),
             deckInput: document.getElementById('deck-command-input'),
             deckSend: document.getElementById('deck-send'),
+            deckAutocomplete: document.getElementById('deck-autocomplete'),
             deckSuggest: document.getElementById('deck-suggest'),
             deckSuggestText: document.getElementById('deck-suggest-text'),
             deckApplySuggest: document.getElementById('deck-apply-suggest'),
             deckMeta: document.getElementById('deck-meta'),
             deckQuick: document.getElementById('deck-quick'),
             toastStack: document.getElementById('toast-stack'),
+            quickTrigger: document.getElementById('quick-trigger'),
+            quickRefresh: document.getElementById('quick-refresh'),
+            quickPause: document.getElementById('quick-pause'),
+            quickResume: document.getElementById('quick-resume'),
+            quickSpawn: document.getElementById('quick-spawn'),
             paletteToggle: document.getElementById('palette-toggle'),
             commandPalette: document.getElementById('command-palette'),
             paletteInput: document.getElementById('palette-input'),
             paletteList: document.getElementById('palette-list'),
+            chatPanel: document.querySelector('.chat-panel'),
             chatMessages: document.getElementById('chat-messages'),
             chatInput: document.getElementById('chat-input'),
+            chatResizeHandle: document.getElementById('chat-resize-handle'),
             chatTyping: document.getElementById('chat-typing'),
             chatInstanceLabel: document.getElementById('chat-instance-label'),
             chatFontDown: document.getElementById('chat-font-down'),
@@ -1530,6 +1624,68 @@
 
         function cssVar(name) {
             return getComputedStyle(document.body).getPropertyValue(name).trim();
+        }
+
+        function normalizeIntentText(text, keepSlash) {
+            const pattern = keepSlash ? /[^a-z0-9\s/_]+/g : /[^a-z0-9\s]+/g;
+            return String(text || '')
+                .toLowerCase()
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '')
+                .replace(/đ/g, 'd')
+                .replace(pattern, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+        }
+
+        function resolveMenuShortcut(text) {
+            const normalized = normalizeIntentText(text, true);
+            if (!normalized) return '';
+            const compact = normalized.replace(/\s+/g, '');
+            const direct = compact.match(/^([1-5])$/);
+            if (direct) return direct[1];
+            const expanded = normalized.match(/\b(?:option|lua chon|nhom|group|so)\s*([1-5])\b/);
+            return expanded ? String(expanded[1]) : '';
+        }
+
+        function buildNexusRulesDigest() {
+            const payload = (latestStatusPayload && typeof latestStatusPayload === 'object') ? latestStatusPayload : {};
+            const rows = Array.isArray(payload.feedback_recent) ? payload.feedback_recent.slice(0, 3) : [];
+            const feedbackLines = rows.map((item, idx) => {
+                const category = String((item && item.category) || 'general');
+                const text = truncate(String((item && item.text) || ''), 92);
+                return `${idx + 1}. ${category}: ${text || '(no detail)'}`;
+            });
+            return [
+                'NEXUS_RULES / Project Core:',
+                '1. Full-auto ưu tiên: hệ thống tự xử lý trước, chỉ escalate khi thực sự bị block.',
+                '2. Một workspace duy nhất: chat/control/monitor gom trong /live, không nhảy trang.',
+                '3. UI/UX phải tối giản, professional, dễ đọc; hỗ trợ Light + Dark đồng nhất.',
+                '4. Feedback loop bắt buộc: feedback mới phải hiện trong vòng cập nhật tiếp theo.',
+                `5. Trọng tâm feedback gần nhất: ${feedbackLines.length ? '' : 'none'}`,
+                ...feedbackLines,
+                'Dùng nhanh: /nexus_rules hoặc /rules',
+            ].join('\n');
+        }
+
+        function resolveChatSubmission(rawMessage) {
+            const original = String(rawMessage || '').trim();
+            if (!original) return { outbound: '', note: '', localReply: '' };
+            const compact = normalizeIntentText(original, true).replace(/\s+/g, '');
+            if (compact === '/nexus_rules' || compact === '/rules' || compact === '/nexusrules') {
+                return { outbound: '', note: '', localReply: buildNexusRulesDigest() };
+            }
+            const shortcut = resolveMenuShortcut(original);
+            if (shortcut === '1') {
+                return { outbound: 'tóm tắt dự án', note: 'Đã hiểu: lựa chọn 1 -> tóm tắt dự án.', localReply: '' };
+            }
+            if (shortcut === '2') {
+                return { outbound: 'điều khiển flow', note: 'Đã hiểu: lựa chọn 2 -> điều khiển flow.', localReply: '' };
+            }
+            if (shortcut === '3') {
+                return { outbound: 'guardian gỡ kẹt nếu có flow bị stuck', note: 'Đã hiểu: lựa chọn 3 -> guardian gỡ kẹt.', localReply: '' };
+            }
+            return { outbound: original, note: '', localReply: '' };
         }
 
         function initCharts() {
@@ -1585,7 +1741,20 @@
             if (signalsChart) signalsChart.resize();
         }
 
+        function enforcePerformanceCardBounds() {
+            if (!refs.performanceCard || !refs.performanceCharts) return;
+            const wrapCount = refs.performanceCharts.querySelectorAll('.chart-wrap').length || 2;
+            const singleColumn = window.matchMedia('(max-width: 1080px)').matches;
+            const cols = singleColumn ? 1 : 2;
+            const rows = Math.max(1, Math.ceil(wrapCount / cols));
+            const targetHeight = (rows * 280) + ((rows - 1) * 10) + 72;
+            refs.performanceCard.style.minHeight = `${targetHeight}px`;
+            refs.performanceCard.style.maxHeight = `${targetHeight}px`;
+            refs.performanceCard.style.height = `${targetHeight}px`;
+        }
+
         function enforceChartHeightGuard() {
+            enforcePerformanceCardBounds();
             const wraps = document.querySelectorAll('.chart-wrap');
             wraps.forEach((item) => {
                 const h = item.getBoundingClientRect().height;
@@ -1940,51 +2109,67 @@
         document.addEventListener('autodev-theme-changed', refreshChartTheme);
 
         async function pauseSystem() {
-            try {
-                await fetch('/api/orion/command', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ command: 'pause' }),
-                });
-                refs.connection.textContent = 'System pause requested';
-                notify('Pause requested', 'warn');
-            } catch (_) {}
+            await withActionLock('pause', async () => {
+                try {
+                    await fetch('/api/orion/command', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ command: 'pause' }),
+                    });
+                    refs.connection.textContent = 'System pause requested';
+                    notify('Pause requested', 'warn');
+                } catch (_) {
+                    notify('Pause failed', 'danger');
+                }
+            });
         }
 
         async function resumeSystem() {
-            try {
-                await fetch('/api/orion/command', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ command: 'resume' }),
-                });
-                refs.connection.textContent = 'System resume requested';
-                notify('Resume requested', 'ok');
-            } catch (_) {}
+            await withActionLock('resume', async () => {
+                try {
+                    await fetch('/api/orion/command', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ command: 'resume' }),
+                    });
+                    refs.connection.textContent = 'System resume requested';
+                    notify('Resume requested', 'ok');
+                } catch (_) {
+                    notify('Resume failed', 'danger');
+                }
+            });
         }
 
         async function triggerImprovement() {
-            refs.connection.textContent = 'Triggering improvement...';
-            notify('Refreshing live state...', 'info', 1300);
-            await loadStatus();
+            await withActionLock('improve', async () => {
+                refs.connection.textContent = 'Triggering improvement...';
+                notify('Refreshing live state...', 'info', 1300);
+                await loadStatus();
+            });
         }
 
         async function spawnOrion() {
-            try {
-                await fetch('/api/hub/spawn', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ goal: 'Scale mission' }),
-                });
-                refs.connection.textContent = 'Spawn requested';
-                notify('Spawn Orion requested', 'ok');
-                setTimeout(loadStatus, 600);
-            } catch (_) {}
+            await withActionLock('spawn', async () => {
+                try {
+                    await fetch('/api/hub/spawn', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ goal: 'Scale mission' }),
+                    });
+                    refs.connection.textContent = 'Spawn requested';
+                    notify('Spawn Orion requested', 'ok');
+                    setTimeout(loadStatus, 600);
+                } catch (_) {
+                    notify('Spawn failed', 'danger');
+                }
+            });
         }
 
-        function refreshAll() {
-            notify('Refreshing data...', 'info', 1200);
-            loadStatus();
+        async function refreshAll() {
+            await withActionLock('refresh', async () => {
+                notify('Refreshing data...', 'info', 1200);
+                await loadStatus();
+            });
         }
 
         function openChat() {
@@ -2006,6 +2191,40 @@
                 node.style.transform = 'translateY(8px)';
                 window.setTimeout(() => node.remove(), 220);
             }, life);
+        }
+
+        function setActionBusy(action, busy) {
+            const map = {
+                refresh: [refs.deckRefresh, refs.quickRefresh],
+                pause: [refs.deckPause, refs.quickPause],
+                resume: [refs.deckResume, refs.quickResume],
+                spawn: [refs.quickSpawn],
+                improve: [refs.quickTrigger],
+            };
+            const nodes = map[String(action)] || [];
+            nodes.forEach((node) => {
+                if (!node) return;
+                node.disabled = Boolean(busy);
+                node.classList.toggle('busy', Boolean(busy));
+            });
+        }
+
+        async function withActionLock(action, runner) {
+            const key = String(action || '').trim();
+            if (!key) return false;
+            if (actionLocks[key]) {
+                notify(`Action '${key}' is already running`, 'warn', 1300);
+                return false;
+            }
+            actionLocks[key] = true;
+            setActionBusy(key, true);
+            try {
+                await runner();
+                return true;
+            } finally {
+                actionLocks[key] = false;
+                setActionBusy(key, false);
+            }
         }
 
         function saveDeckHistory() {
@@ -2051,6 +2270,69 @@
             refs.deckInput.setSelectionRange(refs.deckInput.value.length, refs.deckInput.value.length);
         }
 
+        function getDeckCommandCatalog() {
+            return [
+                'workspace', 'ops', 'activity', 'chat', 'tasks',
+                'refresh', 'pause', 'resume', 'spawn',
+                'zen', 'zen on', 'zen off',
+                'compact', 'comfort', 'focus', 'balanced', 'studio',
+                'theme', 'palette',
+                '/nexus_rules',
+                'summary',
+                'guardian gỡ kẹt nếu có flow bị stuck',
+                'đánh giá UI UX hiện tại và đề xuất cải thiện',
+                'chạy 1 vòng Orion rồi báo kết quả ngắn gọn',
+            ];
+        }
+
+        function closeDeckAutocomplete() {
+            deckAutocompleteState.open = false;
+            if (refs.deckAutocomplete) {
+                refs.deckAutocomplete.hidden = true;
+                refs.deckAutocomplete.innerHTML = '';
+            }
+        }
+
+        function updateDeckAutocomplete(query) {
+            const q = String(query || '').trim().toLowerCase();
+            if (!q) {
+                closeDeckAutocomplete();
+                return;
+            }
+            const items = getDeckCommandCatalog()
+                .filter((item) => String(item).toLowerCase().includes(q))
+                .slice(0, 8);
+            deckAutocompleteState.items = items;
+            deckAutocompleteState.index = 0;
+            deckAutocompleteState.open = items.length > 0;
+        }
+
+        function renderDeckAutocomplete() {
+            if (!refs.deckAutocomplete) return;
+            if (!deckAutocompleteState.open || !deckAutocompleteState.items.length) {
+                closeDeckAutocomplete();
+                return;
+            }
+            refs.deckAutocomplete.hidden = false;
+            refs.deckAutocomplete.innerHTML = deckAutocompleteState.items.map((item, idx) => (
+                `<button class="deck-ac-item ${idx === deckAutocompleteState.index ? 'active' : ''}" data-deck-ac-index="${idx}" type="button">${escapeHtml(item)}</button>`
+            )).join('');
+            Array.from(refs.deckAutocomplete.querySelectorAll('[data-deck-ac-index]')).forEach((node) => {
+                node.addEventListener('mousedown', (event) => {
+                    event.preventDefault();
+                });
+                node.addEventListener('click', () => {
+                    const idx = Number(node.dataset.deckAcIndex || 0);
+                    const value = String(deckAutocompleteState.items[idx] || '').trim();
+                    if (!value || !refs.deckInput) return;
+                    refs.deckInput.value = value;
+                    refs.deckInput.focus();
+                    refs.deckInput.classList.remove('attn');
+                    closeDeckAutocomplete();
+                });
+            });
+        }
+
         function getDeckQuickCommands(view) {
             const v = String(view || activeView || 'workspace');
             const baseByView = {
@@ -2058,6 +2340,7 @@
                     { label: 'Summary', cmd: 'còn cái gì đang chạy vậy, tóm giúp mình' },
                     { label: 'Unstick', cmd: 'guardian gỡ kẹt nếu có flow bị stuck' },
                     { label: 'UI/UX', cmd: 'đánh giá UI UX hiện tại và đề xuất cải thiện' },
+                    { label: 'Rules', cmd: '/nexus_rules' },
                     { label: 'Run Cycle', cmd: 'chạy 1 vòng Orion rồi báo kết quả ngắn gọn' },
                 ],
                 ops: [
@@ -2076,6 +2359,7 @@
                     { label: 'Summary', cmd: 'summary' },
                     { label: 'Open Chat', cmd: 'chat' },
                     { label: 'Open Ops', cmd: 'ops' },
+                    { label: 'Rules', cmd: '/nexus_rules' },
                     { label: 'Zen', cmd: 'zen' },
                 ],
             };
@@ -2226,30 +2510,28 @@
         function runDeckCommand(raw) {
             const cmd = String(raw || '').trim();
             if (!cmd) return;
+            closeDeckAutocomplete();
             pushDeckHistory(cmd);
-            const normalized = cmd
-                .toLowerCase()
-                .normalize('NFD')
-                .replace(/[\u0300-\u036f]/g, '')
-                .replace(/đ/g, 'd');
+            const normalized = normalizeIntentText(cmd, true);
+            const shortcut = resolveMenuShortcut(cmd);
 
-            if (/^(1|ws|workspace|home)$/.test(normalized)) {
+            if (shortcut === '1' || /^(ws|workspace|home)$/.test(normalized)) {
                 notify('Switched to Workspace', 'info', 1500);
                 return setView('workspace', true);
             }
-            if (/^(2|ops)$/.test(normalized)) {
+            if (shortcut === '2' || /^(ops)$/.test(normalized)) {
                 notify('Switched to Ops', 'info', 1500);
                 return setView('ops', true);
             }
-            if (/^(3|activity|feed)$/.test(normalized)) {
+            if (shortcut === '3' || /^(activity|feed)$/.test(normalized)) {
                 notify('Switched to Activity', 'info', 1500);
                 return setView('activity', true);
             }
-            if (/^(4|chat)$/.test(normalized)) {
+            if (shortcut === '4' || /^(chat)$/.test(normalized)) {
                 notify('Switched to Chat', 'info', 1500);
                 return openChat();
             }
-            if (/^(5|tasks|kanban)$/.test(normalized)) {
+            if (shortcut === '5' || /^(tasks|kanban)$/.test(normalized)) {
                 notify('Switched to Tasks', 'info', 1500);
                 return setView('tasks', true);
             }
@@ -2257,6 +2539,11 @@
             if (/^(pause|tam dung|dung lai|hold)$/.test(normalized)) return pauseSystem();
             if (/^(resume|continue|tiep tuc|chay tiep)$/.test(normalized)) return resumeSystem();
             if (normalized.includes('spawn')) return spawnOrion();
+            if (normalized === '/nexus_rules' || normalized === '/rules' || normalized === '/nexusrules') {
+                openChat();
+                appendChatMessage('system', buildNexusRulesDigest());
+                return;
+            }
             if (normalized.includes('theme')) {
                 const toggle = document.getElementById('theme-toggle');
                 if (toggle) toggle.click();
@@ -2436,6 +2723,7 @@
                 { id: 'chat_summary', title: 'Chat Prompt: Realtime Summary', meta: 'prompt', keywords: 'chat summary status running', run: () => { openChat(); useChatPrompt('còn cái gì đang chạy vậy, tóm giúp mình'); } },
                 { id: 'chat_uiux', title: 'Chat Prompt: UI/UX Critique', meta: 'prompt', keywords: 'chat ui ux critique improve', run: () => { openChat(); useChatPrompt('đánh giá UI UX hiện tại và đề xuất cải thiện'); } },
                 { id: 'chat_unstick', title: 'Chat Prompt: Guardian Unstick', meta: 'prompt', keywords: 'chat guardian stuck unstick', run: () => { openChat(); useChatPrompt('guardian gỡ kẹt nếu có flow bị stuck'); } },
+                { id: 'chat_nexus_rules', title: 'Chat Skill: /nexus_rules', meta: 'prompt', keywords: 'chat slash command rules nexus', run: () => { openChat(); useChatPrompt('/nexus_rules'); } },
             ];
         }
 
@@ -2562,6 +2850,40 @@
             saveChatUiState();
         }
 
+        function onChatResizeMove(event) {
+            if (!chatResizeState.dragging) return;
+            const delta = Number(chatResizeState.startY) - Number(event.clientY || 0);
+            chatUiState.panelHeight = Number(chatResizeState.startHeight) + delta;
+            chatUiState.maximized = false;
+            clampChatUiState();
+            applyChatUiState();
+        }
+
+        function onChatResizeEnd() {
+            if (!chatResizeState.dragging) return;
+            chatResizeState.dragging = false;
+            if (refs.chatPanel) refs.chatPanel.classList.remove('resizing');
+            window.removeEventListener('pointermove', onChatResizeMove);
+            window.removeEventListener('pointerup', onChatResizeEnd);
+            window.removeEventListener('pointercancel', onChatResizeEnd);
+            saveChatUiState();
+        }
+
+        function initChatResizer() {
+            if (!refs.chatResizeHandle) return;
+            refs.chatResizeHandle.addEventListener('pointerdown', (event) => {
+                event.preventDefault();
+                chatResizeState.dragging = true;
+                chatResizeState.startY = Number(event.clientY || 0);
+                chatResizeState.startHeight = chatUiState.maximized ? 680 : Number(chatUiState.panelHeight || 320);
+                chatUiState.maximized = false;
+                if (refs.chatPanel) refs.chatPanel.classList.add('resizing');
+                window.addEventListener('pointermove', onChatResizeMove);
+                window.addEventListener('pointerup', onChatResizeEnd);
+                window.addEventListener('pointercancel', onChatResizeEnd);
+            });
+        }
+
         function resetChatConversation() {
             if (!refs.chatMessages) return;
             refs.chatMessages.innerHTML = `
@@ -2598,15 +2920,17 @@
             if (!refs.chatMessages) return;
             const safeId = String(nodeId || `${role}-${Date.now()}`).replace(/[^a-zA-Z0-9:_-]/g, '_');
             const existing = refs.chatMessages.querySelector(`.chat-msg[data-chat-id="${safeId}"]`);
+            const roleClass = role === 'user' ? 'user' : (role === 'system' ? 'system' : 'bot');
             const safeText = escapeHtml(String(text || '')).replace(/\n/g, '<br>');
             const markup = `<div>${safeText}</div><div class="chat-time">${new Date().toLocaleTimeString()}</div>`;
             if (existing) {
                 existing.innerHTML = markup;
-                existing.classList.toggle('user', role === 'user');
-                existing.classList.toggle('bot', role !== 'user');
+                existing.classList.toggle('user', roleClass === 'user');
+                existing.classList.toggle('bot', roleClass === 'bot');
+                existing.classList.toggle('system', roleClass === 'system');
             } else {
                 const item = document.createElement('div');
-                item.className = `chat-msg ${role === 'user' ? 'user' : 'bot'}`;
+                item.className = `chat-msg ${roleClass}`;
                 item.dataset.chatId = safeId;
                 item.innerHTML = markup;
                 refs.chatMessages.appendChild(item);
@@ -2623,10 +2947,19 @@
         async function sendChatMessage() {
             const input = refs.chatInput;
             if (!input) return;
-            const message = String(input.value || '').trim();
-            if (!message) return;
-            appendChatMessage('user', message);
+            const rawMessage = String(input.value || '').trim();
+            if (!rawMessage) return;
+            appendChatMessage('user', rawMessage);
             input.value = '';
+            const resolved = resolveChatSubmission(rawMessage);
+            if (resolved.note) appendChatMessage('system', resolved.note);
+            if (resolved.localReply) {
+                appendChatMessage('bot', resolved.localReply);
+                showChatTyping(false);
+                return;
+            }
+            const outbound = String(resolved.outbound || '').trim();
+            if (!outbound) return;
             showChatTyping(true, 'Đang phân tích yêu cầu...');
             const pendingNode = `pending-${Date.now()}`;
             appendChatMessage('bot', 'Đang xử lý...', pendingNode);
@@ -2634,7 +2967,7 @@
                 const response = await fetch('/api/chat/ask', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message, instance_id: currentInstanceId }),
+                    body: JSON.stringify({ message: outbound, instance_id: currentInstanceId }),
                 });
                 const payload = await response.json();
                 if (!payload || payload.success === false) {
@@ -2744,14 +3077,38 @@
         }
         if (refs.deckInput) {
             refs.deckInput.addEventListener('keydown', (event) => {
+                if (event.key === 'Tab' && deckAutocompleteState.open && deckAutocompleteState.items.length) {
+                    event.preventDefault();
+                    const value = String(deckAutocompleteState.items[deckAutocompleteState.index] || '').trim();
+                    if (value) {
+                        refs.deckInput.value = value;
+                        refs.deckInput.classList.remove('attn');
+                    }
+                    closeDeckAutocomplete();
+                    return;
+                }
                 if (event.key === 'ArrowUp') {
                     event.preventDefault();
-                    cycleDeckHistory(-1);
+                    if (deckAutocompleteState.open && deckAutocompleteState.items.length) {
+                        deckAutocompleteState.index = Math.max(0, deckAutocompleteState.index - 1);
+                        renderDeckAutocomplete();
+                    } else {
+                        cycleDeckHistory(-1);
+                    }
                     return;
                 }
                 if (event.key === 'ArrowDown') {
                     event.preventDefault();
-                    cycleDeckHistory(1);
+                    if (deckAutocompleteState.open && deckAutocompleteState.items.length) {
+                        deckAutocompleteState.index = Math.min(deckAutocompleteState.items.length - 1, deckAutocompleteState.index + 1);
+                        renderDeckAutocomplete();
+                    } else {
+                        cycleDeckHistory(1);
+                    }
+                    return;
+                }
+                if (event.key === 'Escape') {
+                    closeDeckAutocomplete();
                     return;
                 }
                 if (event.key === 'Enter' && event.shiftKey) {
@@ -2770,6 +3127,15 @@
             });
             refs.deckInput.addEventListener('input', () => {
                 refs.deckInput.classList.remove('attn');
+                updateDeckAutocomplete(refs.deckInput.value);
+                renderDeckAutocomplete();
+            });
+            refs.deckInput.addEventListener('focus', () => {
+                updateDeckAutocomplete(refs.deckInput.value);
+                renderDeckAutocomplete();
+            });
+            refs.deckInput.addEventListener('blur', () => {
+                window.setTimeout(() => closeDeckAutocomplete(), 120);
             });
         }
         if (refs.paletteToggle) refs.paletteToggle.addEventListener('click', () => openPalette(''));
@@ -2792,6 +3158,7 @@
         if (refs.chatHeightUp) refs.chatHeightUp.addEventListener('click', () => tweakChatHeight(40));
         if (refs.chatMaxToggle) refs.chatMaxToggle.addEventListener('click', () => toggleChatMax());
         if (refs.chatClear) refs.chatClear.addEventListener('click', () => resetChatConversation());
+        initChatResizer();
         refs.chatChips.forEach((chip) => {
             chip.addEventListener('click', () => useChatPrompt(chip.dataset.prompt || ''));
         });

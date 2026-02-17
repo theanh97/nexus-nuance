@@ -134,6 +134,12 @@ class LearningStorageV2:
             stream = "non_production" if self._is_non_production_source(source) else "production"
         payload["stream"] = stream
         payload["is_non_production"] = bool(stream == "non_production")
+        if "cafe" not in payload:
+            try:
+                from .cafe_loop import get_cafe_scorer
+                payload["cafe"] = get_cafe_scorer().score_event(payload)
+            except Exception:
+                pass
         self.append_jsonl(self.learning_events_file, payload)
         return event_id
 

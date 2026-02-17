@@ -2,6 +2,7 @@
 
 import sys
 import uuid
+import os
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -38,6 +39,29 @@ def test_event_to_proposal_v2_flow():
         include_non_production=True,
     )
     assert isinstance(proposals, list)
+
+
+def test_cafe_scores_attached_to_event():
+    if os.getenv("ENABLE_CAFE_LOOP", "true").strip().lower() != "true":
+        return
+    storage = get_storage_v2()
+    event_id = storage.record_learning_event(
+        {
+            "source": "unit_test",
+            "event_type": "scan_insight",
+            "content": "CAFEScoring sanity check",
+            "title": "Cafe event",
+            "novelty_score": 0.7,
+            "value_score": 0.8,
+            "risk_score": 0.2,
+            "confidence": 0.9,
+        }
+    )
+    assert event_id
+    events = storage.list_learning_events(limit=20)
+    matched = [e for e in events if e.get("id") == event_id]
+    assert matched
+    assert isinstance(matched[0].get("cafe"), dict)
 
 
 def test_non_production_events_filtered_by_default():
@@ -105,6 +129,7 @@ def test_status_exposes_execution_guardrail():
 
 if __name__ == "__main__":
     test_event_to_proposal_v2_flow()
+    test_cafe_scores_attached_to_event()
     test_non_production_events_filtered_by_default()
     test_execute_verify_policy_update_flow()
     test_status_exposes_execution_guardrail()

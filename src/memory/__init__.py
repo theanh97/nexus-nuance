@@ -284,6 +284,16 @@ from .learning_policy import (
     get_learning_policy_state,
 )
 
+from .cafe_loop import (
+    CAFEScorer,
+    get_cafe_scorer,
+)
+
+from .cafe_calibrator import (
+    CafeCalibrator,
+    get_cafe_calibrator,
+)
+
 __all__ = [
     # Memory
     "MemoryManager", "get_memory", "remember", "recall",
@@ -382,6 +392,8 @@ __all__ = [
     "ExperimentExecutor", "get_experiment_executor", "execute_proposal",
     "OutcomeVerifier", "get_outcome_verifier", "verify_experiment",
     "select_learning_policy", "update_learning_policy", "get_learning_policy_state",
+    "CAFEScorer", "get_cafe_scorer",
+    "CafeCalibrator", "get_cafe_calibrator",
 ]
 
 __version__ = "1.0.0"

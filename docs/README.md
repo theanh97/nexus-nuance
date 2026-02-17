@@ -164,13 +164,17 @@ make status
 
 ```bash
 # Start resilient loop (auto-restart on crash, stale-lock cleanup)
-DASHBOARD_HOST=127.0.0.1 DASHBOARD_PORT=5050 ./scripts/run_24x7.sh
+DASHBOARD_HOST=127.0.0.1 DASHBOARD_PORT=5050 AUTODEV_FORCE_STALE_LOCK_CLEANUP=true ./scripts/run_24x7.sh
+
+# Optional: keep OpenClaw gateway healthy in background
+OPENCLAW_WATCHDOG_RESTART_ON_FAIL=true ./scripts/openclaw_watchdog.sh
 
 # Health check
 curl -fsS http://127.0.0.1:5050/api/status | head
 
 # Stop supervisor loop gracefully
 touch data/state/autodev_runtime.stop
+touch data/state/openclaw_watchdog.stop
 ```
 
 ---
@@ -309,6 +313,12 @@ Implements **human learning principles**:
 4. **Deliberate Practice**: Focus on weaknesses
 5. **Metacognition**: Self-awareness of learning
 6. **Cross-Project Learning**: Share wisdom across all projects
+
+Additional control loops:
+- CAFE scoring (Confidence-Aware Feedback Ensemble) for event/evidence quality gating.
+- CAFE calibration to auto-tune per-model confidence bias.
+- Verification holdout to avoid premature inconclusive verdicts.
+- Self-assessment score that flags degraded health, low production ratio, and stagnation.
 
 ---
 

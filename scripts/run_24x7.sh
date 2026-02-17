@@ -13,6 +13,12 @@ STOP_FLAG="${AUTODEV_24X7_STOP_FLAG:-data/state/autodev_runtime.stop}"
 HEALTH_PATH="${AUTODEV_24X7_HEALTH_PATH:-/api/status}"
 HEALTH_TIMEOUT_SEC="${AUTODEV_24X7_HEALTH_TIMEOUT_SEC:-6}"
 RESTART_DELAY_SEC="${AUTODEV_24X7_RESTART_DELAY_SEC:-3}"
+EXTRA_ARGS="${AUTODEV_24X7_EXTRA_ARGS:-}"
+
+if [ "${AUTODEV_FORCE_STALE_LOCK_CLEANUP:-false}" = "true" ] || \
+   [ "${AUTODEV_FORCE_STALE_LOCK_CLEANUP:-false}" = "1" ]; then
+  EXTRA_ARGS="$EXTRA_ARGS --force-stale-lock"
+fi
 
 mkdir -p "$(dirname "$LOG_PATH")" "$(dirname "$LOCK_PATH")"
 
@@ -47,7 +53,7 @@ while :; do
 
   cleanup_stale_lock
   DASHBOARD_HOST="$DASHBOARD_HOST" DASHBOARD_PORT="$DASHBOARD_PORT" \
-    "$PYTHON_BIN" run_system.py --host "$DASHBOARD_HOST" --port "$DASHBOARD_PORT" >> "$LOG_PATH" 2>&1 || true
+    "$PYTHON_BIN" run_system.py --host "$DASHBOARD_HOST" --port "$DASHBOARD_PORT" $EXTRA_ARGS >> "$LOG_PATH" 2>&1 || true
 
   if health_probe; then
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] process exited but health probe is still OK (another runner alive)" >> "$LOG_PATH"
@@ -56,4 +62,3 @@ while :; do
   fi
   sleep "$RESTART_DELAY_SEC"
 done
-

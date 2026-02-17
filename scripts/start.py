@@ -246,6 +246,7 @@ def main():
             print(f"  • Loss rate: {outcome.get('loss_rate', 0)}")
             print(f"  • Inconclusive rate: {outcome.get('inconclusive_rate', 0)}")
             print(f"  • Pending recheck runs: {outcome.get('pending_recheck_runs', 0)}")
+            print(f"  • Holdout pending runs: {outcome.get('holdout_pending_runs', 0)}")
             print(f"  • Retry exhausted runs: {outcome.get('retry_exhausted_runs', 0)}")
             print(f"  • Avg confidence: {outcome.get('avg_confidence', 0)}")
             print(f"  • Avg latency delta (ms): {outcome.get('avg_latency_delta_ms', 0)}")
@@ -291,6 +292,22 @@ def main():
             )
             print(f"  • Cooldown remaining (s): {guardrail.get('normal_mode_cooldown_remaining_sec', 0)}")
             print(f"  • Last reason: {guardrail.get('normal_mode_last_reason', 'N/A')}")
+
+        cafe = report.get("cafe", {})
+        if cafe:
+            print(f"\n🧮 CAFE Calibration:")
+            print(f"  • Enabled: {cafe.get('enabled', False)}")
+            print(f"  • Last calibration: {cafe.get('last_calibration', 'N/A')}")
+            print(f"  • Model bias count: {cafe.get('model_bias_count', 0)}")
+
+        assessment = report.get("self_assessment", {})
+        if assessment:
+            print(f"\n🧭 Self-Assessment:")
+            print(f"  • Grade: {assessment.get('grade', 'unknown')}")
+            print(f"  • Score: {assessment.get('score', 0)}")
+            issues = assessment.get("issues", [])
+            if issues:
+                print(f"  • Issues: {', '.join([str(x) for x in issues])}")
 
         windows = report.get("windows", {})
         if windows:
