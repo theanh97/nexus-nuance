@@ -19,6 +19,7 @@ from src.core.message import AgentMessage, MessageType, Priority, TaskResult, Pr
 from src.core.computer_controller import get_computer_controller
 from src.core.multi_orion_hub import get_multi_orion_hub
 from src.core.orion_messenger import get_messenger
+from src.core.human_notifier import get_notifier
 from src.memory.autonomous_improver import get_autonomous_improver
 from src.memory.learning_loop import get_learning_loop
 
@@ -100,6 +101,15 @@ class Orion(AsyncAgent):
         self.message_check_interval_sec = max(5, int(os.getenv("ORION_MESSAGE_CHECK_INTERVAL_SEC", "15")))
         self._last_message_check_at: float = 0.0
         self._pending_help_responses: List[Dict[str, Any]] = []
+
+        # Human notifications
+        self.human_notifier = get_notifier()
+        self.status_report_interval = max(50, int(os.getenv("ORION_STATUS_REPORT_INTERVAL", "100")))  # Every N iterations
+        self._last_status_report_at: Optional[datetime] = None
+
+        # Auto-coordination settings
+        self.auto_coordination_enabled = os.getenv("ORION_AUTO_COORDINATION", "true").lower() == "true"
+        self.coordination_threshold = int(os.getenv("ORION_COORDINATION_THRESHOLD", "3"))  # Tasks before coordination
 
     async def start(self):
         """Start Orion and all agents"""
@@ -344,6 +354,146 @@ class Orion(AsyncAgent):
             })
             self._log(f"🤝 Can help {from_orion} with {help_type}")
 
+    # ============================================
+    # Auto-Coordination
+    # ============================================
+
+    def should_auto_coordinate(self, result: Dict[str, Any]) -> bool:
+        """Determine if auto-coordination is needed."""
+        if not self.auto_coordination_enabled:
+            return False
+
+        # Check for complex task indicators
+        complexity_score = 0
+
+        # High number of issues
+        issues = result.get("issues", [])
+        if len(issues) > 3:
+            complexity_score += 2
+
+        # Low score after multiple iterations
+        if result.get("score", 0) < 6.0 and self.iteration > 5:
+            complexity_score += 2
+
+        # Security concerns
+        if result.get("security_concerns"):
+            complexity_score += 3
+
+        # Test failures
+        if result.get("test_failures", 0) > 2:
+            complexity_score += 1
+
+        # Multiple failed attempts
+        if self.consecutive_fix_cycles > 3:
+            complexity_score += 2
+
+        return complexity_score >= self.coordination_threshold
+
+    def trigger_auto_coordination(self, reason: str, context: Dict[str, Any]) -> None:
+        """Trigger automatic coordination with other ORIONs."""
+        self._log(f"🎯 Auto-coordination triggered: {reason}")
+
+        # Broadcast help request
+        self.request_help(
+            help_type="auto_coordination",
+            description=f"Auto-coordination needed: {reason}",
+            related_task_id=context.get("task_id"),
+            urgency="normal",
+        )
+
+        # Notify humans
+        self.human_notifier.notify(
+            title="🔄 Auto-Coordination Triggered",
+            message=f"ORION {self.instance_id} initiated auto-coordination.\nReason: {reason}",
+            level="info",
+            source=self.instance_id,
+            channels=["dashboard"],
+        )
+
+    # ============================================
+    # Status Reporting
+    # ============================================
+
+    def generate_status_report(self) -> Dict[str, Any]:
+        """Generate a comprehensive status report."""
+        now = datetime.now()
+
+        # Recent activity
+        recent_history = self.history[-20:] if self.history else []
+        avg_score = sum(h.get("score", 0) for h in recent_history) / max(1, len(recent_history))
+
+        # Agent status
+        agent_status = {}
+        for name, agent in self.agents.items():
+            control = self.agent_controls.get(name, {})
+            agent_status[name] = {
+                "enabled": control.get("enabled", True),
+                "running": hasattr(agent, "running") and agent.running,
+            }
+
+        # Task metrics from hub
+        hub = get_multi_orion_hub()
+        hub_metrics = hub.get_metrics()
+        hub_snapshot = hub.get_snapshot()
+
+        # Message stats
+        msg_stats = self.messenger.get_stats()
+
+        return {
+            "instance_id": self.instance_id,
+            "timestamp": now.isoformat(),
+            "iteration": self.iteration,
+            "running": self.running,
+            "paused": self.paused,
+            "avg_score": round(avg_score, 2),
+            "history_size": len(self.history),
+            "consecutive_fix_cycles": self.consecutive_fix_cycles,
+            "agents": agent_status,
+            "hub_metrics": hub_metrics,
+            "online_orions": len([o for o in hub_snapshot.get("orions", {}).values()
+                                 if o.get("status") == "active"]),
+            "message_stats": msg_stats,
+            "last_cycle": self.last_cycle_finished_at.isoformat() if self.last_cycle_finished_at else None,
+        }
+
+    def send_status_report(self) -> None:
+        """Send status report to humans and other ORIONs."""
+        report = self.generate_status_report()
+
+        # Broadcast to other ORIONs
+        self.broadcast_status(
+            status="reporting",
+            current_task=f"Iteration {self.iteration}, avg score {report['avg_score']}",
+        )
+
+        # Notify humans with summary
+        if report["avg_score"] >= 8.0:
+            level = "success"
+            title = f"✅ Status Report - Healthy (Score: {report['avg_score']})"
+        elif report["avg_score"] >= 6.0:
+            level = "info"
+            title = f"📊 Status Report - Stable (Score: {report['avg_score']})"
+        else:
+            level = "warning"
+            title = f"⚠️ Status Report - Needs Attention (Score: {report['avg_score']})"
+
+        message = f"""Iteration: {self.iteration}
+Agents: {len(report['agents'])} active
+Hub Tasks: {report['hub_metrics']['total_tasks']} total, {report['hub_metrics']['in_progress']} in progress
+Online ORIONs: {report['online_orions']}
+Messages: {report['message_stats']['total_messages']} total"""
+
+        self.human_notifier.notify(
+            title=title,
+            message=message,
+            level=level,
+            source=self.instance_id,
+            channels=["dashboard"],
+        )
+
+        self._last_status_report_at = datetime.now()
+        self._log(f"📊 Status report sent (score: {report['avg_score']})")
+
     async def process(self, message: AgentMessage) -> TaskResult:
         """Process incoming message (usually from user)"""
 
@@ -441,6 +591,17 @@ class Orion(AsyncAgent):
                 # Self-improvement phase (every N iterations)
                 if recovery_needed or self.iteration % self.self_improvement_interval == 0:
                     await self._run_self_improvement()
+
+                # Auto-coordination check
+                if self.should_auto_coordinate(result):
+                    self.trigger_auto_coordination(
+                        reason="Complex task detected",
+                        context={"iteration": self.iteration, "score": result.get("score", 0)},
+                    )
+
+                # Periodic status report
+                if self.iteration % self.status_report_interval == 0:
+                    self.send_status_report()
 
                 # Wait before next iteration
                 await asyncio.sleep(self._next_iteration_delay_sec())

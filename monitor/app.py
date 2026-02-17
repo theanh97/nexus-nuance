@@ -11156,6 +11156,56 @@ except ImportError as e:
 
 
 # ============================================
+# PROACTIVE MONITORING API
+# ============================================
+
+try:
+    from src.core.proactive_monitor import get_monitor, ProactiveMonitor
+    _pmonitor = get_monitor()
+
+    @app.route('/api/monitor/health')
+    def get_system_health():
+        """Get system health status."""
+        health = _pmonitor.check_health()
+        return jsonify({"success": True, "health": health})
+
+    @app.route('/api/monitor/status')
+    def get_monitor_status():
+        """Get proactive monitor status."""
+        return jsonify({"success": True, "status": _pmonitor.get_status()})
+
+    @app.route('/api/monitor/incidents')
+    def get_recent_incidents():
+        """Get recent incidents."""
+        limit = request.args.get("limit", 20, type=int)
+        incidents = _pmonitor.get_recent_incidents(limit=limit)
+        return jsonify({"success": True, "incidents": incidents})
+
+    @app.route('/api/monitor/incidents/<incident_id>/resolve', methods=['POST'])
+    def resolve_monitor_incident(incident_id):
+        """Resolve an incident."""
+        data = request.get_json(silent=True) or {}
+        resolution = data.get("resolution", "Manually resolved")
+        success = _pmonitor.resolve_incident(incident_id, resolution)
+        return jsonify({"success": success}), 200 if success else 404
+
+    @app.route('/api/monitor/start', methods=['POST'])
+    def start_proactive_monitor():
+        """Start proactive monitoring."""
+        _pmonitor.start()
+        return jsonify({"success": True, "status": _pmonitor.get_status()})
+
+    @app.route('/api/monitor/stop', methods=['POST'])
+    def stop_proactive_monitor():
+        """Stop proactive monitoring."""
+        _pmonitor.stop()
+        return jsonify({"success": True, "status": _pmonitor.get_status()})
+
+except ImportError as e:
+    print(f"⚠️ Proactive Monitor not available: {e}")
+
+
+# ============================================
 # SOCKET.IO
 # ============================================
 

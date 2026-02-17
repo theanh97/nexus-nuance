@@ -921,13 +921,16 @@
         /* Automation View */
         body[data-active-view="automation"] .layout {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-            gap: 16px;
-            padding: 16px;
+            grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+            gap: 20px;
+            padding: 20px;
+            max-width: 1600px;
+            margin: 0 auto;
         }
 
         body[data-active-view="automation"] .card[data-view~="automation"] {
             display: block !important;
+            background: linear-gradient(135deg, var(--card-bg) 0%, var(--bg-secondary) 100%);
         }
 
         body[data-active-view="automation"] .card:not([data-view~="automation"]) {
@@ -936,65 +939,98 @@
 
         .automation-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
             gap: 16px;
         }
 
         .auto-card {
             background: var(--card-bg);
-            border-radius: 12px;
-            padding: 16px;
+            border-radius: 16px;
+            padding: 20px;
             border: 1px solid var(--border-color);
+            transition: transform 0.2s, box-shadow 0.2s;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .auto-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0,0,0,0.15);
         }
 
         .auto-card h3 {
-            margin: 0 0 12px 0;
-            font-size: 14px;
+            margin: 0 0 16px 0;
+            font-size: 15px;
             font-weight: 600;
             color: var(--text-primary);
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 10px;
+            padding-bottom: 12px;
+            border-bottom: 2px solid var(--primary-color);
         }
 
         .auto-card h3 .icon {
-            font-size: 18px;
+            font-size: 20px;
         }
 
         .auto-form {
             display: flex;
             flex-direction: column;
-            gap: 10px;
+            gap: 12px;
         }
 
         .auto-form label {
             font-size: 12px;
             color: var(--text-secondary);
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
 
         .auto-form select,
-        .auto-form input {
-            padding: 8px 12px;
-            border-radius: 6px;
+        .auto-form input,
+        .auto-form textarea {
+            padding: 10px 14px;
+            border-radius: 8px;
             border: 1px solid var(--border-color);
             background: var(--input-bg);
             color: var(--text-primary);
             font-size: 13px;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .auto-form select:focus,
+        .auto-form input:focus,
+        .auto-form textarea:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
         }
 
         .auto-form button {
-            padding: 10px 16px;
-            border-radius: 6px;
+            padding: 12px 20px;
+            border-radius: 8px;
             border: none;
-            background: var(--primary-color);
+            background: linear-gradient(135deg, var(--primary-color) 0%, #6366f1 100%);
             color: white;
-            font-weight: 500;
+            font-weight: 600;
             cursor: pointer;
-            transition: opacity 0.2s;
+            transition: transform 0.2s, box-shadow 0.2s;
+            font-size: 13px;
         }
 
         .auto-form button:hover {
-            opacity: 0.9;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+        }
+
+        .auto-form button:active {
+            transform: translateY(0);
+        }
+
+        .auto-form button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
         }
 
         .auto-form button.secondary {
@@ -1009,37 +1045,72 @@
         }
 
         .task-type-btn {
-            padding: 10px 8px;
-            border-radius: 8px;
+            padding: 12px 8px;
+            border-radius: 10px;
             border: 1px solid var(--border-color);
-            background: var(--card-bg);
+            background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--card-bg) 100%);
             color: var(--text-secondary);
             font-size: 11px;
             text-align: center;
             cursor: pointer;
-            transition: all 0.2s;
+            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
         }
 
         .task-type-btn:hover {
             border-color: var(--primary-color);
             color: var(--primary-color);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.2);
+        }
+
+        .task-type-btn:active {
+            transform: translateY(0);
         }
 
         .task-type-btn.active {
-            background: var(--primary-color);
+            background: linear-gradient(135deg, var(--primary-color) 0%, #6366f1 100%);
             color: white;
             border-color: var(--primary-color);
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
         }
 
         .task-type-btn .icon {
-            font-size: 20px;
+            font-size: 22px;
             display: block;
-            margin-bottom: 4px;
         }
 
         .schedule-list {
-            max-height: 200px;
+            max-height: 220px;
             overflow-y: auto;
+            padding-right: 8px;
+        }
+
+        /* Custom scrollbar */
+        .schedule-list::-webkit-scrollbar,
+        .notification-list::-webkit-scrollbar,
+        .webhook-list::-webkit-scrollbar,
+        .history-list::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .schedule-list::-webkit-scrollbar-track,
+        .notification-list::-webkit-scrollbar-track,
+        .webhook-list::-webkit-scrollbar-track,
+        .history-list::-webkit-scrollbar-track {
+            background: var(--bg-secondary);
+            border-radius: 3px;
+        }
+
+        .schedule-list::-webkit-scrollbar-thumb,
+        .notification-list::-webkit-scrollbar-thumb,
+        .webhook-list::-webkit-scrollbar-thumb,
+        .history-list::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 3px;
         }
 
         .schedule-item {
@@ -2260,133 +2331,139 @@
 
             <!-- AUTOMATION VIEW -->
             <article class="card" data-view="automation" data-zen="focus">
-                <div class="row">
-                    <h2>🤖 Automation Task Bus</h2>
+                <div class="row" style="justify-content:space-between;align-items:center;">
+                    <h2>🤖 Điều Khiển Tự Động Hóa</h2>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <select id="lang-select" onchange="changeLanguage(this.value)" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border-color);background:var(--card-bg);color:var(--text-primary);font-size:12px;">
+                            <option value="vi">🇻🇳 Tiếng Việt</option>
+                            <option value="en">🇬🇧 English</option>
+                        </select>
+                    </div>
                 </div>
                 <div class="automation-grid">
                     <!-- Execute Task -->
                     <div class="auto-card">
-                        <h3><span class="icon">⚡</span> Execute Task</h3>
+                        <h3><span class="icon">⚡</span> <span data-i18n="execute_task">Thực Thi Tác Vụ</span></h3>
                         <div class="auto-form">
-                            <label>Task Type</label>
+                            <label data-i18n="task_type">Loại Tác Vụ</label>
                             <select id="auto-task-type">
-                                <option value="terminal">Terminal</option>
-                                <option value="app">App</option>
-                                <option value="browser">Browser</option>
-                                <option value="computer">Computer</option>
-                                <option value="clipboard">Clipboard</option>
-                                <option value="file">File</option>
-                                <option value="mail">Mail</option>
-                                <option value="messages">Messages</option>
+                                <option value="terminal">💻 Terminal</option>
+                                <option value="app">📱 Ứng Dụng</option>
+                                <option value="browser">🌐 Trình Duyệt</option>
+                                <option value="computer">🖥️ Máy Tính</option>
+                                <option value="clipboard">📋 Clipboard</option>
+                                <option value="file">📁 Tệp Tin</option>
+                                <option value="mail">📧 Thư Điện Tử</option>
+                                <option value="messages">💬 Tin Nhắn</option>
                             </select>
-                            <label>Action</label>
+                            <label data-i18n="action">Hành Động</label>
                             <select id="auto-action">
-                                <option value="execute">Execute (terminal)</option>
-                                <option value="list_running">List Running (app)</option>
-                                <option value="position">Mouse Position</option>
-                                <option value="read">Clipboard Read</option>
-                                <option value="check_unread">Check Unread</option>
+                                <option value="execute" data-i18n="execute_cmd">Thực thi lệnh (Terminal)</option>
+                                <option value="list_running" data-i18n="list_apps">Danh sách ứng dụng</option>
+                                <option value="position" data-i18n="mouse_pos">Vị trí chuột</option>
+                                <option value="read" data-i18n="clipboard_read">Đọc clipboard</option>
+                                <option value="check_unread" data-i18n="check_unread">Kiểm tra thư chưa đọc</option>
                             </select>
-                            <label>Parameters (JSON)</label>
+                            <label data-i18n="params">Tham Số (JSON)</label>
                             <input id="auto-params" type="text" placeholder='{"command":"echo hello"}' />
-                            <button type="button" id="auto-execute-btn">Execute</button>
+                            <button type="button" id="auto-execute-btn" data-i18n="execute">▶ Thực Thi</button>
                         </div>
-                        <div id="auto-result" style="margin-top:10px;font-size:12px;word-break:break-all;max-height:100px;overflow-y:auto;padding:8px;background:var(--bg-secondary);border-radius:6px;"></div>
+                        <div id="auto-result" style="margin-top:10px;font-size:12px;word-break:break-all;max-height:100px;overflow-y:auto;padding:8px;background:var(--bg-secondary);border-radius:6px;color:var(--text-secondary);" data-i18n="result_placeholder">Kết quả sẽ hiển thị ở đây...</div>
                     </div>
 
                     <!-- Quick Actions -->
                     <div class="auto-card">
-                        <h3><span class="icon">🚀</span> Quick Actions</h3>
-                        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
+                        <h3><span class="icon">🚀</span> <span data-i18n="quick_actions">Thao Tác Nhanh</span></h3>
+                        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;">
                             <button class="task-type-btn" data-task="terminal" data-action="execute" data-params='{"command":"pwd"}'>
-                                <span class="icon">💻</span>Terminal
+                                <span class="icon">💻</span><span data-i18n="terminal">Terminal</span>
                             </button>
                             <button class="task-type-btn" data-task="app" data-action="list_running" data-params="{}">
-                                <span class="icon">📱</span>Apps
+                                <span class="icon">📱</span><span data-i18n="apps">Apps</span>
                             </button>
                             <button class="task-type-btn" data-task="computer" data-action="position" data-params="{}">
-                                <span class="icon">🖱️</span>Mouse
+                                <span class="icon">🖱️</span><span data-i18n="mouse">Chuột</span>
                             </button>
                             <button class="task-type-btn" data-task="clipboard" data-action="read" data-params="{}">
-                                <span class="icon">📋</span>Clipboard
+                                <span class="icon">📋</span><span data-i18n="clipboard">Clipboard</span>
                             </button>
                             <button class="task-type-btn" data-task="mail" data-action="check_unread" data-params="{}">
-                                <span class="icon">📧</span>Mail
+                                <span class="icon">📧</span><span data-i18n="mail">Mail</span>
                             </button>
                             <button class="task-type-btn" data-task="messages" data-action="check_unread" data-params="{}">
-                                <span class="icon">💬</span>Messages
+                                <span class="icon">💬</span><span data-i18n="messages">Tin Nhắn</span>
                             </button>
                             <button class="task-type-btn" data-task="file" data-action="list" data-params='{"dirpath":"/tmp"}'>
-                                <span class="icon">📁</span>Files
+                                <span class="icon">📁</span><span data-i18n="files">Tệp Tin</span>
                             </button>
                             <button class="task-type-btn" data-task="computer" data-action="screenshot" data-params='{"filepath":"/tmp/screenshot.png"}'>
-                                <span class="icon">📸</span>Screenshot
+                                <span class="icon">📸</span><span data-i18n="screenshot">Chụp Màn</span>
                             </button>
                         </div>
                     </div>
 
                     <!-- Schedules -->
                     <div class="auto-card">
-                        <h3><span class="icon">⏰</span> Scheduled Tasks</h3>
+                        <h3><span class="icon">⏰</span> <span data-i18n="scheduled_tasks">Tác Vụ Định Kỳ</span></h3>
                         <div class="auto-form" style="margin-bottom:10px;">
-                            <input id="schedule-id" type="text" placeholder="Schedule ID" />
+                            <input id="schedule-id" type="text" placeholder="ID lịch trình" />
                             <select id="schedule-task-type">
-                                <option value="mail">Mail</option>
-                                <option value="app">App</option>
-                                <option value="terminal">Terminal</option>
+                                <option value="mail">📧 Mail</option>
+                                <option value="app">📱 App</option>
+                                <option value="terminal">💻 Terminal</option>
                             </select>
                             <select id="schedule-action">
-                                <option value="check_unread">Check Unread</option>
-                                <option value="list_running">List Running</option>
-                                <option value="execute">Execute</option>
+                                <option value="check_unread" data-i18n="check_unread">Kiểm tra thư chưa đọc</option>
+                                <option value="list_running" data-i18n="list_running">Danh sách đang chạy</option>
+                                <option value="execute" data-i18n="execute">Thực thi</option>
                             </select>
-                            <input id="schedule-interval" type="number" placeholder="Interval (sec)" value="60" />
+                            <input id="schedule-interval" type="number" placeholder="Khoảng cách (giây)" value="60" />
                             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-                                <button type="button" id="schedule-create-btn">Create</button>
-                                <button type="button" class="secondary" id="schedule-refresh-btn">Refresh</button>
+                                <button type="button" id="schedule-create-btn" data-i18n="create">+ Tạo</button>
+                                <button type="button" class="secondary" id="schedule-refresh-btn" data-i18n="refresh">↻</button>
                             </div>
                         </div>
                         <div id="schedule-list" class="schedule-list">
-                            <div style="text-align:center;color:var(--text-secondary);padding:20px;">Loading...</div>
+                            <div style="text-align:center;color:var(--text-secondary);padding:20px;" data-i18n="loading">Đang tải...</div>
                         </div>
                     </div>
 
                     <!-- Notifications -->
                     <div class="auto-card">
-                        <h3><span class="icon">🔔</span> Notifications</h3>
+                        <h3><span class="icon">🔔</span> <span data-i18n="notifications">Thông Báo</span></h3>
                         <div style="display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:10px;">
-                            <input id="notif-title" type="text" placeholder="Title" />
+                            <input id="notif-title" type="text" placeholder="Tiêu đề" />
                             <select id="notif-level-auto">
-                                <option value="info">Info</option>
-                                <option value="warning">Warning</option>
-                                <option value="error">Error</option>
-                                <option value="success">Success</option>
+                                <option value="info">ℹ️ Thông tin</option>
+                                <option value="warning">⚠️ Cảnh báo</option>
+                                <option value="error">❌ Lỗi</option>
+                                <option value="success">✅ Thành công</option>
                             </select>
                         </div>
-                        <textarea id="notif-message-auto" placeholder="Message" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--panel);color:var(--text);font-size:12px;min-height:60px;"></textarea>
+                        <textarea id="notif-message-auto" placeholder="Nội dung thông báo..." style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--panel);color:var(--text);font-size:12px;min-height:60px;"></textarea>
                         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;">
-                            <button type="button" id="notif-send-auto-btn">Send</button>
-                            <button type="button" class="secondary" id="notif-refresh-btn">Refresh</button>
+                            <button type="button" id="notif-send-auto-btn" data-i18n="send">✉️ Gửi</button>
+                            <button type="button" class="secondary" id="notif-refresh-btn" data-i18n="refresh">↻</button>
                         </div>
                         <div id="notif-list-auto" class="notification-list" style="margin-top:10px;"></div>
                     </div>
 
                     <!-- Webhooks -->
                     <div class="auto-card">
-                        <h3><span class="icon">📡</span> Webhooks</h3>
+                        <h3><span class="icon">📡</span> <span data-i18n="webhooks">Webhook</span></h3>
                         <div class="auto-form" style="margin-bottom:10px;">
-                            <input id="webhook-name" type="text" placeholder="Name" />
+                            <input id="webhook-name" type="text" placeholder="Tên webhook" />
                             <select id="webhook-type">
                                 <option value="slack">Slack</option>
                                 <option value="discord">Discord</option>
                                 <option value="telegram">Telegram</option>
-                                <option value="custom">Custom</option>
+                                <option value="custom">Tùy chỉnh</option>
                             </select>
-                            <input id="webhook-url" type="text" placeholder="Webhook URL" />
-                            <input id="webhook-events" type="text" placeholder="Events (comma: error,critical)" />
+                            <input id="webhook-url" type="text" placeholder="URL Webhook" />
+                            <input id="webhook-events" type="text" placeholder="Sự kiện (error,critical)" />
                             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-                                <button type="button" id="webhook-create-btn">Add</button>
-                                <button type="button" class="secondary" id="webhook-refresh-btn">List</button>
+                                <button type="button" id="webhook-create-btn" data-i18n="add">+ Thêm</button>
+                                <button type="button" class="secondary" id="webhook-refresh-btn" data-i18n="list">📋</button>
                             </div>
                         </div>
                         <div id="webhook-list" class="webhook-list"></div>
@@ -2394,12 +2471,12 @@
 
                     <!-- History -->
                     <div class="auto-card">
-                        <h3><span class="icon">📜</span> Task History</h3>
+                        <h3><span class="icon">📜</span> <span data-i18n="history">Lịch Sử</span></h3>
                         <div style="margin-bottom:10px;">
-                            <button type="button" id="history-refresh-btn" class="secondary" style="width:100%;">Refresh History</button>
+                            <button type="button" id="history-refresh-btn" class="secondary" style="width:100%;" data-i18n="refresh_history">↻ Cập Nhật Lịch Sử</button>
                         </div>
                         <div id="history-list" class="history-list">
-                            <div style="text-align:center;color:var(--text-secondary);padding:20px;">Loading...</div>
+                            <div style="text-align:center;color:var(--text-secondary);padding:20px;" data-i18n="loading">Đang tải...</div>
                         </div>
                     </div>
                 </div>
@@ -5308,6 +5385,102 @@
             if (Number.isNaN(date.getTime())) return '--:--';
             return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         }
+
+        // ==================== LANGUAGE SYSTEM ====================
+        const translations = {
+            vi: {
+                execute_task: "Thực Thi Tác Vụ",
+                task_type: "Loại Tác Vụ",
+                action: "Hành Động",
+                params: "Tham Số (JSON)",
+                execute: "▶ Thực Thi",
+                result_placeholder: "Kết quả sẽ hiển thị ở đây...",
+                quick_actions: "Thao Tác Nhanh",
+                terminal: "Terminal",
+                apps: "Apps",
+                mouse: "Chuột",
+                clipboard: "Clipboard",
+                mail: "Mail",
+                messages: "Tin Nhắn",
+                files: "Tệp Tin",
+                screenshot: "Chụp Màn",
+                scheduled_tasks: "Tác Vụ Định Kỳ",
+                create: "+ Tạo",
+                refresh: "↻",
+                loading: "Đang tải...",
+                notifications: "Thông Báo",
+                send: "✉️ Gửi",
+                webhooks: "Webhook",
+                add: "+ Thêm",
+                list: "📋",
+                history: "Lịch Sử",
+                refresh_history: "↻ Cập Nhật Lịch Sử",
+                no_schedules: "Chưa có tác vụ định kỳ",
+                no_notifications: "Chưa có thông báo",
+                no_webhooks: "Chưa cấu hình webhook",
+                no_history: "Chưa có lịch sử",
+                running: "Đang chạy...",
+                success: "Thành công!",
+                error: "Lỗi!",
+            },
+            en: {
+                execute_task: "Execute Task",
+                task_type: "Task Type",
+                action: "Action",
+                params: "Parameters (JSON)",
+                execute: "▶ Execute",
+                result_placeholder: "Result will appear here...",
+                quick_actions: "Quick Actions",
+                terminal: "Terminal",
+                apps: "Apps",
+                mouse: "Mouse",
+                clipboard: "Clipboard",
+                mail: "Mail",
+                messages: "Messages",
+                files: "Files",
+                screenshot: "Screenshot",
+                scheduled_tasks: "Scheduled Tasks",
+                create: "+ Create",
+                refresh: "↻",
+                loading: "Loading...",
+                notifications: "Notifications",
+                send: "✉️ Send",
+                webhooks: "Webhooks",
+                add: "+ Add",
+                list: "📋",
+                history: "History",
+                refresh_history: "↻ Refresh History",
+                no_schedules: "No scheduled tasks",
+                no_notifications: "No notifications",
+                no_webhooks: "No webhooks configured",
+                no_history: "No history",
+                running: "Running...",
+                success: "Success!",
+                error: "Error!",
+            }
+        };
+
+        let currentLang = localStorage.getItem('autodev-lang') || 'vi';
+
+        function changeLanguage(lang) {
+            currentLang = lang;
+            localStorage.setItem('autodev-lang', lang);
+            document.querySelectorAll('[data-i18n]').forEach(el => {
+                const key = el.dataset.i18n;
+                if (translations[lang] && translations[lang][key]) {
+                    el.textContent = translations[lang][key];
+                }
+            });
+        }
+
+        // Initialize language on load
+        document.addEventListener('DOMContentLoaded', () => {
+            const langSelect = document.getElementById('lang-select');
+            if (langSelect) {
+                langSelect.value = currentLang;
+            }
+            changeLanguage(currentLang);
+        });
 
         function escapeHtml(input) {
             return String(input || '')
