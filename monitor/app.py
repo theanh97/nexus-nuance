@@ -8966,6 +8966,18 @@ def automation_control():
                         "active_control": "20/min",
                         "destructive": "5/min",
                     },
+                    # Phase 2: Circuit breaker
+                    "circuit_breaker": {
+                        "failure_threshold": AUTOMATION_CIRCUIT_FAILURE_THRESHOLD,
+                        "recovery_timeout_sec": AUTOMATION_CIRCUIT_RECOVERY_TIMEOUT_SEC,
+                        "states": dict(_AUTOMATION_CIRCUIT_STATE),
+                        "open_circuits": sum(1 for s in _AUTOMATION_CIRCUIT_STATE.values() if s.get("state") == "open"),
+                    },
+                    # Phase 2: Dead Letter Queue
+                    "dlq": {
+                        "count": len(_AUTOMATION_DLQ),
+                        "max_size": AUTOMATION_DLQ_MAX_SIZE,
+                    },
                 },
             }
         )
@@ -8993,6 +9005,49 @@ def automation_control():
         return jsonify({"success": True, "message": "Scheduler started"})
 
     return jsonify({"success": False, "error": f"Unknown action: {action}", "error_code": "INVALID_ACTION"}), 400
+
+
+@app.route('/api/automation/dlq', methods=['GET'])
+def automation_dlq_list():
+    """Get dead letter queue entries."""
+    limit = min(100, int(request.args.get("limit", 50)))
+    task_type = request.args.get("task_type") or None
+    entries = _automation_dlq_get(limit=limit, task_type=task_type)
+    return jsonify({
+        "success": True,
+        "count": len(entries),
+        "entries": entries,
+    })
+
+
+@app.route('/api/automation/dlq/clear', methods=['POST'])
+def automation_dlq_clear():
+    """Clear dead letter queue."""
+    data = request.get_json(silent=True) or {}
+    owner_id = str(data.get("owner_id", "")).strip() or None
+    cleared = _automation_dlq_clear(owner_id=owner_id if owner_id else None)
+    return jsonify({
+        "success": True,
+        "cleared_count": cleared,
+    })
+
+
+@app.route('/api/automation/circuit/reset/<task_type>', methods=['POST'])
+def automation_circuit_reset(task_type: str):
+    """Reset circuit breaker for a task type."""
+    with _AUTOMATION_CIRCUIT_BREAKER_LOCK:
+        if task_type in _AUTOMATION_CIRCUIT_STATE:
+            _AUTOMATION_CIRCUIT_STATE[task_type] = {
+                "state": "closed",
+                "failures": 0,
+                "failures_in_window": 0,
+                "window_start": time.time(),
+                "last_failure": 0,
+            }
+    return jsonify({
+        "success": True,
+        "message": f"Circuit reset for {task_type}",
+    })
 
 
 @app.route('/api/automation/schedule', methods=['POST'])
