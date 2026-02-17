@@ -497,6 +497,10 @@ _automation_recent_tasks: deque = deque(maxlen=AUTOMATION_TASK_HISTORY_MAX)
 _INTERNAL_LOOPBACK_AUTH_EXEMPT_PATHS = {
     "/api/control-plane/workers/register",
     "/api/control-plane/workers/heartbeat",
+    # Automation endpoints (Phase 0-2)
+    "/api/automation/control",
+    "/api/automation/dlq",
+    "/api/automation/dlq/clear",
     # Autopilot endpoints
     "/api/hub/autopilot/status",
     "/api/hub/autopilot/config",
