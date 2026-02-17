@@ -2641,6 +2641,7 @@
     <div class="toast-stack" id="toast-stack"></div>
 
     <script>
+        console.log('NEXUS Dashboard loaded');
         const socket = io();
         let iterationHistory = [];
         let iterationChart;
@@ -2864,9 +2865,12 @@
         let tourOverlay = null;
 
         function startTour() {
+            console.log('Starting tour...');
             // Add keyboard listener to close tour with Escape
             document.addEventListener('keydown', function tourKeyHandler(e) {
+                console.log('Key pressed:', e.key);
                 if (e.key === 'Escape') {
+                    console.log('Escape pressed, skipping tour...');
                     skipTour();
                     document.removeEventListener('keydown', tourKeyHandler);
                 }
@@ -2912,7 +2916,11 @@
             tourOverlay = document.createElement('div');
             tourOverlay.id = 'tour-overlay';
             tourOverlay.onclick = function(e) {
-                if (e.target === tourOverlay) skipTour();
+                console.log('Tour overlay clicked, target:', e.target);
+                if (e.target === tourOverlay) {
+                    console.log('Clicking outside, skipping tour...');
+                    skipTour();
+                }
             };
             tourOverlay.style.cssText = `
                 position: fixed;
@@ -2968,7 +2976,11 @@
             tourOverlay = document.createElement('div');
             tourOverlay.id = 'tour-overlay';
             tourOverlay.onclick = function(e) {
-                if (e.target === tourOverlay) skipTour();
+                console.log('Tour overlay clicked, target:', e.target);
+                if (e.target === tourOverlay) {
+                    console.log('Clicking outside, skipping tour...');
+                    skipTour();
+                }
             };
             tourOverlay.style.cssText = `
                 position: fixed;
@@ -3079,8 +3091,13 @@
         }
 
         function skipTour() {
-            if (tourOverlay) tourOverlay.remove();
+            console.log('Skipping tour, removing overlay...');
+            if (tourOverlay) {
+                tourOverlay.remove();
+                tourOverlay = null;
+            }
             localStorage.setItem('tour-completed', 'true');
+            console.log('Tour skipped');
         }
 
         // Auto-start tour for first-time users

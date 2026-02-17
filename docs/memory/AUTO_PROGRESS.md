@@ -1,6 +1,6 @@
 # Nexus Progress Snapshot
 
-Last updated: 2026-02-18T00:06:54.997427
+Last updated: 2026-02-18T00:14:28.265373
 
 ## Project
 - name: Nexus
@@ -26,8 +26,8 @@ Last updated: 2026-02-18T00:06:54.997427
 - interval_sec: 10
 - stuck_threshold_sec: 90
 - cooldown_sec: 35
-- last_reason: {'orion-1': 'not_running'}
-- last_recovery: {'orion-1': '2026-02-18T00:06:45.317600'}
+- last_reason: {}
+- last_recovery: {}
 
 ## Computer Control
 - available: True
@@ -35,9 +35,9 @@ Last updated: 2026-02-18T00:06:54.997427
 - provider: pyautogui
 
 ## Signals (last window)
-- counts: {'error': 4, 'warning': 32, 'success': 12, 'info': 72}
+- counts: {'error': 5, 'warning': 4, 'success': 14, 'info': 97}
 - top_agent: orion
-- latest_event: Fallback run_cycle on orion-1: failed
+- latest_event: Routing attempt 2/4 -> MiniMax-M2.5
 
 ## Pending
 - pending_decisions: 0
