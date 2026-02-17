@@ -8355,6 +8355,268 @@ def automation_schedule_run_now(schedule_id: str):
     })
 
 
+# ============================================================================
+# NOTIFICATION SYSTEM
+# Track and notify important system events
+# ============================================================================
+
+# Notification levels
+NOTIFY_INFO = "info"
+NOTIFY_WARNING = "warning"
+NOTIFY_ERROR = "error"
+NOTIFY_SUCCESS = "success"
+NOTIFY_CRITICAL = "critical"
+
+# Notification categories
+NOTIFY_CATEGORIES = [
+    "system",       # System health/changes
+    "automation",   # Automation events
+    "agent",        # Agent status changes
+    "error",        # Errors and failures
+    "security",     # Security events
+    "user",         # User actions
+    "schedule",     # Scheduled task events
+]
+
+_NOTIFICATIONS_LOCK = threading.Lock()
+_notifications: List[Dict[str, Any]] = []
+_NOTIFICATION_MAX = 200
+
+
+def _add_notification(
+    level: str,
+    category: str,
+    title: str,
+    message: str,
+    data: Optional[Dict[str, Any]] = None,
+    source: str = "system"
+) -> Dict[str, Any]:
+    """Add a new notification."""
+    notification = {
+        "id": f"notif_{int(time.time() * 1000)}_{secrets.token_hex(4)}",
+        "level": level,
+        "category": category,
+        "title": title,
+        "message": message,
+        "data": data or {},
+        "source": source,
+        "created_at": datetime.now().isoformat(),
+        "read": False,
+    }
+
+    with _NOTIFICATIONS_LOCK:
+        _notifications.append(notification)
+        # Keep only last N notifications
+        while len(_notifications) > _NOTIFICATION_MAX:
+            _notifications.pop(0)
+
+    return notification
+
+
+@app.route('/api/notifications', methods=['GET'])
+def notifications_list():
+    """
+    List notifications with optional filtering.
+
+    Query params:
+    - level: filter by level (info|warning|error|success|critical)
+    - category: filter by category
+    - unread_only: only show unread (true|false)
+    - limit: max results (default 50)
+    """
+    level = request.args.get("level")
+    category = request.args.get("category")
+    unread_only = request.args.get("unread_only", "false").lower() == "true"
+    limit = _int_in_range(request.args.get("limit", 50), default=50, min_value=1, max_value=200)
+
+    with _NOTIFICATIONS_LOCK:
+        filtered = list(_notifications)
+
+    # Apply filters
+    if level:
+        filtered = [n for n in filtered if n.get("level") == level]
+    if category:
+        filtered = [n for n in filtered if n.get("category") == category]
+    if unread_only:
+        filtered = [n for n in filtered if not n.get("read")]
+
+    # Sort by newest first and limit
+    filtered = sorted(filtered, key=lambda x: x.get("created_at", ""), reverse=True)[:limit]
+
+    # Count stats
+    with _NOTIFICATIONS_LOCK:
+        total = len(_notifications)
+        unread_count = sum(1 for n in _notifications if not n.get("read"))
+
+    return jsonify({
+        "success": True,
+        "notifications": filtered,
+        "total": total,
+        "unread_count": unread_count,
+    })
+
+
+@app.route('/api/notifications/<notification_id>/read', methods=['POST'])
+def notification_mark_read(notification_id: str):
+    """Mark a notification as read."""
+    with _NOTIFICATIONS_LOCK:
+        for n in _notifications:
+            if n.get("id") == notification_id:
+                n["read"] = True
+                return jsonify({"success": True, "notification": n})
+
+    return jsonify({
+        "success": False,
+        "error": f"Notification not found: {notification_id}",
+    }), 404
+
+
+@app.route('/api/notifications/read-all', methods=['POST'])
+def notification_mark_all_read():
+    """Mark all notifications as read."""
+    with _NOTIFICATIONS_LOCK:
+        for n in _notifications:
+            n["read"] = True
+
+    return jsonify({
+        "success": True,
+        "marked_count": len(_notifications),
+    })
+
+
+@app.route('/api/notifications/<notification_id>', methods=['DELETE'])
+def notification_delete(notification_id: str):
+    """Delete a notification."""
+    with _NOTIFICATIONS_LOCK:
+        for i, n in enumerate(_notifications):
+            if n.get("id") == notification_id:
+                _notifications.pop(i)
+                return jsonify({"success": True, "notification_id": notification_id})
+
+    return jsonify({
+        "success": False,
+        "error": f"Notification not found: {notification_id}",
+    }), 404
+
+
+@app.route('/api/notifications/clear', methods=['POST'])
+def notification_clear():
+    """Clear all notifications."""
+    data = request.get_json() or {}
+    keep_unread = data.get("keep_unread", False)
+
+    with _NOTIFICATIONS_LOCK:
+        if keep_unread:
+            _notifications[:] = [n for n in _notifications if n.get("read")]
+        else:
+            _notifications.clear()
+
+    return jsonify({
+        "success": True,
+    })
+
+
+@app.route('/api/notifications/send', methods=['POST'])
+def notification_send():
+    """
+    Send a notification (for testing or external integration).
+
+    Request body:
+    {
+        "level": "info|warning|error|success|critical",
+        "category": "system|automation|agent|error|security|user|schedule",
+        "title": "Notification title",
+        "message": "Notification message",
+        "data": {...},
+        "source": "external"
+    }
+    """
+    data = request.get_json() or {}
+
+    level = data.get("level", NOTIFY_INFO)
+    category = data.get("category", "system")
+    title = data.get("title", "")
+    message = data.get("message", "")
+    source = data.get("source", "api")
+    notification_data = data.get("data", {})
+
+    if not title:
+        return jsonify({
+            "success": False,
+            "error": "Title is required",
+        }), 400
+
+    if level not in [NOTIFY_INFO, NOTIFY_WARNING, NOTIFY_ERROR, NOTIFY_SUCCESS, NOTIFY_CRITICAL]:
+        return jsonify({
+            "success": False,
+            "error": f"Invalid level: {level}",
+        }), 400
+
+    if category not in NOTIFY_CATEGORIES:
+        return jsonify({
+            "success": False,
+            "error": f"Invalid category: {category}",
+        }), 400
+
+    notification = _add_notification(
+        level=level,
+        category=category,
+        title=title,
+        message=message,
+        data=notification_data,
+        source=source
+    )
+
+    return jsonify({
+        "success": True,
+        "notification": notification,
+    })
+
+
+@app.route('/api/notifications/stats', methods=['GET'])
+def notification_stats():
+    """Get notification statistics."""
+    with _NOTIFICATIONS_LOCK:
+        total = len(_notifications)
+        unread = sum(1 for n in _notifications if not n.get("read"))
+
+        by_level = {}
+        by_category = {}
+
+        for n in _notifications:
+            level = n.get("level", "unknown")
+            category = n.get("category", "unknown")
+
+            by_level[level] = by_level.get(level, 0) + 1
+            by_category[category] = by_category.get(category, 0) + 1
+
+    return jsonify({
+        "success": True,
+        "total": total,
+        "unread": unread,
+        "by_level": by_level,
+        "by_category": by_category,
+    })
+
+
+# Auto-generate some notifications on startup
+_add_notification(
+    level=NOTIFY_INFO,
+    category="system",
+    title="System Started",
+    message="Automation system initialized and ready",
+    source="system"
+)
+
+_add_notification(
+    level=NOTIFY_INFO,
+    category="automation",
+    title="Automation Bus Ready",
+    message="Universal automation task bus is online",
+    source="system"
+)
+
+
 @app.route('/api/model-routing/status')
 def get_model_routing_status():
     """Get model routing, token usage, and budget summary."""
