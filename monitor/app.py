@@ -11041,13 +11041,13 @@ try:
         return jsonify(result)
 
     # ============================================
-    # HUMAN NOTIFICATION API
+    # HUMAN NOTIFICATION API (for AI→Human communication)
     # ============================================
     from src.core.human_notifier import get_notifier, HumanNotifier
     _notifier = get_notifier()
 
-    @app.route('/api/notifications', methods=['GET', 'POST'])
-    def handle_notifications():
+    @app.route('/api/hub/human-notifications', methods=['GET', 'POST'])
+    def handle_human_notifications():
         """Send or list human notifications."""
         if request.method == 'POST':
             data = request.get_json(silent=True) or {}
@@ -11081,13 +11081,13 @@ try:
             "stats": stats,
         })
 
-    @app.route('/api/notifications/stats')
-    def get_notification_stats():
+    @app.route('/api/hub/human-notifications/stats')
+    def get_human_notification_stats():
         """Get notification statistics."""
         return jsonify({"success": True, "stats": _notifier.get_stats()})
 
-    @app.route('/api/notifications/urgent', methods=['POST'])
-    def send_urgent_notification():
+    @app.route('/api/hub/human-notifications/urgent', methods=['POST'])
+    def send_urgent_human_notification():
         """Send urgent notification (bypasses rate limits)."""
         data = request.get_json(silent=True) or {}
         result = _notifier.notify_urgent(
@@ -11098,8 +11098,8 @@ try:
         )
         return jsonify(result), 200 if result.get("success") else 400
 
-    @app.route('/api/notifications/help', methods=['POST'])
-    def send_help_notification():
+    @app.route('/api/hub/human-notifications/help', methods=['POST'])
+    def send_help_human_notification():
         """Send help request notification."""
         data = request.get_json(silent=True) or {}
         result = _notifier.notify_help_needed(
@@ -11110,8 +11110,8 @@ try:
         )
         return jsonify(result), 200 if result.get("success") else 400
 
-    @app.route('/api/notifications/blocked', methods=['POST'])
-    def send_blocked_notification():
+    @app.route('/api/hub/human-notifications/blocked', methods=['POST'])
+    def send_blocked_human_notification():
         """Notify that a task is blocked."""
         data = request.get_json(silent=True) or {}
         result = _notifier.notify_task_blocked(
@@ -11122,8 +11122,8 @@ try:
         )
         return jsonify(result), 200 if result.get("success") else 400
 
-    @app.route('/api/notifications/milestone', methods=['POST'])
-    def send_milestone_notification():
+    @app.route('/api/hub/human-notifications/milestone', methods=['POST'])
+    def send_milestone_human_notification():
         """Notify of a milestone."""
         data = request.get_json(silent=True) or {}
         result = _notifier.notify_milestone(
@@ -11133,8 +11133,8 @@ try:
         )
         return jsonify(result), 200
 
-    @app.route('/api/notifications/<notification_id>/acknowledge', methods=['POST'])
-    def acknowledge_notification(notification_id):
+    @app.route('/api/hub/human-notifications/<notification_id>/acknowledge', methods=['POST'])
+    def acknowledge_human_notification(notification_id):
         """Acknowledge a notification."""
         data = request.get_json(silent=True) or {}
         result = _notifier.acknowledge_notification(
@@ -11144,8 +11144,8 @@ try:
         status = 200 if result.get("success") else 404
         return jsonify(result), status
 
-    @app.route('/api/notifications/cleanup', methods=['POST'])
-    def cleanup_notifications():
+    @app.route('/api/hub/human-notifications/cleanup', methods=['POST'])
+    def cleanup_human_notifications():
         """Clean up old notifications."""
         max_age_hours = request.args.get("max_age_hours", 168, type=int)
         result = _notifier.cleanup(max_age_hours=max_age_hours)

@@ -495,6 +495,7 @@ class HumanNotifier:
             source=from_orion,
             channels=[ch for ch in self.channels.keys() if self.channels[ch].enabled],
             metadata={"help_type": help_type, "context": context or {}},
+            bypass_rate_limit=True,
         )
 
     def notify_task_blocked(
@@ -512,6 +513,7 @@ class HumanNotifier:
             source=orion_id,
             channels=[ch for ch in self.channels.keys() if self.channels[ch].enabled],
             metadata={"task_id": task_id, "blocker": blocker},
+            bypass_rate_limit=True,
         )
 
     def notify_milestone(
@@ -526,7 +528,7 @@ class HumanNotifier:
             message=details,
             level="success",
             source=source,
-            channels=["dashboard"],
+            bypass_rate_limit=True,
         )
 
     def list_notifications(

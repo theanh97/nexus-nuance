@@ -918,6 +918,294 @@
             min-height: 320px;
         }
 
+        /* Automation View */
+        body[data-active-view="automation"] .layout {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 16px;
+            padding: 16px;
+        }
+
+        body[data-active-view="automation"] .card[data-view~="automation"] {
+            display: block !important;
+        }
+
+        body[data-active-view="automation"] .card:not([data-view~="automation"]) {
+            display: none !important;
+        }
+
+        .automation-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 16px;
+        }
+
+        .auto-card {
+            background: var(--card-bg);
+            border-radius: 12px;
+            padding: 16px;
+            border: 1px solid var(--border-color);
+        }
+
+        .auto-card h3 {
+            margin: 0 0 12px 0;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .auto-card h3 .icon {
+            font-size: 18px;
+        }
+
+        .auto-form {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .auto-form label {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .auto-form select,
+        .auto-form input {
+            padding: 8px 12px;
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+            background: var(--input-bg);
+            color: var(--text-primary);
+            font-size: 13px;
+        }
+
+        .auto-form button {
+            padding: 10px 16px;
+            border-radius: 6px;
+            border: none;
+            background: var(--primary-color);
+            color: white;
+            font-weight: 500;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+
+        .auto-form button:hover {
+            opacity: 0.9;
+        }
+
+        .auto-form button.secondary {
+            background: var(--secondary-color);
+        }
+
+        .task-type-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .task-type-btn {
+            padding: 10px 8px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            background: var(--card-bg);
+            color: var(--text-secondary);
+            font-size: 11px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .task-type-btn:hover {
+            border-color: var(--primary-color);
+            color: var(--primary-color);
+        }
+
+        .task-type-btn.active {
+            background: var(--primary-color);
+            color: white;
+            border-color: var(--primary-color);
+        }
+
+        .task-type-btn .icon {
+            font-size: 20px;
+            display: block;
+            margin-bottom: 4px;
+        }
+
+        .schedule-list {
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .schedule-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px;
+            border-radius: 6px;
+            background: var(--bg-secondary);
+            margin-bottom: 6px;
+        }
+
+        .schedule-item .info {
+            flex: 1;
+        }
+
+        .schedule-item .name {
+            font-weight: 500;
+            font-size: 13px;
+        }
+
+        .schedule-item .meta {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        .schedule-item .actions {
+            display: flex;
+            gap: 4px;
+        }
+
+        .schedule-item .btn-run,
+        .schedule-item .btn-delete {
+            padding: 4px 8px;
+            border-radius: 4px;
+            border: none;
+            font-size: 11px;
+            cursor: pointer;
+        }
+
+        .schedule-item .btn-run {
+            background: var(--success-color);
+            color: white;
+        }
+
+        .schedule-item .btn-delete {
+            background: var(--error-color);
+            color: white;
+        }
+
+        .notification-list {
+            max-height: 250px;
+            overflow-y: auto;
+        }
+
+        .notif-item {
+            display: flex;
+            gap: 10px;
+            padding: 10px;
+            border-radius: 6px;
+            background: var(--bg-secondary);
+            margin-bottom: 6px;
+            border-left: 3px solid;
+        }
+
+        .notif-item.level-info {
+            border-color: var(--info-color);
+        }
+
+        .notif-item.level-warning {
+            border-color: var(--warning-color);
+        }
+
+        .notif-item.level-error {
+            border-color: var(--error-color);
+        }
+
+        .notif-item.level-success {
+            border-color: var(--success-color);
+        }
+
+        .notif-item.level-critical {
+            border-color: var(--critical-color);
+        }
+
+        .notif-icon {
+            font-size: 16px;
+        }
+
+        .notif-content {
+            flex: 1;
+        }
+
+        .notif-title {
+            font-weight: 500;
+            font-size: 13px;
+        }
+
+        .notif-message {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .notif-time {
+            font-size: 10px;
+            color: var(--text-secondary);
+        }
+
+        .webhook-list {
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .webhook-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px;
+            border-radius: 6px;
+            background: var(--bg-secondary);
+            margin-bottom: 6px;
+        }
+
+        .webhook-item .type {
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 500;
+            text-transform: uppercase;
+        }
+
+        .webhook-item .type.slack {
+            background: #4A154B;
+            color: white;
+        }
+
+        .webhook-item .type.discord {
+            background: #5865F2;
+            color: white;
+        }
+
+        .webhook-item .type.telegram {
+            background: #0088cc;
+            color: white;
+        }
+
+        .webhook-item .type.custom {
+            background: var(--secondary-color);
+            color: white;
+        }
+
+        .history-list {
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .history-item {
+            padding: 8px;
+            border-radius: 6px;
+            background: var(--bg-secondary);
+            margin-bottom: 4px;
+            font-size: 12px;
+            display: flex;
+            justify-content: space-between;
+        }
+
         body[data-simple="on"] .card[data-zen="secondary"] {
             display: none !important;
         }
@@ -1743,6 +2031,7 @@
                 <button class="view-tab" type="button" data-view="chat">Chat</button>
                 <button class="view-tab" type="button" data-view="tasks">Cong Viec</button>
                 <button class="view-tab" type="button" data-view="interventions">Can Thiep</button>
+                <button class="view-tab" type="button" data-view="automation">Automation</button>
             </div>
             <div class="pill">Iteration<strong id="iteration-counter">#0000</strong></div>
             <div class="pill">Status<strong id="run-state">--</strong></div>
@@ -1967,6 +2256,153 @@
                 <ul id="interventions-list" class="activity-list">
                     <li class="activity-item"><div class="text">Loading interventions...</div></li>
                 </ul>
+            </article>
+
+            <!-- AUTOMATION VIEW -->
+            <article class="card" data-view="automation" data-zen="focus">
+                <div class="row">
+                    <h2>🤖 Automation Task Bus</h2>
+                </div>
+                <div class="automation-grid">
+                    <!-- Execute Task -->
+                    <div class="auto-card">
+                        <h3><span class="icon">⚡</span> Execute Task</h3>
+                        <div class="auto-form">
+                            <label>Task Type</label>
+                            <select id="auto-task-type">
+                                <option value="terminal">Terminal</option>
+                                <option value="app">App</option>
+                                <option value="browser">Browser</option>
+                                <option value="computer">Computer</option>
+                                <option value="clipboard">Clipboard</option>
+                                <option value="file">File</option>
+                                <option value="mail">Mail</option>
+                                <option value="messages">Messages</option>
+                            </select>
+                            <label>Action</label>
+                            <select id="auto-action">
+                                <option value="execute">Execute (terminal)</option>
+                                <option value="list_running">List Running (app)</option>
+                                <option value="position">Mouse Position</option>
+                                <option value="read">Clipboard Read</option>
+                                <option value="check_unread">Check Unread</option>
+                            </select>
+                            <label>Parameters (JSON)</label>
+                            <input id="auto-params" type="text" placeholder='{"command":"echo hello"}' />
+                            <button type="button" id="auto-execute-btn">Execute</button>
+                        </div>
+                        <div id="auto-result" style="margin-top:10px;font-size:12px;word-break:break-all;max-height:100px;overflow-y:auto;padding:8px;background:var(--bg-secondary);border-radius:6px;"></div>
+                    </div>
+
+                    <!-- Quick Actions -->
+                    <div class="auto-card">
+                        <h3><span class="icon">🚀</span> Quick Actions</h3>
+                        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
+                            <button class="task-type-btn" data-task="terminal" data-action="execute" data-params='{"command":"pwd"}'>
+                                <span class="icon">💻</span>Terminal
+                            </button>
+                            <button class="task-type-btn" data-task="app" data-action="list_running" data-params="{}">
+                                <span class="icon">📱</span>Apps
+                            </button>
+                            <button class="task-type-btn" data-task="computer" data-action="position" data-params="{}">
+                                <span class="icon">🖱️</span>Mouse
+                            </button>
+                            <button class="task-type-btn" data-task="clipboard" data-action="read" data-params="{}">
+                                <span class="icon">📋</span>Clipboard
+                            </button>
+                            <button class="task-type-btn" data-task="mail" data-action="check_unread" data-params="{}">
+                                <span class="icon">📧</span>Mail
+                            </button>
+                            <button class="task-type-btn" data-task="messages" data-action="check_unread" data-params="{}">
+                                <span class="icon">💬</span>Messages
+                            </button>
+                            <button class="task-type-btn" data-task="file" data-action="list" data-params='{"dirpath":"/tmp"}'>
+                                <span class="icon">📁</span>Files
+                            </button>
+                            <button class="task-type-btn" data-task="computer" data-action="screenshot" data-params='{"filepath":"/tmp/screenshot.png"}'>
+                                <span class="icon">📸</span>Screenshot
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Schedules -->
+                    <div class="auto-card">
+                        <h3><span class="icon">⏰</span> Scheduled Tasks</h3>
+                        <div class="auto-form" style="margin-bottom:10px;">
+                            <input id="schedule-id" type="text" placeholder="Schedule ID" />
+                            <select id="schedule-task-type">
+                                <option value="mail">Mail</option>
+                                <option value="app">App</option>
+                                <option value="terminal">Terminal</option>
+                            </select>
+                            <select id="schedule-action">
+                                <option value="check_unread">Check Unread</option>
+                                <option value="list_running">List Running</option>
+                                <option value="execute">Execute</option>
+                            </select>
+                            <input id="schedule-interval" type="number" placeholder="Interval (sec)" value="60" />
+                            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                                <button type="button" id="schedule-create-btn">Create</button>
+                                <button type="button" class="secondary" id="schedule-refresh-btn">Refresh</button>
+                            </div>
+                        </div>
+                        <div id="schedule-list" class="schedule-list">
+                            <div style="text-align:center;color:var(--text-secondary);padding:20px;">Loading...</div>
+                        </div>
+                    </div>
+
+                    <!-- Notifications -->
+                    <div class="auto-card">
+                        <h3><span class="icon">🔔</span> Notifications</h3>
+                        <div style="display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:10px;">
+                            <input id="notif-title" type="text" placeholder="Title" />
+                            <select id="notif-level-auto">
+                                <option value="info">Info</option>
+                                <option value="warning">Warning</option>
+                                <option value="error">Error</option>
+                                <option value="success">Success</option>
+                            </select>
+                        </div>
+                        <textarea id="notif-message-auto" placeholder="Message" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--panel);color:var(--text);font-size:12px;min-height:60px;"></textarea>
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;">
+                            <button type="button" id="notif-send-auto-btn">Send</button>
+                            <button type="button" class="secondary" id="notif-refresh-btn">Refresh</button>
+                        </div>
+                        <div id="notif-list-auto" class="notification-list" style="margin-top:10px;"></div>
+                    </div>
+
+                    <!-- Webhooks -->
+                    <div class="auto-card">
+                        <h3><span class="icon">📡</span> Webhooks</h3>
+                        <div class="auto-form" style="margin-bottom:10px;">
+                            <input id="webhook-name" type="text" placeholder="Name" />
+                            <select id="webhook-type">
+                                <option value="slack">Slack</option>
+                                <option value="discord">Discord</option>
+                                <option value="telegram">Telegram</option>
+                                <option value="custom">Custom</option>
+                            </select>
+                            <input id="webhook-url" type="text" placeholder="Webhook URL" />
+                            <input id="webhook-events" type="text" placeholder="Events (comma: error,critical)" />
+                            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                                <button type="button" id="webhook-create-btn">Add</button>
+                                <button type="button" class="secondary" id="webhook-refresh-btn">List</button>
+                            </div>
+                        </div>
+                        <div id="webhook-list" class="webhook-list"></div>
+                    </div>
+
+                    <!-- History -->
+                    <div class="auto-card">
+                        <h3><span class="icon">📜</span> Task History</h3>
+                        <div style="margin-bottom:10px;">
+                            <button type="button" id="history-refresh-btn" class="secondary" style="width:100%;">Refresh History</button>
+                        </div>
+                        <div id="history-list" class="history-list">
+                            <div style="text-align:center;color:var(--text-secondary);padding:20px;">Loading...</div>
+                        </div>
+                    </div>
+                </div>
             </article>
         </section>
 
@@ -2257,9 +2693,18 @@
             notifSendBtn: document.getElementById('notif-send-btn'),
             interventionsList: document.getElementById('interventions-list'),
             interventionsSummary: document.getElementById('interventions-summary'),
+            // Automation
+            autoTaskType: document.getElementById('auto-task-type'),
+            autoAction: document.getElementById('auto-action'),
+            autoParams: document.getElementById('auto-params'),
+            autoResult: document.getElementById('auto-result'),
+            scheduleList: document.getElementById('schedule-list'),
+            notifListAuto: document.getElementById('notif-list-auto'),
+            webhookList: document.getElementById('webhook-list'),
+            historyList: document.getElementById('history-list'),
         };
 
-        const ALLOWED_VIEWS = ['workspace', 'ops', 'activity', 'chat', 'tasks', 'interventions'];
+        const ALLOWED_VIEWS = ['workspace', 'ops', 'activity', 'chat', 'tasks', 'interventions', 'automation'];
         const VIEW_STORAGE_KEY = 'autodev-live-view';
 
         const TASK_COLUMNS = [
@@ -3088,7 +3533,7 @@
         // Human Notifications
         async function loadNotifications() {
             try {
-                const response = await fetch('/api/notifications?limit=20');
+                const response = await fetch('/api/hub/human-notifications?limit=20');
                 const payload = await response.json();
                 if (!payload || payload.success === false) return;
                 renderNotifications(payload.notifications || [], payload.stats || {});
@@ -3149,7 +3594,7 @@
                     const notifId = btn.dataset.notifAck;
                     if (!notifId) return;
                     try {
-                        await fetch(`/api/notifications/${notifId}/acknowledge`, { method: 'POST' });
+                        await fetch(`/api/hub/human-notifications/${notifId}/acknowledge`, { method: 'POST' });
                         await loadNotifications();
                     } catch (error) {
                         console.error('Failed to acknowledge', error);
@@ -3168,7 +3613,7 @@
             }
 
             try {
-                const response = await fetch('/api/notifications', {
+                const response = await fetch('/api/hub/human-notifications', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -3201,6 +3646,309 @@
                         sendNotification();
                     }
                 });
+            }
+            setupAutomationHandlers();
+        }
+
+        // ==================== AUTOMATION HANDLERS ====================
+        function setupAutomationHandlers() {
+            // Execute task
+            const executeBtn = document.getElementById('auto-execute-btn');
+            if (executeBtn) {
+                executeBtn.addEventListener('click', async () => {
+                    const taskType = document.getElementById('auto-task-type').value;
+                    const action = document.getElementById('auto-action').value;
+                    const paramsStr = document.getElementById('auto-params').value;
+                    let params = {};
+                    try {
+                        if (paramsStr) params = JSON.parse(paramsStr);
+                    } catch(e) { params = {}; }
+
+                    const btn = document.getElementById('auto-execute-btn');
+                    btn.textContent = 'Running...';
+                    btn.disabled = true;
+
+                    try {
+                        const res = await fetch('/api/automation/execute', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({task_type: taskType, action: action, params})
+                        });
+                        const data = await res.json();
+                        document.getElementById('auto-result').textContent = JSON.stringify(data, null, 2);
+                    } catch(e) {
+                        document.getElementById('auto-result').textContent = 'Error: ' + e.message;
+                    }
+                    btn.textContent = 'Execute';
+                    btn.disabled = false;
+                });
+            }
+
+            // Quick action buttons
+            document.querySelectorAll('.task-type-btn').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    const taskType = btn.dataset.task;
+                    const action = btn.dataset.action;
+                    const params = JSON.parse(btn.dataset.params || '{}');
+
+                    btn.textContent = '...';
+                    try {
+                        const res = await fetch('/api/automation/execute', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({task_type: taskType, action, params})
+                        });
+                        const data = await res.json();
+                        document.getElementById('auto-result').textContent = JSON.stringify(data, null, 2);
+                    } catch(e) {
+                        document.getElementById('auto-result').textContent = 'Error: ' + e.message;
+                    }
+                    btn.innerHTML = `<span class="icon">${btn.querySelector('.icon').textContent}</span>${btn.textContent.replace('...','')}`;
+                });
+            });
+
+            // Schedule create
+            const scheduleCreateBtn = document.getElementById('schedule-create-btn');
+            if (scheduleCreateBtn) {
+                scheduleCreateBtn.addEventListener('click', async () => {
+                    const scheduleId = document.getElementById('schedule-id').value;
+                    const taskType = document.getElementById('schedule-task-type').value;
+                    const action = document.getElementById('schedule-action').value;
+                    const interval = parseInt(document.getElementById('schedule-interval').value) || 60;
+
+                    try {
+                        await fetch('/api/automation/schedule', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                schedule_id: scheduleId || undefined,
+                                task_type: taskType,
+                                action: action,
+                                params: {},
+                                interval_sec: interval
+                            })
+                        });
+                        refreshSchedules();
+                    } catch(e) {
+                        alert('Error: ' + e.message);
+                    }
+                });
+            }
+
+            // Schedule refresh
+            const scheduleRefreshBtn = document.getElementById('schedule-refresh-btn');
+            if (scheduleRefreshBtn) {
+                scheduleRefreshBtn.addEventListener('click', refreshSchedules);
+            }
+
+            // Notification send
+            const notifSendAutoBtn = document.getElementById('notif-send-auto-btn');
+            if (notifSendAutoBtn) {
+                notifSendAutoBtn.addEventListener('click', async () => {
+                    const title = document.getElementById('notif-title').value;
+                    const message = document.getElementById('notif-message-auto').value;
+                    const level = document.getElementById('notif-level-auto').value;
+
+                    if (!title) { alert('Title required'); return; }
+
+                    try {
+                        await fetch('/api/notifications/send', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({title, message, level, category: 'automation'})
+                        });
+                        refreshNotificationsAuto();
+                        document.getElementById('notif-title').value = '';
+                        document.getElementById('notif-message-auto').value = '';
+                    } catch(e) {
+                        alert('Error: ' + e.message);
+                    }
+                });
+            }
+
+            // Notification refresh
+            const notifRefreshBtn = document.getElementById('notif-refresh-btn');
+            if (notifRefreshBtn) {
+                notifRefreshBtn.addEventListener('click', refreshNotificationsAuto);
+            }
+
+            // Webhook create
+            const webhookCreateBtn = document.getElementById('webhook-create-btn');
+            if (webhookCreateBtn) {
+                webhookCreateBtn.addEventListener('click', async () => {
+                    const name = document.getElementById('webhook-name').value;
+                    const type = document.getElementById('webhook-type').value;
+                    const url = document.getElementById('webhook-url').value;
+                    const events = document.getElementById('webhook-events').value;
+
+                    if (!name || !url) { alert('Name and URL required'); return; }
+
+                    try {
+                        await fetch('/api/webhooks', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                name, type, url,
+                                events: events ? events.split(',').map(e=>e.trim()) : []
+                            })
+                        });
+                        refreshWebhooks();
+                        document.getElementById('webhook-name').value = '';
+                        document.getElementById('webhook-url').value = '';
+                    } catch(e) {
+                        alert('Error: ' + e.message);
+                    }
+                });
+            }
+
+            // Webhook refresh
+            const webhookRefreshBtn = document.getElementById('webhook-refresh-btn');
+            if (webhookRefreshBtn) {
+                webhookRefreshBtn.addEventListener('click', refreshWebhooks);
+            }
+
+            // History refresh
+            const historyRefreshBtn = document.getElementById('history-refresh-btn');
+            if (historyRefreshBtn) {
+                historyRefreshBtn.addEventListener('click', refreshHistory);
+            }
+
+            // Initial load
+            refreshSchedules();
+            refreshNotificationsAuto();
+            refreshWebhooks();
+            refreshHistory();
+        }
+
+        async function refreshSchedules() {
+            try {
+                const res = await fetch('/api/automation/schedules');
+                const data = await res.json();
+                const list = document.getElementById('schedule-list');
+                if (!list) return;
+
+                if (!data.schedules || !data.schedules.length) {
+                    list.innerHTML = '<div style="text-align:center;color:var(--text-secondary);padding:20px;">No scheduled tasks</div>';
+                    return;
+                }
+
+                list.innerHTML = data.schedules.map(s => `
+                    <div class="schedule-item">
+                        <div class="info">
+                            <div class="name">${s.schedule_id}</div>
+                            <div class="meta">${s.task_type}/${s.action} | ${s.interval_sec}s | runs: ${s.run_count}</div>
+                        </div>
+                        <div class="actions">
+                            <button class="btn-run" onclick="runSchedule('${s.schedule_id}')">▶</button>
+                            <button class="btn-delete" onclick="deleteSchedule('${s.schedule_id}')">×</button>
+                        </div>
+                    </div>
+                `).join('');
+            } catch(e) {
+                console.error('Error loading schedules:', e);
+            }
+        }
+
+        async function runSchedule(id) {
+            try {
+                await fetch(`/api/automation/schedule/${id}/run`, {method: 'POST'});
+                refreshSchedules();
+            } catch(e) {
+                alert('Error: ' + e.message);
+            }
+        }
+
+        async function deleteSchedule(id) {
+            try {
+                await fetch(`/api/automation/schedule/${id}`, {method: 'DELETE'});
+                refreshSchedules();
+            } catch(e) {
+                alert('Error: ' + e.message);
+            }
+        }
+
+        async function refreshNotificationsAuto() {
+            try {
+                const res = await fetch('/api/notifications?limit=20');
+                const data = await res.json();
+                const list = document.getElementById('notif-list-auto');
+                if (!list) return;
+
+                if (!data.notifications || !data.notifications.length) {
+                    list.innerHTML = '<div style="text-align:center;color:var(--text-secondary);padding:20px;">No notifications</div>';
+                    return;
+                }
+
+                const icons = {info: 'ℹ️', warning: '⚠️', error: '❌', success: '✅', critical: '🚨'};
+                list.innerHTML = data.notifications.map(n => `
+                    <div class="notif-item level-${n.level}">
+                        <span class="notif-icon">${icons[n.level] || 'ℹ️'}</span>
+                        <div class="notif-content">
+                            <div class="notif-title">${escapeHtml(n.title)}</div>
+                            <div class="notif-message">${escapeHtml(n.message || '')}</div>
+                        </div>
+                    </div>
+                `).join('');
+            } catch(e) {
+                console.error('Error loading notifications:', e);
+            }
+        }
+
+        async function refreshWebhooks() {
+            try {
+                const res = await fetch('/api/webhooks');
+                const data = await res.json();
+                const list = document.getElementById('webhook-list');
+                if (!list) return;
+
+                if (!data.webhooks || !data.webhooks.length) {
+                    list.innerHTML = '<div style="text-align:center;color:var(--text-secondary);padding:20px;">No webhooks configured</div>';
+                    return;
+                }
+
+                list.innerHTML = data.webhooks.map(w => `
+                    <div class="webhook-item">
+                        <div>
+                            <strong>${escapeHtml(w.name)}</strong>
+                            <span class="type ${w.type}">${w.type}</span>
+                        </div>
+                        <button class="btn-delete" onclick="deleteWebhook('${w.id}')">×</button>
+                    </div>
+                `).join('');
+            } catch(e) {
+                console.error('Error loading webhooks:', e);
+            }
+        }
+
+        async function deleteWebhook(id) {
+            try {
+                await fetch(`/api/webhooks/${id}`, {method: 'DELETE'});
+                refreshWebhooks();
+            } catch(e) {
+                alert('Error: ' + e.message);
+            }
+        }
+
+        async function refreshHistory() {
+            try {
+                const res = await fetch('/api/automation/history?limit=20');
+                const data = await res.json();
+                const list = document.getElementById('history-list');
+                if (!list) return;
+
+                if (!data.tasks || !data.tasks.length) {
+                    list.innerHTML = '<div style="text-align:center;color:var(--text-secondary);padding:20px;">No history</div>';
+                    return;
+                }
+
+                list.innerHTML = data.tasks.map(t => `
+                    <div class="history-item">
+                        <span>${escapeHtml(t.task_key.substring(0,40))}</span>
+                        <span style="color:var(--text-secondary)">${new Date(t.timestamp*1000).toLocaleTimeString()}</span>
+                    </div>
+                `).join('');
+            } catch(e) {
+                console.error('Error loading history:', e);
             }
         }
 

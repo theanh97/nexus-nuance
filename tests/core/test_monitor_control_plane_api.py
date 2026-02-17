@@ -1250,3 +1250,179 @@ def test_get_conversation(client):
     assert payload["success"] is True
     assert "messages" in payload
     assert len(payload["messages"]) >= 2
+
+
+# ============================================
+# Human Notification Tests
+# ============================================
+
+
+def test_send_human_notification(client):
+    """Test sending a notification."""
+    response = client.post(
+        "/api/hub/human-notifications",
+        json={
+            "title": "Test Notification",
+            "message": "This is a test notification",
+            "level": "info",
+            "source": "test",
+            "channels": ["dashboard"],
+        },
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert "notification" in payload
+    assert payload["notification"]["title"] == "Test Notification"
+
+
+def test_list_human_notifications(client):
+    """Test listing notifications."""
+    # Send a notification first
+    client.post(
+        "/api/hub/human-notifications",
+        json={
+            "title": "List Test",
+            "message": "Testing list",
+            "level": "warning",
+            "source": "test",
+            "channels": ["dashboard"],
+        },
+    )
+
+    response = client.get("/api/hub/human-notifications")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert "notifications" in payload
+    assert "stats" in payload
+    assert len(payload["notifications"]) >= 1
+
+
+def test_human_notification_levels(client):
+    """Test different notification levels."""
+    levels = ["info", "success", "warning", "error", "critical"]
+    for level in levels:
+        response = client.post(
+            "/api/hub/human-notifications",
+            json={
+                "title": f"Level Test {level}",
+                "message": f"Testing {level}",
+                "level": level,
+                "source": "test",
+                "channels": ["dashboard"],
+                "bypass_rate_limit": True,
+            },
+        )
+        assert response.status_code == 200
+        payload = response.get_json()
+        assert payload["success"] is True, f"Failed for level {level}: {payload}"
+        assert payload["notification"]["level"] == level
+
+
+def test_acknowledge_human_notification(client):
+    """Test acknowledging a notification."""
+    # Send a notification
+    send_resp = client.post(
+        "/api/hub/human-notifications",
+        json={
+            "title": "Ack Test",
+            "message": "Test acknowledgment",
+            "level": "warning",
+            "source": "test",
+            "channels": ["dashboard"],
+            "bypass_rate_limit": True,
+        },
+    )
+    notif_id = send_resp.get_json()["notification"]["id"]
+
+    # Acknowledge it
+    response = client.post(
+        f"/api/hub/human-notifications/{notif_id}/acknowledge",
+        json={"acknowledged_by": "tester"},
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["notification"]["acknowledged"] is True
+    assert payload["notification"]["acknowledged_by"] == "tester"
+
+
+def test_urgent_human_notification(client):
+    """Test sending urgent notification."""
+    response = client.post(
+        "/api/hub/human-notifications/urgent",
+        json={
+            "title": "URGENT!",
+            "message": "This is urgent",
+            "source": "test",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["notification"]["level"] == "critical"
+
+
+def test_help_human_notification(client):
+    """Test help request notification."""
+    response = client.post(
+        "/api/hub/human-notifications/help",
+        json={
+            "from_orion": "orion-alpha",
+            "help_type": "security",
+            "description": "Need help with security audit",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True, f"Got: {payload}"
+    assert "Help Needed" in payload["notification"]["title"]
+
+
+def test_blocked_task_human_notification(client):
+    """Test blocked task notification."""
+    response = client.post(
+        "/api/hub/human-notifications/blocked",
+        json={
+            "task_id": "task-123",
+            "task_title": "Implement feature",
+            "blocker": "Waiting for API key",
+            "orion_id": "orion-alpha",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True, f"Got: {payload}"
+    assert "Blocked" in payload["notification"]["title"]
+
+
+def test_milestone_human_notification(client):
+    """Test milestone notification."""
+    response = client.post(
+        "/api/hub/human-notifications/milestone",
+        json={
+            "milestone": "Phase 1 Complete",
+            "details": "All tests passing",
+            "source": "orion-alpha",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True, f"Got: {payload}"
+    assert "Milestone" in payload["notification"]["title"]
+
+
+def test_human_notification_stats(client):
+    """Test getting notification stats."""
+    # Send some notifications
+    client.post("/api/hub/human-notifications", json={"title": "1", "message": "m1", "level": "info", "source": "a", "channels": ["dashboard"], "bypass_rate_limit": True})
+    client.post("/api/hub/human-notifications", json={"title": "2", "message": "m2", "level": "warning", "source": "b", "channels": ["dashboard"], "bypass_rate_limit": True})
+
+    response = client.get("/api/hub/human-notifications/stats")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert "stats" in payload
+    assert payload["stats"]["total"] >= 2
+    assert "channels_available" in payload["stats"]
