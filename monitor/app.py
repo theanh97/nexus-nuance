@@ -12335,6 +12335,83 @@ try:
         },
     }
 
+    # Background autopilot loop config (NEW - integrates with _AUTOPILOT_STATE)
+    _AUTOPILOT_BACKGROUND_ENABLED = _env_bool("AUTOPILOT_BACKGROUND_ENABLED", True)
+    _AUTOPILOT_BACKGROUND_INTERVAL_SEC = max(10, int(os.getenv("AUTOPILOT_BACKGROUND_INTERVAL_SEC", "30")))
+    _autopilot_background_stop_event = threading.Event()
+
+    def _autopilot_background_loop():
+        """Background thread that runs autopilot cycles automatically."""
+        logger.info("🤖 Autopilot background loop started")
+        while not _autopilot_background_stop_event.is_set():
+            try:
+                if _AUTOPILOT_STATE["enabled"]:
+                    # Run one cycle
+                    max_actions = _AUTOPILOT_STATE["max_actions_per_cycle"]
+                    actions = _hub_next_actions(limit=max_actions * 2)
+
+                    executed = []
+                    blocked = []
+                    errors = []
+
+                    for action in actions[:max_actions]:
+                        should_exec, reason = _autopilot_should_execute(action)
+                        if not should_exec:
+                            blocked.append({"action": action, "reason": reason})
+                            _AUTOPILOT_STATE["stats"]["actions_blocked"] += 1
+                            continue
+
+                        if _AUTOPILOT_STATE["dry_run"]:
+                            executed.append({"action": action, "dry_run": True})
+                            _AUTOPILOT_STATE["stats"]["actions_executed"] += 1
+                        else:
+                            result = _autopilot_execute_action(action)
+                            if result.get("success"):
+                                executed.append({"action": action, "result": result})
+                                _AUTOPILOT_STATE["stats"]["actions_executed"] += 1
+                            else:
+                                errors.append({"action": action, "error": result.get("error")})
+                                _AUTOPILOT_STATE["stats"]["errors"] += 1
+
+                    _AUTOPILOT_STATE["stats"]["total_cycles"] += 1
+                    _AUTOPILOT_STATE["stats"]["last_cycle"] = datetime.now().isoformat()
+
+                    if executed:
+                        logger.info(f"🤖 Autopilot cycle: {len(executed)} executed, {len(blocked)} blocked, {len(errors)} errors")
+                else:
+                    logger.debug("🤖 Autopilot background: disabled, skipping cycle")
+            except Exception as e:
+                logger.error(f"🤖 Autopilot background error: {e}")
+
+            _autopilot_background_stop_event.wait(_AUTOPILOT_BACKGROUND_INTERVAL_SEC)
+
+        logger.info("🤖 Autopilot background loop stopped")
+
+    # Background thread management
+    _autopilot_background_thread: Optional[threading.Thread] = None
+    _autopilot_background_lock = threading.RLock()
+
+    def _ensure_autopilot_background_started() -> None:
+        """Start the autopilot background loop if not already running."""
+        global _autopilot_background_thread
+        with _autopilot_background_lock:
+            if _autopilot_background_thread and _autopilot_background_thread.is_alive():
+                return
+            if not _AUTOPILOT_BACKGROUND_ENABLED:
+                logger.info("🤖 Autopilot background disabled by config")
+                return
+            _autopilot_background_stop_event.clear()
+            _autopilot_background_thread = threading.Thread(
+                target=_autopilot_background_loop,
+                name="autopilot-background",
+                daemon=True,
+            )
+            _autopilot_background_thread.start()
+            # Auto-enable the autopilot state when background starts
+            _AUTOPILOT_STATE["enabled"] = True
+            _AUTOPILOT_STATE["dry_run"] = True  # Default to dry-run for safety
+            logger.info("🤖 Autopilot background started (dry-run mode)")
+
     def _autopilot_should_execute(action: Dict[str, Any]) -> Tuple[bool, str]:
         """Check if autopilot should execute this action based on policy."""
         policy = _AUTOPILOT_STATE["policy"]
@@ -13589,6 +13666,7 @@ def run_dashboard(host: str = "localhost", port: int = 5001):
     print(f"📊 Real-time updates enabled via Socket.IO")
     _ensure_monitor_supervisor_started()
     _ensure_hub_autopilot_started()
+    _ensure_autopilot_background_started()  # NEW: Autopilot API with policy guardrails
     _ensure_openclaw_self_heal_started()
     if OPENCLAW_SELF_HEAL_BOOTSTRAP:
         try:
