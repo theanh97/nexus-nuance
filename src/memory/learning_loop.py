@@ -197,6 +197,11 @@ class LearningLoop:
         self.anomaly_health_threshold = float(os.getenv("ANOMALY_HEALTH_SCORE_THRESHOLD", "55") or 55)
         self.anomaly_error_count_threshold = int(os.getenv("ANOMALY_ERROR_COUNT_THRESHOLD", "4"))
         self.anomaly_autopause_cooldown_sec = int(os.getenv("ANOMALY_AUTOPAUSE_COOLDOWN_SECONDS", "1800"))
+        self.anomaly_pressure_scale = max(0.0, float(os.getenv("ANOMALY_PRESSURE_SCALE", "0.15") or 0.15))
+        self.anomaly_recovery_health_score = float(os.getenv("ANOMALY_RECOVERY_HEALTH_SCORE", "82") or 82)
+        self.anomaly_recovery_open_issues_max = int(os.getenv("ANOMALY_RECOVERY_OPEN_ISSUES_MAX", "0"))
+        self.anomaly_recovery_wins_required = int(os.getenv("ANOMALY_RECOVERY_WINS_REQUIRED", "2"))
+        self.anomaly_recovery_wins_streak = 0
         self.anomaly_autopause_until: Optional[str] = None
         self.anomaly_last_reason: str = "none"
         self.daily_cadence_min_switch_seconds = int(os.getenv("DAILY_CADENCE_MIN_SWITCH_SECONDS", "900"))
@@ -273,6 +278,7 @@ class LearningLoop:
                 self.daily_cadence_last_reason = str(data.get("daily_cadence_last_reason", self.daily_cadence_last_reason))
                 self.verification_loss_streak = int(data.get("verification_loss_streak", 0))
                 self.rollback_lock_until = data.get("rollback_lock_until")
+                self.anomaly_recovery_wins_streak = int(data.get("anomaly_recovery_wins_streak", 0))
                 loaded_focus = str(data.get("current_focus_area", self.current_focus_area)).strip().lower()
                 if loaded_focus in self.FOCUS_AREAS:
                     self.current_focus_area = loaded_focus
@@ -310,6 +316,7 @@ class LearningLoop:
                 "daily_cadence_last_reason": self.daily_cadence_last_reason,
                 "verification_loss_streak": self.verification_loss_streak,
                 "rollback_lock_until": self.rollback_lock_until,
+                "anomaly_recovery_wins_streak": self.anomaly_recovery_wins_streak,
                 "current_focus_area": self.current_focus_area,
                 "last_cafe_calibration": self.last_cafe_calibration,
                 "last_updated": datetime.now().isoformat()
@@ -722,6 +729,9 @@ class LearningLoop:
             "anomaly_autopause_until": self.anomaly_autopause_until,
             "anomaly_autopause_remaining_sec": anomaly_remaining,
             "anomaly_last_reason": self.anomaly_last_reason,
+            "anomaly_pressure_scale": self.anomaly_pressure_scale,
+            "anomaly_recovery_wins_streak": self.anomaly_recovery_wins_streak,
+            "anomaly_recovery_wins_required": self.anomaly_recovery_wins_required,
             "rollback_lock_until": self.rollback_lock_until,
             "rollback_lock_remaining_sec": rollback_remaining,
             "verification_loss_streak": self.verification_loss_streak,
@@ -776,6 +786,7 @@ class LearningLoop:
         if verdict == "loss":
             self.normal_mode_losses += 1
             self.verification_loss_streak += 1
+            self.anomaly_recovery_wins_streak = 0
             self.normal_mode_cooldown_until = (now + timedelta(seconds=max(60, self.normal_mode_cooldown_sec))).isoformat()
             if self.verification_loss_streak >= max(1, self.rollback_lock_loss_streak_threshold):
                 self.rollback_lock_until = (
@@ -803,8 +814,10 @@ class LearningLoop:
         elif verdict == "win":
             self.normal_mode_successes += 1
             self.verification_loss_streak = 0
+            self.anomaly_recovery_wins_streak += 1
         else:
             self.verification_loss_streak = 0
+            self.anomaly_recovery_wins_streak = 0
 
     def _should_autopause_v2_pipeline(self, health: Dict, errors_count: int) -> Dict[str, Any]:
         if not self.anomaly_guard_enabled:
@@ -813,13 +826,7 @@ class LearningLoop:
 
         now = datetime.now()
         autopause_until_dt = self._parse_time(self.anomaly_autopause_until)
-        if autopause_until_dt and autopause_until_dt > now:
-            self.anomaly_last_reason = "cooldown_active"
-            return {
-                "paused": True,
-                "reason": "cooldown_active",
-                "cooldown_remaining_sec": int((autopause_until_dt - now).total_seconds()),
-            }
+        rollback_until_dt = self._parse_time(self.rollback_lock_until)
 
         open_issues = int((health or {}).get("open_issues", 0) or 0)
         try:
@@ -827,10 +834,37 @@ class LearningLoop:
         except (TypeError, ValueError):
             health_score = 100.0
 
+        pressure = float(self.anomaly_pressure_scale) * max(0.0, float(self.no_improvement_streak or 0))
+        dynamic_open_issues_threshold = max(1, int(round(self.anomaly_open_issues_threshold - pressure)))
+        dynamic_health_threshold = min(90.0, max(20.0, float(self.anomaly_health_threshold + (pressure * 10.0))))
+
+        recovering = (
+            health_score >= float(self.anomaly_recovery_health_score)
+            and open_issues <= int(self.anomaly_recovery_open_issues_max)
+            and int(self.anomaly_recovery_wins_streak or 0) >= max(1, self.anomaly_recovery_wins_required)
+        )
+
+        if autopause_until_dt and autopause_until_dt > now:
+            if recovering:
+                self.anomaly_autopause_until = None
+                self.anomaly_last_reason = "recovery_unlocked"
+            else:
+                self.anomaly_last_reason = "cooldown_active"
+                return {
+                    "paused": True,
+                    "reason": "cooldown_active",
+                    "cooldown_remaining_sec": int((autopause_until_dt - now).total_seconds()),
+                    "dynamic_open_issues_threshold": dynamic_open_issues_threshold,
+                    "dynamic_health_threshold": round(dynamic_health_threshold, 2),
+                }
+
+        if rollback_until_dt and rollback_until_dt > now and recovering:
+            self.rollback_lock_until = None
+
         reason = ""
-        if open_issues >= max(1, self.anomaly_open_issues_threshold):
+        if open_issues >= dynamic_open_issues_threshold:
             reason = "open_issues_threshold_exceeded"
-        elif health_score <= float(self.anomaly_health_threshold):
+        elif health_score <= dynamic_health_threshold:
             reason = "health_score_below_threshold"
         elif int(errors_count or 0) >= max(1, self.anomaly_error_count_threshold):
             reason = "runtime_error_spike"
@@ -840,14 +874,22 @@ class LearningLoop:
                 now + timedelta(seconds=max(60, self.anomaly_autopause_cooldown_sec))
             ).isoformat()
             self.anomaly_last_reason = reason
+            self.anomaly_recovery_wins_streak = 0
             return {
                 "paused": True,
                 "reason": reason,
                 "cooldown_remaining_sec": max(60, self.anomaly_autopause_cooldown_sec),
+                "dynamic_open_issues_threshold": dynamic_open_issues_threshold,
+                "dynamic_health_threshold": round(dynamic_health_threshold, 2),
             }
 
         self.anomaly_last_reason = "healthy"
-        return {"paused": False, "reason": "healthy"}
+        return {
+            "paused": False,
+            "reason": "healthy",
+            "dynamic_open_issues_threshold": dynamic_open_issues_threshold,
+            "dynamic_health_threshold": round(dynamic_health_threshold, 2),
+        }
 
     def _daily_notes_path(self, dt: Optional[datetime] = None) -> Path:
         ts = dt or datetime.now()
@@ -2638,6 +2680,11 @@ class LearningLoop:
                 "enabled": self.anomaly_guard_enabled,
                 "autopause_until": self.anomaly_autopause_until,
                 "last_reason": self.anomaly_last_reason,
+                "pressure_scale": self.anomaly_pressure_scale,
+                "recovery_wins_streak": self.anomaly_recovery_wins_streak,
+                "recovery_wins_required": self.anomaly_recovery_wins_required,
+                "recovery_health_score": self.anomaly_recovery_health_score,
+                "recovery_open_issues_max": self.anomaly_recovery_open_issues_max,
             },
             "cafe": {
                 "enabled": self.enable_cafe_calibration,

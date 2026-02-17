@@ -321,6 +321,16 @@
             pointer-events: none;
         }
 
+        .card.is-updated {
+            border-color: color-mix(in srgb, var(--accent-border) 72%, var(--border));
+            box-shadow: 0 18px 32px color-mix(in srgb, var(--accent-soft) 42%, rgba(12, 26, 58, 0.12));
+        }
+
+        .card.is-attention {
+            border-color: color-mix(in srgb, var(--danger) 68%, var(--border));
+            box-shadow: 0 0 0 1px color-mix(in srgb, var(--danger-soft) 75%, transparent), var(--shadow);
+        }
+
         .summary-head {
             display: flex;
             justify-content: space-between;
@@ -739,6 +749,20 @@
             --layout-gap: 18px;
             --layout-main-col: minmax(0, 2fr);
             --layout-side-col: minmax(350px, 1.1fr);
+        }
+
+        body[data-experience="pixel"] {
+            --card-radius: 12px;
+            --card-padding: 13px;
+            --layout-width: 1380px;
+            --layout-gap: 12px;
+            --layout-main-col: minmax(0, 2.55fr);
+            --layout-side-col: minmax(290px, 0.9fr);
+            --fs-body: clamp(12.5px, 0.16vw + 12px, 13.5px);
+            --fs-card-title: clamp(12px, 0.14vw + 11.7px, 13.5px);
+            --fs-ui: clamp(10.5px, 0.14vw + 10.1px, 11.5px);
+            --fs-micro: clamp(9px, 0.08vw + 8.8px, 10px);
+            --fs-metric-value: clamp(18px, 0.7vw + 15.5px, 23px);
         }
 
         body[data-density="compact"] {
@@ -1280,6 +1304,8 @@
             .card,
             .card.is-entering,
             .card.is-leaving,
+            .card.is-updated,
+            .card.is-attention,
             .chat-chip,
             .chat-msg {
                 transition: none !important;
@@ -1313,6 +1339,7 @@
                 <button class="exp-btn" type="button" data-experience="focus">Focus</button>
                 <button class="exp-btn active" type="button" data-experience="balanced">Balance</button>
                 <button class="exp-btn" type="button" data-experience="studio">Studio</button>
+                <button class="exp-btn" type="button" data-experience="pixel">Pixel</button>
             </div>
             <div class="density-switch" id="density-switch">
                 <button class="density-btn active" type="button" data-density="comfortable">Comfort</button>
@@ -1574,6 +1601,7 @@
         let deckSuggestedCommand = '';
         let deckPrefillLast = '';
         const cardHideTimers = new WeakMap();
+        let lastVisualPulseIteration = -1;
 
         const refs = {
             iterationCounter: document.getElementById('iteration-counter'),
@@ -2003,6 +2031,31 @@
             updateMetrics(data, openclawMetrics);
             renderFeedback(data.feedback_recent || []);
             renderActivity(buildActivityRows(data));
+            const runtime = (data && data.runtime && typeof data.runtime === 'object') ? data.runtime : {};
+            const iteration = Number(runtime.iteration || 0);
+            if (iteration !== lastVisualPulseIteration) {
+                const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+                const counts = (data.ai_summary && data.ai_summary.signals) || (data.ops_snapshot && data.ops_snapshot.counts) || {};
+                const errorCount = Number(counts.error || 0);
+                const warningCount = Number(counts.warning || 0);
+                const signalCards = refs.cards.filter((card) => {
+                    const scope = String(card.dataset.view || 'workspace');
+                    return scope.includes('workspace') || scope.includes('ops');
+                });
+                signalCards.forEach((card) => {
+                    card.classList.remove('is-attention');
+                    if (errorCount > 0 || warningCount >= 6) {
+                        card.classList.add('is-attention');
+                    }
+                    if (!reduceMotion && !card.classList.contains('is-hidden')) {
+                        card.classList.add('is-updated');
+                        window.setTimeout(() => {
+                            card.classList.remove('is-updated');
+                        }, 240);
+                    }
+                });
+                lastVisualPulseIteration = iteration;
+            }
             enforceChartHeightGuard();
             renderDeckQuickCommands();
             renderPrioritySuggestion();
@@ -2617,6 +2670,10 @@
                 notify('Experience: Studio', 'info', 1500);
                 return setExperience('studio', true);
             }
+            if (normalized.includes('pixel')) {
+                notify('Experience: Pixel', 'info', 1500);
+                return setExperience('pixel', true);
+            }
             if (normalized.includes('palette')) return openPalette('');
             if (normalized.includes('ui ux') || normalized.includes('uiux')) return sendChatFromDeck('đánh giá UI UX hiện tại và đề xuất cải thiện');
             if (normalized.includes('go ket') || normalized.includes('unstick')) return sendChatFromDeck('guardian gỡ kẹt nếu có flow bị stuck');
@@ -2688,9 +2745,16 @@
         }
 
         function setExperience(mode, persist) {
-            const allowed = ['focus', 'balanced', 'studio'];
+            const allowed = ['focus', 'balanced', 'studio', 'pixel'];
             const resolved = allowed.includes(String(mode)) ? String(mode) : 'balanced';
             document.body.dataset.experience = resolved;
+            if (resolved === 'pixel') {
+                chatUiState.fontScale = Math.min(chatUiState.fontScale, 0.94);
+                if (!chatUiState.maximized) {
+                    chatUiState.panelHeight = Math.min(chatUiState.panelHeight, 300);
+                }
+            }
+            applyChatUiState();
             refs.expButtons.forEach((button) => {
                 button.classList.toggle('active', button.dataset.experience === resolved);
             });
@@ -2706,7 +2770,7 @@
             let saved = 'balanced';
             try {
                 const value = String(localStorage.getItem(EXPERIENCE_STORAGE_KEY) || '').toLowerCase();
-                if (['focus', 'balanced', 'studio'].includes(value)) saved = value;
+                if (['focus', 'balanced', 'studio', 'pixel'].includes(value)) saved = value;
             } catch (_) {}
             setExperience(saved, false);
         }
@@ -2782,6 +2846,7 @@
                 { id: 'exp_focus', title: 'Experience: Focus', meta: 'preference', keywords: 'experience focus minimal', run: () => setExperience('focus', true) },
                 { id: 'exp_balanced', title: 'Experience: Balance', meta: 'preference', keywords: 'experience balanced', run: () => setExperience('balanced', true) },
                 { id: 'exp_studio', title: 'Experience: Studio', meta: 'preference', keywords: 'experience studio premium', run: () => setExperience('studio', true) },
+                { id: 'exp_pixel', title: 'Experience: Pixel', meta: 'preference', keywords: 'experience pixel compact sharp', run: () => setExperience('pixel', true) },
                 { id: 'density_comfort', title: 'Density: Comfortable', meta: 'preference', keywords: 'density comfortable spacing', run: () => setDensity('comfortable', true) },
                 { id: 'density_compact', title: 'Density: Compact', meta: 'preference', keywords: 'density compact tighter', run: () => setDensity('compact', true) },
                 { id: 'zen_on', title: 'Zen Mode: On', meta: 'preference', keywords: 'zen focus minimal clean', run: () => setZen(true, true) },

@@ -128,6 +128,9 @@ def test_status_exposes_execution_guardrail():
     assert "normal_mode_cooldown_remaining_sec" in guardrail
     assert "anomaly_autopause_enabled" in guardrail
     assert "anomaly_last_reason" in guardrail
+    assert "anomaly_pressure_scale" in guardrail
+    assert "anomaly_recovery_wins_streak" in guardrail
+    assert "anomaly_recovery_wins_required" in guardrail
     assert "rollback_lock_remaining_sec" in guardrail
     assert "verification_loss_streak" in guardrail
 
