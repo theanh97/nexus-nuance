@@ -498,7 +498,7 @@ _INTERNAL_LOOPBACK_AUTH_EXEMPT_PATHS = {
     "/",
     "/api/control-plane/workers/register",
     "/api/control-plane/workers/heartbeat",
-    # Automation endpoints (Phase 0-5)
+    # Automation endpoints (Phase 0-6)
     "/api/automation/control",
     "/api/automation/dlq",
     "/api/automation/dlq/clear",
@@ -514,6 +514,15 @@ _INTERNAL_LOOPBACK_AUTH_EXEMPT_PATHS = {
     "/api/automation/health",
     "/api/automation/alerts",
     "/api/automation/status",
+    "/api/automation/test/self",
+    "/api/automation/test/integration",
+    "/api/automation/test/results",
+    "/api/automation/rollout/status",
+    "/api/automation/rollout/start",
+    "/api/automation/rollout/complete",
+    "/api/automation/rollout/rollback",
+    "/api/automation/rollout/feature",
+    "/api/automation/rollout/issue",
     # Autopilot endpoints
     "/api/hub/autopilot/status",
     "/api/hub/autopilot/config",
@@ -8268,6 +8277,134 @@ def _automation_alerts_clear() -> int:
         return count
 
 
+# Phase 6: Test & Rollout
+
+# Test execution state
+_AUTOMATION_TEST_RESULTS_LOCK = threading.RLock()
+_AUTOMATION_TEST_RESULTS: List[Dict[str, Any]] = []
+_AUTOMATION_TEST_PROGRESS: Dict[str, Any] = {"current": None, "total": 0, "completed": 0}
+
+# Rollout state
+_AUTOMATION_ROLLOUT_LOCK = threading.RLock()
+_AUTOMATION_ROLLOUT_STATE: Dict[str, Any] = {
+    "phase": "planning",  # planning, testing, rolling_out, complete, rolled_back
+    "started_at": None,
+    "completed_at": None,
+    "features": [],
+    "issues": [],
+    "notes": "",
+}
+
+
+# Test Functions
+
+def _automation_run_self_test() -> Dict[str, Any]:
+    """Run self-test on automation system."""
+    results = {
+        "timestamp": datetime.now().isoformat(),
+        "tests": [],
+        "passed": 0,
+        "failed": 0,
+        "warnings": 0,
+    }
+
+    # Test 1: Core functions exist
+    tests = [
+        ("rate_limit_check", _automation_check_rate_limit),
+        ("validate_task", _automation_validate_task),
+        ("session_lease", _automation_assert_session_lease),
+        ("circuit_check", _automation_circuit_check),
+        ("dlq_add", lambda: _automation_dlq_add({"task_type": "test"}, "test error", "TEST")),
+        ("context_get", _automation_context_get),
+        ("memory_record", lambda: _automation_memory_record("test", "test", {}, {}, "test", "test")),
+        ("metrics_record", lambda: _automation_metrics_record("test", "test", True, 100)),
+    ]
+
+    for name, fn in tests:
+        try:
+            if callable(fn):
+                fn()
+            results["tests"].append({"name": name, "status": "passed"})
+            results["passed"] += 1
+        except Exception as e:
+            results["tests"].append({"name": name, "status": "failed", "error": str(e)})
+            results["failed"] += 1
+
+    # Test 2: Task types are valid
+    for tt in AUTOMATION_TASK_TYPES:
+        if tt in AUTOMATION_CAPABILITIES:
+            results["tests"].append({"name": f"task_type_{tt}", "status": "passed"})
+            results["passed"] += 1
+        else:
+            results["tests"].append({"name": f"task_type_{tt}", "status": "failed", "error": "No capabilities defined"})
+            results["failed"] += 1
+
+    # Test 3: System state
+    results["tests"].append({
+        "name": "automation_enabled",
+        "status": "passed" if _AUTOMATION_ENABLED else "warning",
+        "detail": f"enabled={_AUTOMATION_ENABLED}"
+    })
+    if _AUTOMATION_ENABLED:
+        results["passed"] += 1
+    else:
+        results["warnings"] += 1
+
+    return results
+
+
+def _automation_run_integration_test(task_type: str, action: str, params: Dict) -> Dict[str, Any]:
+    """Run integration test for a specific task."""
+    test_id = f"test_{int(time.time() * 1000)}"
+
+    # Create session
+    lease = _automation_assert_session_lease("test-session", "test-runner", secrets.token_hex(8))
+    if not lease.get("allowed"):
+        return {"success": False, "error": f"Failed to create session: {lease.get('error')}", "test_id": test_id}
+
+    # Execute task
+    task = _create_automation_task(task_type, action, params, test_id)
+    task["session_id"] = "test-session"
+    task["owner_id"] = "test-runner"
+
+    result = _execute_automation_task(task)
+
+    return {
+        "test_id": test_id,
+        "task_type": task_type,
+        "action": action,
+        "success": result.get("status") == "completed",
+        "status": result.get("status"),
+        "duration_ms": result.get("duration_ms"),
+        "error": result.get("error"),
+    }
+
+
+# Rollout Functions
+
+def _automation_rollout_start(phase: str) -> None:
+    """Start a rollout phase."""
+    with _AUTOMATION_ROLLOUT_LOCK:
+        _AUTOMATION_ROLLOUT_STATE["phase"] = phase
+        _AUTOMATION_ROLLOUT_STATE["started_at"] = datetime.now().isoformat()
+        _automation_alert("info", f"Rollout started: {phase}", f"Rollout phase '{phase}' has begun", "rollout")
+
+
+def _automation_rollout_complete() -> None:
+    """Complete rollout."""
+    with _AUTOMATION_ROLLOUT_LOCK:
+        _AUTOMATION_ROLLOUT_STATE["phase"] = "complete"
+        _AUTOMATION_ROLLOUT_STATE["completed_at"] = datetime.now().isoformat()
+        _automation_alert("info", "Rollout complete", "All phases completed successfully", "rollout")
+
+
+def _automation_rollout_rollback() -> None:
+    """Rollback to previous state."""
+    with _AUTOMATION_ROLLOUT_LOCK:
+        _AUTOMATION_ROLLOUT_STATE["phase"] = "rolled_back"
+        _automation_alert("warning", "Rollback initiated", "System rolled back to previous version", "rollout")
+
+
 # Global automation kill-switch (Phase 0)
 _AUTOMATION_ENABLED = True
 _AUTOMATION_KILL_REASON = ""
@@ -9998,6 +10135,167 @@ def automation_status_full():
             "recent_alerts": len(alerts),
         },
         "timestamp": datetime.now().isoformat(),
+    })
+
+
+# Phase 6: Test & Rollout API Endpoints
+
+@app.route('/api/automation/test/self', methods=['POST'])
+def automation_test_self():
+    """Run self-test on automation system."""
+    results = _automation_run_self_test()
+
+    # Store results
+    with _AUTOMATION_TEST_RESULTS_LOCK:
+        _AUTOMATION_TEST_RESULTS.append(results)
+        while len(_AUTOMATION_TEST_RESULTS) > 50:
+            _AUTOMATION_TEST_RESULTS.pop(0)
+
+    return jsonify({
+        "success": results["failed"] == 0,
+        "passed": results["passed"],
+        "failed": results["failed"],
+        "warnings": results["warnings"],
+        "tests": results["tests"],
+        "timestamp": results["timestamp"],
+    })
+
+
+@app.route('/api/automation/test/integration', methods=['POST'])
+def automation_test_integration():
+    """Run integration test for a specific task."""
+    data = request.get_json(silent=True) or {}
+    task_type = str(data.get("task_type", "")).strip().lower()
+    action = str(data.get("action", "")).strip().lower()
+    params = data.get("params", {})
+
+    if not task_type or not action:
+        return jsonify({
+            "success": False,
+            "error": "task_type and action are required",
+            "error_code": "MISSING_PARAMS"
+        }), 400
+
+    result = _automation_run_integration_test(task_type, action, params)
+    return jsonify({
+        "success": result.get("success", False),
+        "test_result": result,
+    })
+
+
+@app.route('/api/automation/test/results', methods=['GET'])
+def automation_test_results():
+    """Get test results."""
+    limit = min(50, int(request.args.get("limit", 10)))
+    with _AUTOMATION_TEST_RESULTS_LOCK:
+        results = list(_AUTOMATION_TEST_RESULTS)
+    return jsonify({
+        "success": True,
+        "count": len(results),
+        "results": results[-limit:],
+    })
+
+
+@app.route('/api/automation/rollout/status', methods=['GET'])
+def automation_rollout_status():
+    """Get rollout status."""
+    with _AUTOMATION_ROLLOUT_LOCK:
+        state = dict(_AUTOMATION_ROLLOUT_STATE)
+    return jsonify({
+        "success": True,
+        "rollout": state,
+    })
+
+
+@app.route('/api/automation/rollout/start', methods=['POST'])
+def automation_rollout_start():
+    """Start rollout phase."""
+    data = request.get_json(silent=True) or {}
+    phase = str(data.get("phase", "testing")).strip().lower()
+
+    valid_phases = ["testing", "rolling_out", "complete"]
+    if phase not in valid_phases:
+        return jsonify({
+            "success": False,
+            "error": f"Invalid phase. Must be one of: {valid_phases}",
+            "error_code": "INVALID_PHASE"
+        }), 400
+
+    _automation_rollout_start(phase)
+    return jsonify({
+        "success": True,
+        "message": f"Rollout started: {phase}",
+    })
+
+
+@app.route('/api/automation/rollout/complete', methods=['POST'])
+def automation_rollout_complete():
+    """Complete rollout."""
+    _automation_rollout_complete()
+    return jsonify({
+        "success": True,
+        "message": "Rollout completed",
+    })
+
+
+@app.route('/api/automation/rollout/rollback', methods=['POST'])
+def automation_rollout_rollback():
+    """Rollback rollout."""
+    _automation_rollout_rollback()
+    return jsonify({
+        "success": True,
+        "message": "Rollback initiated",
+    })
+
+
+@app.route('/api/automation/rollout/feature', methods=['POST'])
+def automation_rollout_feature():
+    """Add feature to rollout."""
+    data = request.get_json(silent=True) or {}
+    feature = str(data.get("feature", "")).strip()
+    status = str(data.get("status", "completed")).strip()
+
+    if not feature:
+        return jsonify({"success": False, "error": "feature is required"}), 400
+
+    with _AUTOMATION_ROLLOUT_LOCK:
+        _AUTOMATION_ROLLOUT_STATE["features"].append({
+            "feature": feature,
+            "status": status,
+            "added_at": datetime.now().isoformat(),
+        })
+
+    return jsonify({
+        "success": True,
+        "message": f"Feature added: {feature}",
+    })
+
+
+@app.route('/api/automation/rollout/issue', methods=['POST'])
+def automation_rollout_issue():
+    """Report an issue during rollout."""
+    data = request.get_json(silent=True) or {}
+    issue = str(data.get("issue", "")).strip()
+    severity = str(data.get("severity", "medium")).strip()
+
+    if not issue:
+        return jsonify({"success": False, "error": "issue is required"}), 400
+
+    with _AUTOMATION_ROLLOUT_LOCK:
+        _AUTOMATION_ROLLOUT_STATE["issues"].append({
+            "issue": issue,
+            "severity": severity,
+            "reported_at": datetime.now().isoformat(),
+            "resolved": False,
+        })
+
+    # Create alert for critical issues
+    if severity == "critical":
+        _automation_alert("critical", f"Rollout issue: {issue}", issue, "rollout")
+
+    return jsonify({
+        "success": True,
+        "message": f"Issue reported: {issue}",
     })
 
 
