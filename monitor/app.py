@@ -649,6 +649,66 @@ _team_persona_store = get_team_persona_store()
 
 
 # ============================================
+# CENTRAL COMMAND STATE (Phase 1)
+# ============================================
+
+_CENTRAL_COMMAND_LOCK = threading.Lock()
+
+@dataclass
+class OrionState:
+    """Represents a registered Orion instance in Central Command."""
+    orion_id: str
+    name: str
+    base_url: str
+    registered_at: str
+    last_heartbeat: str
+    status: str  # online, offline, degraded
+    current_task: Optional[str] = None
+    locked_files: List[str] = field(default_factory=list)
+    agents: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class FileLock:
+    """Represents a file lock for conflict prevention."""
+    file_path: str
+    orion_id: str
+    agent_id: Optional[str]
+    locked_at: str
+    expires_at: str
+
+@dataclass
+class TaskDistribution:
+    """Represents a task in the global queue."""
+    task_id: str
+    task_type: str
+    description: str
+    priority: int
+    assigned_orion: Optional[str]
+    status: str  # pending, assigned, in_progress, completed, failed
+    created_at: str
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+
+@dataclass
+class CrossOrionMessage:
+    """Represents a message between Orion instances."""
+    message_id: str
+    from_orion: str
+    to_orion: Optional[str]  # None = broadcast
+    message_type: str  # info, request, response, alert
+    content: str
+    created_at: str
+    read: bool = False
+
+# Central Command State
+_registered_orions: Dict[str, OrionState] = {}
+_global_file_locks: Dict[str, FileLock] = {}
+_task_queue: List[TaskDistribution] = []
+_cross_orion_messages: List[CrossOrionMessage] = []
+
+
+# ============================================
 # MODEL ROUTING HELPERS
 # ============================================
 
@@ -11596,6 +11656,396 @@ def get_orion_instances():
     })
 
 
+# ============================================
+# CENTRAL COMMAND API ENDPOINTS (Phase 1)
+# ============================================
+
+@app.route('/api/central/registry')
+def central_registry():
+    """Get all registered Orion instances in Central Command."""
+    with _CENTRAL_COMMAND_LOCK:
+        orions = {
+            orion_id: {
+                "orion_id": state.orion_id,
+                "name": state.name,
+                "base_url": state.base_url,
+                "registered_at": state.registered_at,
+                "last_heartbeat": state.last_heartbeat,
+                "status": state.status,
+                "current_task": state.current_task,
+                "locked_files": state.locked_files,
+                "agents": state.agents,
+                "metadata": state.metadata,
+            }
+            for orion_id, state in _registered_orions.items()
+        }
+    return jsonify({
+        "orions": orions,
+        "count": len(orions),
+        "timestamp": datetime.now().isoformat(),
+    })
+
+
+@app.route('/api/central/orion/register', methods=['POST'])
+def central_orion_register():
+    """Register an Orion instance with Central Command."""
+    data = request.get_json(silent=True) or {}
+    orion_id = data.get("orion_id", "").strip()
+    name = data.get("name", orion_id)
+    base_url = data.get("base_url", "").strip()
+    agents = data.get("agents", [])
+
+    if not orion_id:
+        return jsonify({"success": False, "error": "orion_id required"}), 400
+
+    now = datetime.now().isoformat()
+    with _CENTRAL_COMMAND_LOCK:
+        _registered_orions[orion_id] = OrionState(
+            orion_id=orion_id,
+            name=name,
+            base_url=base_url,
+            registered_at=now,
+            last_heartbeat=now,
+            status="online",
+            agents=agents,
+        )
+
+    logger.info(f"Orion registered with Central Command: {orion_id}")
+    return jsonify({
+        "success": True,
+        "orion_id": orion_id,
+        "message": f"Orion '{orion_id}' registered successfully",
+    })
+
+
+@app.route('/api/central/orion/<orion_id>/heartbeat', methods=['POST'])
+def central_orion_heartbeat(orion_id):
+    """Update heartbeat for an Orion instance."""
+    data = request.get_json(silent=True) or {}
+    status = data.get("status", "online")
+    current_task = data.get("current_task")
+    agents = data.get("agents", [])
+
+    with _CENTRAL_COMMAND_LOCK:
+        if orion_id not in _registered_orions:
+            return jsonify({"success": False, "error": "Orion not registered"}), 404
+
+        state = _registered_orions[orion_id]
+        state.last_heartbeat = datetime.now().isoformat()
+        state.status = status
+        if current_task:
+            state.current_task = current_task
+        if agents:
+            state.agents = agents
+
+    return jsonify({"success": True, "orion_id": orion_id})
+
+
+@app.route('/api/central/orion/<orion_id>', methods=['DELETE'])
+def central_orion_unregister(orion_id):
+    """Unregister an Orion instance from Central Command."""
+    with _CENTRAL_COMMAND_LOCK:
+        if orion_id not in _registered_orions:
+            return jsonify({"success": False, "error": "Orion not registered"}), 404
+
+        # Release all file locks held by this Orion
+        locks_to_release = [
+            fp for fp, lock in _global_file_locks.items()
+            if lock.orion_id == orion_id
+        ]
+        for fp in locks_to_release:
+            del _global_file_locks[fp]
+
+        del _registered_orions[orion_id]
+
+    logger.info(f"Orion unregistered from Central Command: {orion_id}")
+    return jsonify({
+        "success": True,
+        "message": f"Orion '{orion_id}' unregistered",
+    })
+
+
+@app.route('/api/central/files/locked')
+def central_files_locked():
+    """Get all currently locked files."""
+    with _CENTRAL_COMMAND_LOCK:
+        locks = {
+            file_path: {
+                "file_path": lock.file_path,
+                "orion_id": lock.orion_id,
+                "agent_id": lock.agent_id,
+                "locked_at": lock.locked_at,
+                "expires_at": lock.expires_at,
+            }
+            for file_path, lock in _global_file_locks.items()
+        }
+    return jsonify({
+        "locks": locks,
+        "count": len(locks),
+        "timestamp": datetime.now().isoformat(),
+    })
+
+
+@app.route('/api/central/files/lock', methods=['POST'])
+def central_files_lock():
+    """Lock a file for editing."""
+    data = request.get_json(silent=True) or {}
+    file_path = data.get("file_path", "").strip()
+    orion_id = data.get("orion_id", "").strip()
+    agent_id = data.get("agent_id")
+    ttl_sec = int(data.get("ttl_sec", 300))  # Default 5 minutes
+
+    if not file_path or not orion_id:
+        return jsonify({"success": False, "error": "file_path and orion_id required"}), 400
+
+    now = datetime.now()
+    expires_at = (now + timedelta(seconds=ttl_sec)).isoformat()
+
+    with _CENTRAL_COMMAND_LOCK:
+        # Check if already locked by another Orion
+        if file_path in _global_file_locks:
+            existing_lock = _global_file_locks[file_path]
+            if existing_lock.orion_id != orion_id:
+                return jsonify({
+                    "success": False,
+                    "error": f"File already locked by {existing_lock.orion_id}",
+                    "locked_by": existing_lock.orion_id,
+                    "agent_id": existing_lock.agent_id,
+                }), 409
+
+        _global_file_locks[file_path] = FileLock(
+            file_path=file_path,
+            orion_id=orion_id,
+            agent_id=agent_id,
+            locked_at=now.isoformat(),
+            expires_at=expires_at,
+        )
+
+        # Update Orion's locked files
+        if orion_id in _registered_orions:
+            if file_path not in _registered_orions[orion_id].locked_files:
+                _registered_orions[orion_id].locked_files.append(file_path)
+
+    return jsonify({
+        "success": True,
+        "file_path": file_path,
+        "orion_id": orion_id,
+        "expires_at": expires_at,
+    })
+
+
+@app.route('/api/central/files/unlock', methods=['POST'])
+def central_files_unlock():
+    """Unlock a file."""
+    data = request.get_json(silent=True) or {}
+    file_path = data.get("file_path", "").strip()
+    orion_id = data.get("orion_id", "").strip()
+
+    if not file_path or not orion_id:
+        return jsonify({"success": False, "error": "file_path and orion_id required"}), 400
+
+    with _CENTRAL_COMMAND_LOCK:
+        if file_path not in _global_file_locks:
+            return jsonify({"success": False, "error": "File not locked"}), 404
+
+        lock = _global_file_locks[file_path]
+        if lock.orion_id != orion_id:
+            return jsonify({
+                "success": False,
+                "error": f"File locked by {lock.orion_id}, not {orion_id}",
+            }), 409
+
+        del _global_file_locks[file_path]
+
+        # Update Orion's locked files
+        if orion_id in _registered_orions:
+            if file_path in _registered_orions[orion_id].locked_files:
+                _registered_orions[orion_id].locked_files.remove(file_path)
+
+    return jsonify({
+        "success": True,
+        "file_path": file_path,
+        "message": "File unlocked",
+    })
+
+
+@app.route('/api/central/queue')
+def central_queue():
+    """Get the global task queue."""
+    with _CENTRAL_COMMAND_LOCK:
+        tasks = [
+            {
+                "task_id": t.task_id,
+                "task_type": t.task_type,
+                "description": t.description,
+                "priority": t.priority,
+                "assigned_orion": t.assigned_orion,
+                "status": t.status,
+                "created_at": t.created_at,
+                "started_at": t.started_at,
+                "completed_at": t.completed_at,
+            }
+            for t in _task_queue
+        ]
+    return jsonify({
+        "tasks": tasks,
+        "count": len(tasks),
+        "timestamp": datetime.now().isoformat(),
+    })
+
+
+@app.route('/api/central/task/distribute', methods=['POST'])
+def central_task_distribute():
+    """Distribute a task to an Orion."""
+    data = request.get_json(silent=True) or {}
+    task_id = data.get("task_id", str(uuid.uuid4()))
+    task_type = data.get("task_type", "general")
+    description = data.get("description", "")
+    priority = int(data.get("priority", 5))
+    assigned_orion = data.get("assigned_orion")
+
+    now = datetime.now().isoformat()
+    task = TaskDistribution(
+        task_id=task_id,
+        task_type=task_type,
+        description=description,
+        priority=priority,
+        assigned_orion=assigned_orion,
+        status="assigned" if assigned_orion else "pending",
+        created_at=now,
+    )
+
+    with _CENTRAL_COMMAND_LOCK:
+        _task_queue.append(task)
+
+    return jsonify({
+        "success": True,
+        "task_id": task_id,
+        "status": task.status,
+    })
+
+
+@app.route('/api/central/messages', methods=['GET', 'POST'])
+def central_messages():
+    """Get or post cross-Orion messages."""
+    if request.method == "GET":
+        orion_id = request.args.get("orion_id")
+        unread_only = request.args.get("unread_only", "false").lower() == "true"
+
+        with _CENTRAL_COMMAND_LOCK:
+            messages = [
+                {
+                    "message_id": m.message_id,
+                    "from_orion": m.from_orion,
+                    "to_orion": m.to_orion,
+                    "message_type": m.message_type,
+                    "content": m.content,
+                    "created_at": m.created_at,
+                    "read": m.read,
+                }
+                for m in _cross_orion_messages
+                if (not orion_id or m.to_orion == orion_id or m.to_orion is None)
+                and (not unread_only or not m.read)
+            ]
+
+        return jsonify({
+            "messages": messages,
+            "count": len(messages),
+        })
+
+    # POST - create new message
+    data = request.get_json(silent=True) or {}
+    from_orion = data.get("from_orion", "").strip()
+    to_orion = data.get("to_orion", "").strip() or None
+    message_type = data.get("message_type", "info")
+    content = data.get("content", "")
+
+    if not from_orion or not content:
+        return jsonify({"success": False, "error": "from_orion and content required"}), 400
+
+    message = CrossOrionMessage(
+        message_id=str(uuid.uuid4()),
+        from_orion=from_orion,
+        to_orion=to_orion,
+        message_type=message_type,
+        content=content,
+        created_at=datetime.now().isoformat(),
+    )
+
+    with _CENTRAL_COMMAND_LOCK:
+        _cross_orion_messages.append(message)
+
+    return jsonify({
+        "success": True,
+        "message_id": message.message_id,
+    })
+
+
+@app.route('/api/central/broadcast', methods=['POST'])
+def central_broadcast():
+    """Broadcast a message to all Orion instances."""
+    data = request.get_json(silent=True) or {}
+    from_orion = data.get("from_orion", "").strip()
+    message_type = data.get("message_type", "info")
+    content = data.get("content", "")
+
+    if not from_orion or not content:
+        return jsonify({"success": False, "error": "from_orion and content required"}), 400
+
+    message = CrossOrionMessage(
+        message_id=str(uuid.uuid4()),
+        from_orion=from_orion,
+        to_orion=None,  # Broadcast
+        message_type=message_type,
+        content=content,
+        created_at=datetime.now().isoformat(),
+    )
+
+    with _CENTRAL_COMMAND_LOCK:
+        _cross_orion_messages.append(message)
+
+    return jsonify({
+        "success": True,
+        "message_id": message.message_id,
+        "message": "Broadcast sent to all Orion instances",
+    })
+
+
+@app.route('/api/central/health')
+def central_health():
+    """Get Central Command health status."""
+    with _CENTRAL_COMMAND_LOCK:
+        orion_count = len(_registered_orions)
+        lock_count = len(_global_file_locks)
+        task_count = len(_task_queue)
+        message_count = len(_cross_orion_messages)
+
+        # Check for expired locks
+        now = datetime.now()
+        expired_locks = []
+        for file_path, lock in _global_file_locks.items():
+            try:
+                expires_at = datetime.fromisoformat(lock.expires_at)
+                if expires_at < now:
+                    expired_locks.append(file_path)
+            except Exception:
+                pass
+
+        # Clean up expired locks
+        for fp in expired_locks:
+            del _global_file_locks[fp]
+
+    return jsonify({
+        "status": "healthy",
+        "registered_orions": orion_count,
+        "active_locks": lock_count,
+        "queue_tasks": task_count,
+        "pending_messages": message_count,
+        "expired_locks_cleaned": len(expired_locks),
+        "timestamp": datetime.now().isoformat(),
+    })
+
+
 @app.route('/api/autonomy/profile', methods=['GET', 'POST'])
 def autonomy_profile():
     if request.method == "GET":
@@ -14069,8 +14519,205 @@ except ImportError as e:
 # ============================================
 
 try:
-    from src.core.proactive_monitor import get_monitor, ProactiveMonitor
+    from src.core.proactive_monitor import get_monitor, ProactiveMonitor, HealthCheck
     _pmonitor = get_monitor()
+
+    # Register health checkers (Phase 1b)
+    def _check_orion_health() -> HealthCheck:
+        """Check health of Orion instances."""
+        try:
+            instances = get_orion_instances_snapshot()
+            online_count = sum(1 for i in instances if i.get("online", False))
+            total_count = len(instances)
+
+            if total_count == 0:
+                return HealthCheck(
+                    component="orion",
+                    status="degraded",
+                    last_check=datetime.now().isoformat(),
+                    message="No Orion instances configured",
+                    metrics={"total": 0, "online": 0}
+                )
+
+            if online_count == 0:
+                return HealthCheck(
+                    component="orion",
+                    status="unhealthy",
+                    last_check=datetime.now().isoformat(),
+                    message="All Orion instances offline",
+                    metrics={"total": total_count, "online": 0}
+                )
+
+            if online_count < total_count:
+                return HealthCheck(
+                    component="orion",
+                    status="degraded",
+                    last_check=datetime.now().isoformat(),
+                    message=f"{online_count}/{total_count} Orion instances online",
+                    metrics={"total": total_count, "online": online_count}
+                )
+
+            return HealthCheck(
+                component="orion",
+                status="healthy",
+                last_check=datetime.now().isoformat(),
+                message=f"All {total_count} Orion instances online",
+                metrics={"total": total_count, "online": online_count}
+            )
+        except Exception as e:
+            return HealthCheck(
+                component="orion",
+                status="unhealthy",
+                last_check=datetime.now().isoformat(),
+                message=f"Health check failed: {str(e)}",
+                metrics={"error": str(e)}
+            )
+
+    def _check_openclaw_health() -> HealthCheck:
+        """Check health of OpenClaw integration."""
+        try:
+            # Check if OpenClaw is available
+            token_ok = _token_cache is not None and _token_cache.token is not None
+            attach_ok = _attach_state.last_error is None
+
+            if not token_ok:
+                return HealthCheck(
+                    component="openclaw",
+                    status="unhealthy",
+                    last_check=datetime.now().isoformat(),
+                    message="OpenClaw token not available",
+                    metrics={"token_ok": False}
+                )
+
+            if not attach_ok:
+                return HealthCheck(
+                    component="openclaw",
+                    status="degraded",
+                    last_check=datetime.now().isoformat(),
+                    message="OpenClaw attach issues",
+                    metrics={"token_ok": True, "attach_ok": False, "last_error": _attach_state.last_error}
+                )
+
+            return HealthCheck(
+                component="openclaw",
+                status="healthy",
+                last_check=datetime.now().isoformat(),
+                message="OpenClaw operational",
+                metrics={"token_ok": True, "attach_ok": True}
+            )
+        except Exception as e:
+            return HealthCheck(
+                component="openclaw",
+                status="unhealthy",
+                last_check=datetime.now().isoformat(),
+                message=f"Health check failed: {str(e)}",
+                metrics={"error": str(e)}
+            )
+
+    def _check_agents_health() -> HealthCheck:
+        """Check health of all agents."""
+        try:
+            status_handler = _runtime_bridge.get("status_handler")
+            if not callable(status_handler):
+                return HealthCheck(
+                    component="agents",
+                    status="degraded",
+                    last_check=datetime.now().isoformat(),
+                    message="Status handler not available",
+                    metrics={"available": False}
+                )
+
+            runtime = status_handler() or {}
+            agents_raw = runtime.get("agents")
+
+            # Handle case where agents might be a string or wrong type
+            if not isinstance(agents_raw, list):
+                return HealthCheck(
+                    component="agents",
+                    status="degraded",
+                    last_check=datetime.now().isoformat(),
+                    message="Agents data not available",
+                    metrics={"available": False, "type": type(agents_raw).__name__}
+                )
+
+            agents = agents_raw
+            agent_count = len(agents)
+
+            # Check for stuck agents
+            stuck_agents = []
+            for agent in agents:
+                last_progress = agent.get("last_progress_at")
+                if last_progress:
+                    try:
+                        last_time = datetime.fromisoformat(last_progress.replace('Z', '+00:00'))
+                        elapsed = (datetime.now() - last_time.replace(tzinfo=None)).total_seconds()
+                        if elapsed > 300:  # 5 minutes
+                            stuck_agents.append(agent.get("name", "unknown"))
+                    except Exception:
+                        pass
+
+            if stuck_agents:
+                return HealthCheck(
+                    component="agents",
+                    status="degraded",
+                    last_check=datetime.now().isoformat(),
+                    message=f"{len(stuck_agents)} agents may be stuck",
+                    metrics={"total": agent_count, "stuck": stuck_agents}
+                )
+
+            return HealthCheck(
+                component="agents",
+                status="healthy",
+                last_check=datetime.now().isoformat(),
+                message=f"All {agent_count} agents operational",
+                metrics={"total": agent_count}
+            )
+        except Exception as e:
+            return HealthCheck(
+                component="agents",
+                status="unhealthy",
+                last_check=datetime.now().isoformat(),
+                message=f"Health check failed: {str(e)}",
+                metrics={"error": str(e)}
+            )
+
+    def _check_central_command_health() -> HealthCheck:
+        """Check health of Central Command."""
+        try:
+            with _CENTRAL_COMMAND_LOCK:
+                orion_count = len(_registered_orions)
+                lock_count = len(_global_file_locks)
+
+            if orion_count == 0:
+                return HealthCheck(
+                    component="central_command",
+                    status="degraded",
+                    last_check=datetime.now().isoformat(),
+                    message="No Orion instances registered",
+                    metrics={"registered_orions": 0, "locks": lock_count}
+                )
+
+            return HealthCheck(
+                component="central_command",
+                status="healthy",
+                last_check=datetime.now().isoformat(),
+                message=f"Central Command operational with {orion_count} Orions",
+                metrics={"registered_orions": orion_count, "locks": lock_count}
+            )
+        except Exception as e:
+            return HealthCheck(
+                component="central_command",
+                status="unhealthy",
+                last_check=datetime.now().isoformat(),
+                message=f"Health check failed: {str(e)}",
+                metrics={"error": str(e)}
+            )
+
+    # Register the health checkers
+    _pmonitor.register_health_checker("orion", _check_orion_health)
+    _pmonitor.register_health_checker("openclaw", _check_openclaw_health)
+    _pmonitor.register_health_checker("agents", _check_agents_health)
+    _pmonitor.register_health_checker("central_command", _check_central_command_health)
 
     @app.route('/api/monitor/health')
     def get_system_health():

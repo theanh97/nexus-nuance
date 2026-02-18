@@ -118,6 +118,14 @@ class Orion(AsyncAgent):
 
         self.instance_id = str(os.getenv("ORION_INSTANCE_ID", self.name.lower())).strip().lower() or self.name.lower()
         self.control_plane_base_url = str(os.getenv("MONITOR_BASE_URL", os.getenv("OPENCLAW_DASHBOARD_URL", "http://127.0.0.1:5050"))).strip().rstrip("/")
+
+        # Central Command integration (Phase 2)
+        self.central_command_url = str(os.getenv("CENTRAL_COMMAND_URL", self.control_plane_base_url)).strip().rstrip("/")
+        self.registered_orion_id = self.instance_id
+        self.current_locked_files: List[str] = []
+        self._central_command_registered = False
+        self._heartbeat_interval_sec = max(5, int(os.getenv("ORION_HEARTBEAT_INTERVAL_SEC", "30")))
+        self._last_heartbeat_ts: float = 0.0
         self.control_plane_lease_ttl_sec = max(10, int(os.getenv("CONTROL_PLANE_DEFAULT_LEASE_TTL_SEC", "35")))
         self.control_plane_heartbeat_interval_sec = max(3, int(os.getenv("ORION_CONTROL_PLANE_HEARTBEAT_SEC", "10")))
         self.task_lease_heartbeat_interval_sec = max(10, int(os.getenv("ORION_TASK_LEASE_HEARTBEAT_SEC", "60")))
@@ -568,6 +576,9 @@ Messages: {report['message_stats']['total_messages']} total"""
         self._log("🔄 Starting INFINITE improvement loop")
         self._register_control_plane_worker()
 
+        # Register with Central Command (Phase 2)
+        self._register_central_command()
+
         while self.running and self.iteration < self.max_iterations:
 
             # Check for pause
@@ -611,6 +622,9 @@ Messages: {report['message_stats']['total_messages']} total"""
                 status = "paused" if self.paused else "running"
                 current_task = self.history[-1].get("task", "idle") if self.history else "idle"
                 self.broadcast_status(status, current_task[:50] if current_task else None)
+
+            # Central Command heartbeat (every iteration)
+            self._heartbeat_central_command()
 
             try:
                 # Run one parallel cycle
@@ -664,6 +678,23 @@ Messages: {report['message_stats']['total_messages']} total"""
                 await asyncio.sleep(max(5, self._next_iteration_delay_sec()))  # Wait before retry
 
         self._log("🏁 Infinite loop ended")
+
+        # Unregister from Central Command (Phase 2)
+        self._unregister_central_command()
+
+    def _unregister_central_command(self) -> None:
+        """Unregister this Orion from Central Command on shutdown."""
+        if not self.central_command_url or not self._central_command_registered:
+            return
+
+        try:
+            requests.delete(
+                f"{self.central_command_url}/api/central/orion/{self.registered_orion_id}",
+                timeout=2.0,
+            )
+            self._log(f"📡 Unregistered from Central Command: {self.registered_orion_id}")
+        except Exception as exc:
+            self._log(f"⚠️ Central Command unregister failed: {exc}")
 
     def _maybe_refresh_official_model_registry(self) -> Dict[str, Any]:
         """Refresh official model registry on a coarse interval (non-blocking fail-open)."""
@@ -1006,6 +1037,154 @@ Messages: {report['message_stats']['total_messages']} total"""
             self._last_control_plane_heartbeat_at = now
         except Exception as exc:
             self._log(f"⚠️ Control-plane heartbeat failed: {exc}")
+
+    # ============================================
+    # Central Command Integration (Phase 2)
+    # ============================================
+
+    def _register_central_command(self) -> None:
+        """Register this Orion with Central Command."""
+        if not self.central_command_url or self._central_command_registered:
+            return
+
+        agent_names = list(self.agents.keys())
+        payload = {
+            "orion_id": self.registered_orion_id,
+            "name": f"Orion-{self.instance_id}",
+            "base_url": f"{self.central_command_url}",
+            "agents": agent_names,
+        }
+        try:
+            response = requests.post(
+                f"{self.central_command_url}/api/central/orion/register",
+                json=payload,
+                timeout=3.0,
+            )
+            if response.status_code == 200:
+                self._central_command_registered = True
+                self._log(f"📡 Registered with Central Command: {self.registered_orion_id}")
+            else:
+                self._log(f"⚠️ Central Command registration failed: {response.status_code}")
+        except Exception as exc:
+            self._log(f"⚠️ Central Command register skipped: {exc}")
+
+    def _heartbeat_central_command(self) -> None:
+        """Send heartbeat to Central Command."""
+        now = time.time()
+        if now - self._last_heartbeat_ts < self._heartbeat_interval_sec:
+            return
+        if not self.central_command_url or not self._central_command_registered:
+            return
+
+        current_task = self.history[-1].get("task") if self.history else None
+        payload = {
+            "status": "paused" if self.paused else "online",
+            "current_task": current_task,
+            "agents": list(self.agents.keys()),
+        }
+        try:
+            response = requests.post(
+                f"{self.central_command_url}/api/central/orion/{self.registered_orion_id}/heartbeat",
+                json=payload,
+                timeout=2.5,
+            )
+            if response.status_code == 200:
+                self._last_heartbeat_ts = now
+        except Exception:
+            pass  # Silent fail for heartbeats
+
+    def lock_file(self, file_path: str, agent_id: Optional[str] = None, ttl_sec: int = 300) -> bool:
+        """Lock a file for editing to prevent conflicts."""
+        if not self.central_command_url or not self._central_command_registered:
+            return True  # Allow if Central Command not available
+
+        payload = {
+            "file_path": file_path,
+            "orion_id": self.registered_orion_id,
+            "agent_id": agent_id,
+            "ttl_sec": ttl_sec,
+        }
+        try:
+            response = requests.post(
+                f"{self.central_command_url}/api/central/files/lock",
+                json=payload,
+                timeout=2.0,
+            )
+            if response.status_code == 200:
+                if file_path not in self.current_locked_files:
+                    self.current_locked_files.append(file_path)
+                return True
+            else:
+                data = response.json()
+                self._log(f"⚠️ File lock denied for {file_path}: {data.get('error')}")
+                return False
+        except Exception as exc:
+            self._log(f"⚠️ File lock request failed: {exc}")
+            return True  # Fail open
+
+    def unlock_file(self, file_path: str) -> bool:
+        """Unlock a file after editing."""
+        if not self.central_command_url or not self._central_command_registered:
+            return True
+
+        payload = {
+            "file_path": file_path,
+            "orion_id": self.registered_orion_id,
+        }
+        try:
+            response = requests.post(
+                f"{self.central_command_url}/api/central/files/unlock",
+                json=payload,
+                timeout=2.0,
+            )
+            if response.status_code == 200:
+                if file_path in self.current_locked_files:
+                    self.current_locked_files.remove(file_path)
+                return True
+            return False
+        except Exception:
+            return False
+
+    def broadcast_to_other_orions(self, message: str, message_type: str = "info") -> Dict[str, Any]:
+        """Broadcast a message to all other Orion instances."""
+        if not self.central_command_url:
+            return {"success": False, "error": "Central Command not available"}
+
+        payload = {
+            "from_orion": self.registered_orion_id,
+            "message_type": message_type,
+            "content": message,
+        }
+        try:
+            response = requests.post(
+                f"{self.central_command_url}/api/central/broadcast",
+                json=payload,
+                timeout=2.5,
+            )
+            if response.status_code == 200:
+                return {"success": True}
+            return response.json()
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    def check_file_locked_by_others(self, file_path: str) -> Optional[str]:
+        """Check if a file is locked by another Orion."""
+        if not self.central_command_url:
+            return None
+
+        try:
+            response = requests.get(
+                f"{self.central_command_url}/api/central/files/locked",
+                timeout=2.0,
+            )
+            if response.status_code == 200:
+                data = response.json()
+                locks = data.get("locks", {})
+                if file_path in locks:
+                    return locks[file_path].get("orion_id")
+        except Exception:
+            pass
+        return None
 
     def _heartbeat_task_lease(self, task: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         if not isinstance(task, dict):

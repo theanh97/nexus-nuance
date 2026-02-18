@@ -40,6 +40,8 @@ class MultiOrionHub:
         self.orions: Dict[str, Dict[str, Any]] = {}
         self.tasks: List[Dict[str, Any]] = []
         self.agents: Dict[str, Dict[str, Any]] = {}
+        self.agent_works: Dict[str, Dict[str, Any]] = {}  # Track agent work on files
+        self.agent_messages: List[Dict[str, Any]] = []  # Agent-to-agent messages
         self.audit_log: List[Dict[str, Any]] = []
         self.version: int = 0
         self.updated_at: Optional[str] = None
@@ -66,6 +68,8 @@ class MultiOrionHub:
             "orions": {},
             "tasks": [],
             "agents": {},
+            "agent_works": {},  # Track which agent is working on which file (Phase 4)
+            "agent_messages": [],  # Agent-to-agent messages (Phase 4)
             "audit_log": [],
         }
 
@@ -133,6 +137,8 @@ class MultiOrionHub:
         version = int(raw.get("version") or 0)
         updated_at = str(raw.get("updated_at") or base["updated_at"])
         agents = raw.get("agents") if isinstance(raw.get("agents"), dict) else {}
+        agent_works = raw.get("agent_works") if isinstance(raw.get("agent_works"), dict) else {}
+        agent_messages = raw.get("agent_messages") if isinstance(raw.get("agent_messages"), list) else []
         audit_log = raw.get("audit_log") if isinstance(raw.get("audit_log"), list) else []
 
         return {
@@ -141,6 +147,8 @@ class MultiOrionHub:
             "orions": normalized_orions,
             "tasks": normalized_tasks,
             "agents": dict(agents),
+            "agent_works": dict(agent_works),
+            "agent_messages": list(agent_messages),
             "audit_log": list(audit_log)[-self.max_audit_entries :],
         }
 
@@ -167,6 +175,8 @@ class MultiOrionHub:
         self.orions = state.get("orions") if isinstance(state.get("orions"), dict) else {}
         self.tasks = state.get("tasks") if isinstance(state.get("tasks"), list) else []
         self.agents = state.get("agents") if isinstance(state.get("agents"), dict) else {}
+        self.agent_works = state.get("agent_works") if isinstance(state.get("agent_works"), dict) else {}
+        self.agent_messages = state.get("agent_messages") if isinstance(state.get("agent_messages"), list) else []
         self.audit_log = state.get("audit_log") if isinstance(state.get("audit_log"), list) else []
 
     def _append_audit(self, state: Dict[str, Any], action: str, details: Dict[str, Any]) -> None:
@@ -733,6 +743,159 @@ class MultiOrionHub:
             "state_version": version,
             "state_updated_at": updated_at,
         }
+
+    # ============================================
+    # Sub-Agent Awareness (Phase 4)
+    # ============================================
+
+    def register_agent_work(
+        self,
+        orion_id: str,
+        agent_id: str,
+        file_path: str,
+        task_description: str = ""
+    ) -> Dict[str, Any]:
+        """Register that an agent is starting work on a file."""
+        with self._exclusive_state() as state:
+            agent_works = state.get("agent_works", {})
+
+            # Create work entry
+            work_id = str(uuid.uuid4())
+            now_iso = self._now_iso()
+            agent_works[work_id] = {
+                "work_id": work_id,
+                "orion_id": str(orion_id),
+                "agent_id": str(agent_id),
+                "file_path": str(file_path),
+                "task_description": str(task_description),
+                "started_at": now_iso,
+                "status": "in_progress",
+            }
+
+            state["agent_works"] = agent_works
+            self._append_audit(state, "agent_work_started", {
+                "work_id": work_id,
+                "orion_id": orion_id,
+                "agent_id": agent_id,
+                "file_path": file_path,
+            })
+            self._commit_state(state)
+
+            return {"success": True, "work_id": work_id}
+
+    def get_agent_working_on_file(self, file_path: str) -> Optional[Dict[str, Any]]:
+        """Query which agent is currently working on a file."""
+        with self._exclusive_state() as state:
+            agent_works = state.get("agent_works", {})
+            for work in agent_works.values():
+                if work.get("file_path") == file_path and work.get("status") == "in_progress":
+                    return work
+            return None
+
+    def get_all_active_works(self) -> List[Dict[str, Any]]:
+        """Get all currently active agent works."""
+        with self._exclusive_state() as state:
+            agent_works = state.get("agent_works", {})
+            return [
+                work for work in agent_works.values()
+                if work.get("status") == "in_progress"
+            ]
+
+    def complete_agent_work(self, work_id: str) -> Dict[str, Any]:
+        """Mark an agent work as completed."""
+        with self._exclusive_state() as state:
+            agent_works = state.get("agent_works", {})
+            if work_id in agent_works:
+                agent_works[work_id]["status"] = "completed"
+                agent_works[work_id]["completed_at"] = self._now_iso()
+                state["agent_works"] = agent_works
+                self._append_audit(state, "agent_work_completed", {"work_id": work_id})
+                self._commit_state(state)
+                return {"success": True}
+            return {"success": False, "error": "Work not found"}
+
+    def send_agent_message(
+        self,
+        from_agent_id: str,
+        to_agent_id: str,
+        message: str,
+        orion_id: str
+    ) -> Dict[str, Any]:
+        """Send a message directly to an agent."""
+        with self._exclusive_state() as state:
+            agent_messages = state.get("agent_messages", [])
+            msg_id = str(uuid.uuid4())
+
+            agent_messages.append({
+                "message_id": msg_id,
+                "from_agent_id": str(from_agent_id),
+                "to_agent_id": str(to_agent_id),
+                "orion_id": str(orion_id),
+                "message": str(message),
+                "created_at": self._now_iso(),
+                "read": False,
+            })
+
+            # Keep only last 100 messages
+            if len(agent_messages) > 100:
+                agent_messages = agent_messages[-100:]
+
+            state["agent_messages"] = agent_messages
+            self._commit_state(state)
+
+            return {"success": True, "message_id": msg_id}
+
+    def broadcast_to_agents(
+        self,
+        from_agent_id: str,
+        message: str,
+        orion_id: str
+    ) -> Dict[str, Any]:
+        """Broadcast a message to all agents."""
+        with self._exclusive_state() as state:
+            agent_messages = state.get("agent_messages", [])
+            msg_id = str(uuid.uuid4())
+
+            agent_messages.append({
+                "message_id": msg_id,
+                "from_agent_id": str(from_agent_id),
+                "to_agent_id": None,  # Broadcast
+                "orion_id": str(orion_id),
+                "message": str(message),
+                "created_at": self._now_iso(),
+                "read": False,
+            })
+
+            # Keep only last 100 messages
+            if len(agent_messages) > 100:
+                agent_messages = agent_messages[-100:]
+
+            state["agent_messages"] = agent_messages
+            self._commit_state(state)
+
+            return {"success": True, "message_id": msg_id, "broadcast": True}
+
+    def get_agent_messages(self, agent_id: str, unread_only: bool = False) -> List[Dict[str, Any]]:
+        """Get messages for a specific agent."""
+        with self._exclusive_state() as state:
+            agent_messages = state.get("agent_messages", [])
+            return [
+                msg for msg in agent_messages
+                if msg.get("to_agent_id") == agent_id or msg.get("to_agent_id") is None
+                if not unread_only or not msg.get("read")
+            ]
+
+    def mark_agent_message_read(self, message_id: str) -> Dict[str, Any]:
+        """Mark an agent message as read."""
+        with self._exclusive_state() as state:
+            agent_messages = state.get("agent_messages", [])
+            for msg in agent_messages:
+                if msg.get("message_id") == message_id:
+                    msg["read"] = True
+                    state["agent_messages"] = agent_messages
+                    self._commit_state(state)
+                    return {"success": True}
+            return {"success": False, "error": "Message not found"}
 
 
 # Singleton

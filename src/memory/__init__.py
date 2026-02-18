@@ -124,7 +124,6 @@ from .web_search_learner import (
     search_web,
     learn_from_web,
     get_trending,
-    run_auto_discovery,
 )
 
 from .learning_prioritizer import (

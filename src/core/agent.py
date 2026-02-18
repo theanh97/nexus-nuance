@@ -22,6 +22,7 @@ from src.core.message import AgentMessage, MessageType, Priority, TaskResult
 from src.core.model_router import ModelRouter, TaskType, TaskComplexity, MODELS, ModelConfig
 from src.core.routing_telemetry import record_routing_event
 from src.core.prompt_system import get_prompt_system
+from src.core.computer_controller import get_computer_controller
 
 
 class AsyncAgent(ABC):
@@ -79,6 +80,10 @@ class AsyncAgent(ABC):
         self.log_dir = Path("logs")
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
+        # Computer Controller for OpenClaw integration (Phase 3)
+        self.computer_controller = get_computer_controller()
+        self.openclaw_enabled = os.getenv("OPENCLAW_ENABLED_FOR_AGENTS", "true").lower() == "true"
+
     async def start(self):
         """Start the agent"""
         self.running = True
@@ -88,6 +93,52 @@ class AsyncAgent(ABC):
         """Stop the agent"""
         self.running = False
         self._log(f"🛑 {self.name} stopped")
+
+    # ============================================
+    # Computer Control Methods (Phase 3)
+    # ============================================
+
+    async def take_screenshot(self, save: bool = True) -> str:
+        """Take a screenshot of the current screen."""
+        if not self.openclaw_enabled:
+            return ""
+        return await self.computer_controller.take_screenshot(save=save)
+
+    async def run_terminal_command(self, command: str, timeout: int = 30) -> Dict:
+        """Run a terminal command."""
+        if not self.openclaw_enabled:
+            return {"success": False, "error": "OpenClaw disabled for agents"}
+        return await self.computer_controller.run_terminal_command(command, timeout=timeout)
+
+    async def move_mouse(self, x: int, y: int, duration: float = 0.5) -> bool:
+        """Move mouse to position."""
+        if not self.openclaw_enabled:
+            return False
+        return await self.computer_controller.move_mouse(x, y, duration=duration)
+
+    async def click(self, x: int = None, y: int = None, button: str = "left") -> bool:
+        """Click at position or current position."""
+        if not self.openclaw_enabled:
+            return False
+        return await self.computer_controller.click(x, y, button=button)
+
+    async def type_text(self, text: str, interval: float = 0.05) -> bool:
+        """Type text."""
+        if not self.openclaw_enabled:
+            return False
+        return await self.computer_controller.type_text(text, interval=interval)
+
+    async def press_key(self, key: str) -> bool:
+        """Press a key."""
+        if not self.openclaw_enabled:
+            return False
+        return await self.computer_controller.press_key(key)
+
+    async def get_computer_capabilities(self) -> Dict:
+        """Get available computer control capabilities."""
+        caps = self.computer_controller.get_capabilities()
+        caps["openclaw_enabled"] = self.openclaw_enabled
+        return caps
 
     @abstractmethod
     async def process(self, message: AgentMessage) -> TaskResult:
