@@ -731,6 +731,9 @@ Messages: {report['message_stats']['total_messages']} total"""
             "token_budget": self._get_token_budget_snapshot(),
             "token_policy_mode": self.token_policy_mode,
             "token_hard_cap": self._hard_cap_state(),
+            "deployed": False,
+            "deploy_outcome": "not_attempted",
+            "progress_class": "no_progress",
         }
 
         # PHASE 1: Dispatch all agents IN PARALLEL
@@ -792,7 +795,8 @@ Messages: {report['message_stats']['total_messages']} total"""
                     score=10.0,
                 )
                 cycle_result["results"]["flux"] = flux_result.to_dict()
-                cycle_result["deployed"] = True
+                cycle_result["deployed"] = False
+                cycle_result["deploy_outcome"] = "skipped_no_change"
             else:
                 self._log("🚀 PHASE 4: Deploying...")
                 flux_result = await self._dispatch_flux(nova_result)
@@ -801,6 +805,7 @@ Messages: {report['message_stats']['total_messages']} total"""
                 skipped = bool(flux_output.get("skipped")) if isinstance(flux_output, dict) else False
                 deployed = bool(getattr(flux_result, "success", False)) and not skipped
                 cycle_result["deployed"] = deployed
+                cycle_result["deploy_outcome"] = "deployed" if deployed else ("skipped_policy" if skipped else "failed")
                 if deployed:
                     self.last_deployed_fingerprint = current_fingerprint
                 if skipped:
@@ -835,11 +840,20 @@ Messages: {report['message_stats']['total_messages']} total"""
         else:
             self._log(f"🔧 PHASE 4: Needs improvement - {decision['reason']}")
             cycle_result["deployed"] = False
+            cycle_result["deploy_outcome"] = "not_attempted"
 
             # Update context with feedback for next iteration
             self._update_context_with_feedback(
                 nova_result, pixel_result, cipher_result, echo_result
             )
+
+        deploy_outcome = str(cycle_result.get("deploy_outcome") or "")
+        if deploy_outcome == "deployed":
+            cycle_result["progress_class"] = "meaningful"
+        elif deploy_outcome == "skipped_policy":
+            cycle_result["progress_class"] = "maintenance"
+        else:
+            cycle_result["progress_class"] = "no_progress"
 
         # Calculate cycle score
         scores = []
@@ -909,6 +923,8 @@ Messages: {report['message_stats']['total_messages']} total"""
                     "iteration": self.iteration,
                     "score": last_result.get("score", 0),
                     "deployed": last_result.get("deployed", False),
+                    "deploy_outcome": last_result.get("deploy_outcome", "unknown"),
+                    "progress_class": last_result.get("progress_class", "unknown"),
                     "duration": last_result.get("duration", 0),
                     "avg_score_10": avg_score,
                     "deploy_rate_10": deploy_rate
@@ -1485,7 +1501,11 @@ Messages: {report['message_stats']['total_messages']} total"""
             }
 
         recent_cycles = self.history[-max(3, int(cycle_window)) :] if isinstance(self.history, list) else []
-        deploy_count = sum(1 for item in recent_cycles if bool(item.get("deployed", False)))
+        deploy_count = sum(
+            1
+            for item in recent_cycles
+            if (str(item.get("deploy_outcome") or "") == "deployed") or bool(item.get("deployed", False))
+        )
         avg_score = (
             sum(float(item.get("score", 0.0) or 0.0) for item in recent_cycles) / max(1, len(recent_cycles))
             if recent_cycles
@@ -2077,7 +2097,8 @@ Messages: {report['message_stats']['total_messages']} total"""
         """Track repetitive failures and trigger recovery actions when needed."""
         decision = cycle_result.get("decision", {}) if isinstance(cycle_result, dict) else {}
         action = str(decision.get("action", "")).strip().lower()
-        deployed = bool(cycle_result.get("deployed"))
+        deploy_outcome = str(cycle_result.get("deploy_outcome") or "").strip().lower()
+        deployed = deploy_outcome == "deployed" or bool(cycle_result.get("deployed"))
         nova_result = ((cycle_result.get("results") or {}).get("nova") or {}) if isinstance(cycle_result, dict) else {}
 
         if action == "fix":

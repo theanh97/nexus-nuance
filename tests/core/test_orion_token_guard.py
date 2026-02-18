@@ -286,3 +286,54 @@ def test_next_iteration_delay_increases_under_hard_cap(monkeypatch):
     )
     delay = orion._next_iteration_delay_sec()
     assert delay >= 14
+
+
+def test_deploy_skip_no_change_sets_deploy_outcome_not_deployed(monkeypatch):
+    orion = _orion_with_context()
+    orion.context.files["app.js"] = "console.log('same');"
+    orion.last_deployed_fingerprint = orion._files_fingerprint()
+
+    async def _fake_dispatch(*_args, **_kwargs):
+        return TaskResult(success=True, agent="stub", output={}, score=8.0)
+
+    monkeypatch.setattr(orion, "_dispatch_nova_or_skip", _fake_dispatch)
+    monkeypatch.setattr(orion, "_dispatch_pixel", _fake_dispatch)
+    monkeypatch.setattr(orion, "_dispatch_echo_or_skip", _fake_dispatch)
+    monkeypatch.setattr(orion, "_dispatch_cipher", _fake_dispatch)
+    monkeypatch.setattr(orion, "_should_run_security_audit", lambda _nova: (True, "run"))
+    monkeypatch.setattr(orion, "_make_decision", lambda *_args, **_kwargs: {"action": "deploy", "reason": "ok"})
+
+    cycle = asyncio.run(orion.run_parallel_cycle())
+    assert cycle["deployed"] is False
+    assert cycle["deploy_outcome"] == "skipped_no_change"
+    assert cycle["progress_class"] == "no_progress"
+
+
+def test_deploy_skip_policy_sets_maintenance_progress(monkeypatch):
+    orion = _orion_with_context()
+    orion.context.files["app.js"] = "console.log('change');"
+    orion.last_deployed_fingerprint = "different"
+
+    async def _fake_dispatch(*_args, **_kwargs):
+        return TaskResult(success=True, agent="stub", output={}, score=8.0)
+
+    async def _fake_flux(*_args, **_kwargs):
+        return TaskResult(
+            success=True,
+            agent="Flux",
+            output={"skipped": True, "reason": "policy"},
+            score=10.0,
+        )
+
+    monkeypatch.setattr(orion, "_dispatch_nova_or_skip", _fake_dispatch)
+    monkeypatch.setattr(orion, "_dispatch_pixel", _fake_dispatch)
+    monkeypatch.setattr(orion, "_dispatch_echo_or_skip", _fake_dispatch)
+    monkeypatch.setattr(orion, "_dispatch_cipher", _fake_dispatch)
+    monkeypatch.setattr(orion, "_dispatch_flux", _fake_flux)
+    monkeypatch.setattr(orion, "_should_run_security_audit", lambda _nova: (True, "run"))
+    monkeypatch.setattr(orion, "_make_decision", lambda *_args, **_kwargs: {"action": "deploy", "reason": "ok"})
+
+    cycle = asyncio.run(orion.run_parallel_cycle())
+    assert cycle["deployed"] is False
+    assert cycle["deploy_outcome"] == "skipped_policy"
+    assert cycle["progress_class"] == "maintenance"

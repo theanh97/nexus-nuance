@@ -22,7 +22,7 @@ from email import message_from_bytes
 from email.header import decode_header
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional, Set, Tuple
+from typing import Dict, Any, List, Optional, Set, Tuple, Callable
 import logging
 import threading
 from collections import defaultdict, deque
@@ -207,8 +207,8 @@ _OPENCLAW_FLOW_MODE_ENABLED = OPENCLAW_EXECUTION_MODE == "browser"
 
 MONITOR_AUTOPILOT_ENABLED_DEFAULT = _env_bool("MONITOR_AUTOPILOT_ENABLED", True)
 MONITOR_AUTOPILOT_INTERVAL_SEC = max(4, int(os.getenv("MONITOR_AUTOPILOT_INTERVAL_SEC", "10")))
-MONITOR_STUCK_THRESHOLD_SEC = max(20, int(os.getenv("MONITOR_STUCK_THRESHOLD_SEC", "90")))
-MONITOR_RECOVERY_COOLDOWN_SEC = max(10, int(os.getenv("MONITOR_RECOVERY_COOLDOWN_SEC", "35")))
+MONITOR_STUCK_THRESHOLD_SEC = max(20, int(os.getenv("MONITOR_STUCK_THRESHOLD_SEC", "240")))
+MONITOR_RECOVERY_COOLDOWN_SEC = max(10, int(os.getenv("MONITOR_RECOVERY_COOLDOWN_SEC", "90")))
 MONITOR_STARTUP_GRACE_SEC = max(5, int(os.getenv("MONITOR_STARTUP_GRACE_SEC", "25")))
 MONITOR_AUTO_APPROVE_SAFE_DECISIONS = _env_bool("MONITOR_AUTO_APPROVE_SAFE_DECISIONS", True)
 MONITOR_AUTO_APPROVE_ALL_DECISIONS = _env_bool("MONITOR_AUTO_APPROVE_ALL_DECISIONS", True)
@@ -412,6 +412,11 @@ def _hub_next_action_autopilot_loop() -> None:
             if not HUB_NEXT_ACTION_AUTOPILOT_ENABLED:
                 _hub_next_action_autopilot_stop_event.wait(HUB_NEXT_ACTION_AUTOPILOT_INTERVAL_SEC)
                 continue
+            if "_AUTOPILOT_STATE" in dir():
+                active_executor = str(_AUTOPILOT_STATE.get("active_executor", "policy_loop")).strip().lower()
+                if active_executor != "hub_loop":
+                    _hub_next_action_autopilot_stop_event.wait(HUB_NEXT_ACTION_AUTOPILOT_INTERVAL_SEC)
+                    continue
 
             actions = _hub_next_actions(limit=HUB_NEXT_ACTION_AUTOPILOT_MAX_PER_TICK * 2)
             if not actions:
@@ -11800,8 +11805,17 @@ def central_files_lock():
 
     now = datetime.now()
     expires_at = (now + timedelta(seconds=ttl_sec)).isoformat()
+    expired_lock_reclaimed = False
 
     with _CENTRAL_COMMAND_LOCK:
+        existing_lock = _global_file_locks.get(file_path)
+        if existing_lock:
+            try:
+                if datetime.fromisoformat(existing_lock.expires_at) < now:
+                    del _global_file_locks[file_path]
+                    expired_lock_reclaimed = True
+            except Exception:
+                pass
         # Check if already locked by another Orion
         if file_path in _global_file_locks:
             existing_lock = _global_file_locks[file_path]
@@ -11831,6 +11845,7 @@ def central_files_lock():
         "file_path": file_path,
         "orion_id": orion_id,
         "expires_at": expires_at,
+        "expired_lock_reclaimed": expired_lock_reclaimed,
     })
 
 
@@ -13185,7 +13200,7 @@ try:
             status = 200
         else:
             code = str(result.get("error_code", ""))
-            status = 409 if code in {"VERSION_CONFLICT", "LEASE_CONFLICT"} else 400
+            status = 409 if code in {"VERSION_CONFLICT", "LEASE_CONFLICT", "LEASE_NOT_EXPIRED"} else 400
         return jsonify(result), status
 
     @app.route('/api/hub/tasks/<task_id>/heartbeat', methods=['POST'])
@@ -13214,6 +13229,9 @@ try:
             lease_token=data.get("lease_token", ""),
             expected_version=data.get("expected_version"),
             next_status=data.get("next_status"),
+            force_if_expired=_to_bool(data.get("force_if_expired", False)),
+            actor_id=data.get("actor_id", ""),
+            reason=data.get("reason", ""),
         )
         if result.get("success"):
             status = 200
@@ -13422,7 +13440,14 @@ try:
                         "priority": priority,
                         "reason": "In-progress task has stale/expired lease.",
                         "recommended_api": "/api/hub/tasks/<task_id>/release",
-                        "suggested_payload": {"owner_id": lease.get("owner"), "lease_token": "", "next_status": "todo"},
+                        "suggested_payload": {
+                            "owner_id": lease.get("owner"),
+                            "lease_token": "",
+                            "next_status": "todo",
+                            "force_if_expired": True,
+                            "actor_id": "autopilot",
+                            "reason": "stale_lease_reclaim",
+                        },
                     }
                 )
 
@@ -13611,6 +13636,7 @@ try:
     _AUTOPILOT_STATE: Dict[str, Any] = {
         "enabled": False,
         "dry_run": True,
+        "active_executor": str(os.getenv("HUB_AUTOPILOT_ACTIVE_EXECUTOR", "policy_loop") or "policy_loop").strip().lower(),
         "interval": 30,
         "max_actions_per_cycle": 3,
         "policy": {
@@ -13640,6 +13666,10 @@ try:
         logger.info("🤖 Autopilot background loop started")
         while not _autopilot_background_stop_event.is_set():
             try:
+                active_executor = str(_AUTOPILOT_STATE.get("active_executor", "policy_loop")).strip().lower()
+                if active_executor != "policy_loop":
+                    _autopilot_background_stop_event.wait(_AUTOPILOT_BACKGROUND_INTERVAL_SEC)
+                    continue
                 if _AUTOPILOT_STATE["enabled"]:
                     # Run one cycle
                     max_actions = _AUTOPILOT_STATE["max_actions_per_cycle"]
@@ -13736,6 +13766,24 @@ try:
 
         return True, "Allowed"
 
+    def _invoke_internal_post(path: str, view_func: Callable[..., Any], payload: Dict[str, Any]) -> Tuple[int, Any]:
+        """Call Flask view function internally without network/request.host_url dependency."""
+        with app.test_request_context(path=path, method="POST", json=payload):
+            response = view_func()
+        status_code = 200
+        body = None
+        if isinstance(response, tuple):
+            flask_resp = response[0]
+            status_code = int(response[1]) if len(response) > 1 else 200
+        else:
+            flask_resp = response
+            status_code = int(getattr(flask_resp, "status_code", 200))
+        try:
+            body = flask_resp.get_json()
+        except Exception:
+            body = getattr(flask_resp, "data", None)
+        return status_code, body
+
     def _autopilot_execute_action(action: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a single action."""
         action_type = action.get("action_type", "")
@@ -13744,26 +13792,32 @@ try:
 
         try:
             if action_type in ("dispatch_task", "assign_then_dispatch") and task_id:
-                # Dispatch task
-                url = f"{request.host_url.rstrip('/')}/api/hub/tasks/{task_id}/dispatch"
                 payload = action.get("suggested_payload", {})
-                resp = requests.post(url, json=payload, timeout=30)
-                result["success"] = resp.status_code < 400
-                result["response"] = resp.json() if result["success"] else resp.text
+                status_code, body = _invoke_internal_post(
+                    path=f"/api/hub/tasks/{task_id}/dispatch",
+                    view_func=lambda: dispatch_hub_task(task_id),
+                    payload=payload,
+                )
+                result["success"] = status_code < 400
+                result["response"] = body
             elif action_type == "reclaim_stale_lease" and task_id:
-                # Release stale lease
-                url = f"{request.host_url.rstrip('/')}/api/hub/tasks/{task_id}/release"
                 payload = action.get("suggested_payload", {"next_status": "todo"})
-                resp = requests.post(url, json=payload, timeout=30)
-                result["success"] = resp.status_code < 400
-                result["response"] = resp.json() if result["success"] else resp.text
+                status_code, body = _invoke_internal_post(
+                    path=f"/api/hub/tasks/{task_id}/release",
+                    view_func=lambda: release_hub_task_lease(task_id),
+                    payload=payload,
+                )
+                result["success"] = status_code < 400
+                result["response"] = body
             elif action_type == "reassign_or_bring_online" and task_id:
-                # Batch update to reassign
-                url = f"{request.host_url.rstrip('/')}/api/hub/tasks/batch-update"
                 payload = action.get("suggested_payload", {})
-                resp = requests.post(url, json=payload, timeout=30)
-                result["success"] = resp.status_code < 400
-                result["response"] = resp.json() if result["success"] else resp.text
+                status_code, body = _invoke_internal_post(
+                    path="/api/hub/tasks/batch-update",
+                    view_func=batch_update_tasks,
+                    payload=payload,
+                )
+                result["success"] = status_code < 400
+                result["response"] = body
             else:
                 result["error"] = f"Unknown action type: {action_type}"
         except Exception as e:
@@ -13774,10 +13828,14 @@ try:
     @app.route('/api/hub/autopilot/status')
     def get_autopilot_status():
         """Get autopilot status."""
+        hub_running = _hub_next_action_autopilot_thread is not None and _hub_next_action_autopilot_thread.is_alive()
+        bg_running = _autopilot_background_thread is not None and _autopilot_background_thread.is_alive()
         return jsonify({
             "success": True,
             "enabled": _AUTOPILOT_STATE["enabled"],
             "dry_run": _AUTOPILOT_STATE["dry_run"],
+            "active_executor": _AUTOPILOT_STATE.get("active_executor", "policy_loop"),
+            "executor_conflict": bool(hub_running and bg_running),
             "interval": _AUTOPILOT_STATE["interval"],
             "policy": _AUTOPILOT_STATE["policy"],
             "stats": _AUTOPILOT_STATE["stats"],
@@ -13793,6 +13851,10 @@ try:
             _AUTOPILOT_STATE["enabled"] = bool(data["enabled"])
         if "dry_run" in data:
             _AUTOPILOT_STATE["dry_run"] = bool(data["dry_run"])
+        if "active_executor" in data:
+            active_executor = str(data.get("active_executor", "policy_loop")).strip().lower()
+            if active_executor in {"policy_loop", "hub_loop"}:
+                _AUTOPILOT_STATE["active_executor"] = active_executor
         if "interval" in data:
             _AUTOPILOT_STATE["interval"] = max(10, int(data["interval"]))
         if "max_actions_per_cycle" in data:
@@ -15182,8 +15244,11 @@ def run_dashboard(host: str = "localhost", port: int = 5001):
     print(f"🚀 Dashboard running at http://{host}:{port}")
     print(f"📊 Real-time updates enabled via Socket.IO")
     _ensure_monitor_supervisor_started()
-    _ensure_hub_autopilot_started()
-    _ensure_autopilot_background_started()  # NEW: Autopilot API with policy guardrails
+    active_executor = str(_AUTOPILOT_STATE.get("active_executor", "policy_loop")).strip().lower() if "_AUTOPILOT_STATE" in globals() else "policy_loop"
+    if active_executor == "hub_loop":
+        _ensure_hub_autopilot_started()
+    else:
+        _ensure_autopilot_background_started()
     _ensure_openclaw_self_heal_started()
     if OPENCLAW_SELF_HEAL_BOOTSTRAP:
         try:

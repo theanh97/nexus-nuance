@@ -637,10 +637,15 @@ class MultiOrionHub:
         lease_token: str,
         expected_version: Optional[int] = None,
         next_status: Optional[str] = None,
+        force_if_expired: bool = False,
+        actor_id: Optional[str] = None,
+        reason: Optional[str] = None,
     ) -> Dict[str, Any]:
         owner = str(owner_id or "").strip()
         token = str(lease_token or "").strip()
-        if not owner or not token:
+        actor = str(actor_id or "").strip()
+        force_release = bool(force_if_expired)
+        if (not owner or not token) and not force_release:
             return {
                 "success": False,
                 "error": "Missing owner_id or lease_token",
@@ -657,7 +662,36 @@ class MultiOrionHub:
             if not task:
                 return {"success": False, "error": "Task not found", "error_code": "TASK_NOT_FOUND", "version": current_version}
 
-            if str(task.get("lease_owner") or "") != owner or str(task.get("lease_token") or "") != token:
+            lease_owner = str(task.get("lease_owner") or "").strip()
+            lease_token_current = str(task.get("lease_token") or "").strip()
+            lease_expires_at = self._parse_iso(task.get("lease_expires_at"))
+            lease_expired = bool(lease_expires_at and lease_expires_at <= self._now())
+            if force_release:
+                if not actor:
+                    return {
+                        "success": False,
+                        "error": "Missing actor_id for force release",
+                        "error_code": "MISSING_ACTOR_ID",
+                        "task": task,
+                        "version": current_version,
+                    }
+                if not lease_expired:
+                    return {
+                        "success": False,
+                        "error": "Lease is still active",
+                        "error_code": "LEASE_NOT_EXPIRED",
+                        "task": task,
+                        "version": current_version,
+                    }
+                if owner and lease_owner and owner != lease_owner:
+                    return {
+                        "success": False,
+                        "error": "Lease ownership mismatch",
+                        "error_code": "LEASE_CONFLICT",
+                        "task": task,
+                        "version": current_version,
+                    }
+            elif lease_owner != owner or lease_token_current != token:
                 return {
                     "success": False,
                     "error": "Lease ownership mismatch",
@@ -675,15 +709,28 @@ class MultiOrionHub:
                 task["status"] = "todo"
             task["updated_at"] = self._now_iso()
 
-            self._append_audit(
-                state,
-                "task_released",
-                {
-                    "task_id": task_id,
-                    "owner_id": owner,
-                    "next_status": task.get("status"),
-                },
-            )
+            if force_release:
+                self._append_audit(
+                    state,
+                    "task_released_force_expired",
+                    {
+                        "task_id": task_id,
+                        "owner_id": lease_owner or owner,
+                        "actor_id": actor,
+                        "reason": str(reason or "force_if_expired"),
+                        "next_status": task.get("status"),
+                    },
+                )
+            else:
+                self._append_audit(
+                    state,
+                    "task_released",
+                    {
+                        "task_id": task_id,
+                        "owner_id": owner,
+                        "next_status": task.get("status"),
+                    },
+                )
             version = self._commit_state(state)
             return {"success": True, "task": task, "version": version}
 

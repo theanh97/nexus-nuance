@@ -286,6 +286,13 @@ def test_hub_next_action_autopilot_status(client):
     assert "allowed_types" in body
     assert isinstance(body["allowed_types"], list)
 
+    policy_resp = client.get("/api/hub/autopilot/status")
+    assert policy_resp.status_code == 200
+    policy_body = policy_resp.get_json()
+    assert policy_body["success"] is True
+    assert "active_executor" in policy_body
+    assert "executor_conflict" in policy_body
+
 
 def test_hub_next_action_autopilot_control_trigger(client):
     """Test hub next-action autopilot trigger action."""
@@ -319,6 +326,26 @@ def test_hub_next_action_autopilot_control_unknown(client):
     assert resp.status_code == 400
     body = resp.get_json()
     assert body["success"] is False
+
+
+def test_central_file_lock_reclaims_expired_lock(client):
+    monitor_app._global_file_locks.clear()
+    monitor_app._global_file_locks["src/demo.py"] = monitor_app.FileLock(
+        file_path="src/demo.py",
+        orion_id="orion-old",
+        agent_id="agent-x",
+        locked_at="2001-01-01T00:00:00",
+        expires_at="2001-01-01T00:05:00",
+    )
+
+    resp = client.post(
+        "/api/central/files/lock",
+        json={"file_path": "src/demo.py", "orion_id": "orion-new", "ttl_sec": 120},
+    )
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["success"] is True
+    assert payload["expired_lock_reclaimed"] is True
 
 
 def test_slo_summary_endpoint(client):
@@ -599,6 +626,36 @@ def test_hub_task_lease_claim_heartbeat_release_flow(client):
         json={"owner_id": "orion:B", "lease_sec": 90},
     )
     assert reclaim.status_code == 200
+
+
+def test_hub_task_release_supports_force_expired(client):
+    task_id = _create_hub_task(client, title="Force release")
+    claim = client.post(
+        f"/api/hub/tasks/{task_id}/claim",
+        json={"owner_id": "orion:A", "lease_sec": 120},
+    )
+    assert claim.status_code == 200
+
+    with monitor_app._hub._exclusive_state() as state:
+        task = next(row for row in state["tasks"] if row["id"] == task_id)
+        task["lease_expires_at"] = "2001-01-01T00:00:00"
+        monitor_app._hub._commit_state(state)
+
+    release = client.post(
+        f"/api/hub/tasks/{task_id}/release",
+        json={
+            "owner_id": "orion:A",
+            "lease_token": "",
+            "next_status": "todo",
+            "force_if_expired": True,
+            "actor_id": "autopilot",
+            "reason": "stale_lease_reclaim",
+        },
+    )
+    assert release.status_code == 200
+    payload = release.get_json()
+    assert payload["success"] is True
+    assert payload["task"]["status"] == "todo"
 
 
 def test_hub_task_update_respects_lease_owner(client):

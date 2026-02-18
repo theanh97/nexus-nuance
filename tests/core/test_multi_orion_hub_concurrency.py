@@ -90,3 +90,30 @@ def test_multi_orion_hub_orion_heartbeat_updates_lease(tmp_path):
     snapshot = hub.get_snapshot()
     assert "orion-1" in snapshot["orions"]
     assert snapshot["orions"]["orion-1"].get("lease_expires_at")
+
+
+def test_multi_orion_hub_force_release_expired_lease(tmp_path):
+    state_path = tmp_path / "multi_orion_state.json"
+    hub = MultiOrionHub(state_path=str(state_path))
+    created = hub.create_task_safe(title="Task expired lease", description="lease", priority="medium")
+    task_id = created["task"]["id"]
+
+    claim = hub.claim_task(task_id=task_id, owner_id="orion:A", lease_sec=120)
+    assert claim["success"] is True
+
+    with hub._exclusive_state() as state:
+        task = next(t for t in state["tasks"] if t["id"] == task_id)
+        task["lease_expires_at"] = "2001-01-01T00:00:00"
+        hub._commit_state(state)
+
+    release = hub.release_task_lease(
+        task_id=task_id,
+        owner_id="orion:A",
+        lease_token="",
+        next_status="todo",
+        force_if_expired=True,
+        actor_id="autopilot",
+        reason="stale_lease_reclaim",
+    )
+    assert release["success"] is True
+    assert release["task"]["status"] == "todo"

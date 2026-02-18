@@ -84,7 +84,7 @@ class AutoDevSystem:
         self.guardian_watchdog_task: Optional[asyncio.Task] = None
         self.guardian_auto_recovery = True
         self.guardian_watchdog_interval_sec = int(os.getenv("GUARDIAN_WATCHDOG_INTERVAL_SEC", "8"))
-        self.guardian_stuck_threshold_sec = int(os.getenv("GUARDIAN_STUCK_THRESHOLD_SEC", "120"))
+        self.guardian_stuck_threshold_sec = int(os.getenv("GUARDIAN_STUCK_THRESHOLD_SEC", "180"))
         self.guardian_recovery_cooldown_sec = int(os.getenv("GUARDIAN_RECOVERY_COOLDOWN_SEC", "25"))
         self.last_guardian_intervention_at: Optional[datetime] = None
         self.manual_override_sec = int(os.getenv("MANUAL_OVERRIDE_SEC", "90"))
