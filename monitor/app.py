@@ -14580,13 +14580,25 @@ try:
             token_ok = _token_cache is not None and _token_cache.token is not None
             attach_ok = _attach_state.last_error is None
 
+            # In headless mode, token is not required
+            is_headless = OPENCLAW_EXECUTION_MODE == "headless"
+
+            if is_headless:
+                return HealthCheck(
+                    component="openclaw",
+                    status="healthy",
+                    last_check=datetime.now().isoformat(),
+                    message=f"OpenClaw in headless mode (no token required)",
+                    metrics={"mode": "headless", "token_ok": token_ok}
+                )
+
             if not token_ok:
                 return HealthCheck(
                     component="openclaw",
-                    status="unhealthy",
+                    status="degraded",
                     last_check=datetime.now().isoformat(),
-                    message="OpenClaw token not available",
-                    metrics={"token_ok": False}
+                    message="OpenClaw token not available (browser mode requires token)",
+                    metrics={"token_ok": False, "mode": OPENCLAW_EXECUTION_MODE}
                 )
 
             if not attach_ok:
@@ -14617,44 +14629,57 @@ try:
     def _check_agents_health() -> HealthCheck:
         """Check health of all agents."""
         try:
+            # Try to get status from runtime bridge first
             status_handler = _runtime_bridge.get("status_handler")
-            if not callable(status_handler):
+            runtime = {}
+            agent_runtime = []  # Full agent objects with status
+
+            if callable(status_handler):
+                runtime = status_handler() or {}
+                # Get full agent runtime objects (not just names)
+                agent_runtime = runtime.get("agent_runtime", [])
+                # Also check agents list (just names)
+                agents = runtime.get("agents", [])
+
+            # Fallback: try to get via API if no agents found
+            if not agent_runtime:
+                import requests as req
+                try:
+                    resp = req.get("http://127.0.0.1:5050/api/agents/status", timeout=2)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        runtime = data.get("runtime", {})
+                        agent_runtime = runtime.get("agent_runtime", [])
+                        agents = runtime.get("agents", [])
+                except Exception:
+                    pass
+
+            # Use agent_runtime if available, otherwise use agents list
+            if agent_runtime:
+                agents_to_check = agent_runtime
+            elif agents:
+                # Just names, not full objects
+                agents_to_check = [{"name": a} for a in agents]
+            else:
+                agents_to_check = []
+
+            if not agents_to_check:
                 return HealthCheck(
                     component="agents",
                     status="degraded",
                     last_check=datetime.now().isoformat(),
-                    message="Status handler not available",
+                    message="No agents available",
                     metrics={"available": False}
                 )
 
-            runtime = status_handler() or {}
-            agents_raw = runtime.get("agents")
-
-            # Handle case where agents might be a string or wrong type
-            if not isinstance(agents_raw, list):
-                return HealthCheck(
-                    component="agents",
-                    status="degraded",
-                    last_check=datetime.now().isoformat(),
-                    message="Agents data not available",
-                    metrics={"available": False, "type": type(agents_raw).__name__}
-                )
-
-            agents = agents_raw
-            agent_count = len(agents)
+            agent_count = len(agents_to_check)
 
             # Check for stuck agents
             stuck_agents = []
-            for agent in agents:
-                last_progress = agent.get("last_progress_at")
-                if last_progress:
-                    try:
-                        last_time = datetime.fromisoformat(last_progress.replace('Z', '+00:00'))
-                        elapsed = (datetime.now() - last_time.replace(tzinfo=None)).total_seconds()
-                        if elapsed > 300:  # 5 minutes
-                            stuck_agents.append(agent.get("name", "unknown"))
-                    except Exception:
-                        pass
+            for agent in agents_to_check:
+                # Check if agent is not running
+                if not agent.get("running", True):
+                    stuck_agents.append(f"{agent.get('name', 'unknown')}:not_running")
 
             if stuck_agents:
                 return HealthCheck(
