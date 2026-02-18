@@ -3299,6 +3299,13 @@
         // ═════════════════════════════════════════════════════════
         // CONTROL CENTER - JavaScript
         // ═════════════════════════════════════════════════════════
+        console.log('Dashboard JS starting...');
+
+        // Global error handler
+        window.onerror = function(msg, url, line, col, error) {
+            console.error('JS Error:', msg, 'at line', line);
+            return false;
+        };
 
         const DASHBOARD_ACCESS_TOKEN = (() => {
             try {
