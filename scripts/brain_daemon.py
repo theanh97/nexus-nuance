@@ -100,6 +100,12 @@ def run_daemon():
     # Signal handler
     def shutdown(signum, frame):
         log("Shutdown signal received")
+        if supervisor:
+            try:
+                supervisor.stop()
+                log("24/7 Supervisor stopped")
+            except Exception:
+                pass
         brain.shutdown()
         remove_pid()
         sys.exit(0)
@@ -116,6 +122,21 @@ def run_daemon():
             f"({len(self_reminder._sources)} sources)")
     except Exception as exc:
         log(f"Self-Reminder init skipped: {exc}")
+
+    # Initialize 24/7 Supervisor Daemon
+    supervisor = None
+    try:
+        from core.supervisor_daemon import SupervisorDaemon
+        supervisor_project = os.getenv("SUPERVISOR_PROJECT_PATH", str(PROJECT_ROOT))
+        supervisor_mode = os.getenv("SUPERVISOR_MODE", "FULL_AUTO")
+        supervisor = SupervisorDaemon(
+            project_path=supervisor_project,
+            mode=supervisor_mode,
+        )
+        supervisor.start()
+        log(f"24/7 Supervisor: STARTED (mode={supervisor_mode}, project={supervisor_project})")
+    except Exception as exc:
+        log(f"Supervisor init skipped: {exc}")
 
     # Main loop - heartbeat
     heartbeat_sec = int(os.getenv("NEXUS_HEARTBEAT_INTERVAL", "60"))
@@ -159,6 +180,16 @@ def run_daemon():
                     if self_reminder:
                         sr_stats = self_reminder.get_stats()
                         msg += f", Reminders: {sr_stats.get('total_reminders', 0)}"
+
+                    # Add 24/7 supervisor stats
+                    if supervisor and supervisor._running:
+                        sv_status = supervisor.get_status()
+                        msg += (
+                            f", Supervisor: {sv_status.get('mode', '?')}"
+                            f" (cycles={sv_status.get('cycle_count', 0)}"
+                            f", decisions={sv_status.get('decisions_made', 0)}"
+                            f", errors={sv_status.get('errors_detected', 0)})"
+                        )
 
                     log(msg)
                 except Exception as exc:

@@ -655,6 +655,148 @@ def record_request(path: str, method: str, status: int, duration_ms: float) -> N
     _metrics.record(path, method, status, duration_ms)
 
 
+# ==================== SUPERVISOR 24/7 ENDPOINTS ====================
+
+@router.get("/supervisor/status")
+async def supervisor_status():
+    """Get 24/7 supervisor daemon status."""
+    try:
+        from core.supervisor_daemon import get_supervisor_daemon
+        daemon = get_supervisor_daemon()
+        return {"success": True, **daemon.get_status()}
+    except ImportError:
+        return {"success": False, "error": "supervisor_daemon module not available"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/supervisor/start")
+async def supervisor_start(request: Request):
+    """Start the 24/7 supervisor daemon."""
+    _rate_limit_or_429(request)
+    try:
+        from core.supervisor_daemon import get_supervisor_daemon
+        body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+        project_path = body.get("project_path", ".")
+        mode = body.get("mode", "FULL_AUTO")
+        daemon = get_supervisor_daemon(project_path=project_path, mode=mode)
+        daemon.start()
+        emit_event("supervisor.started", {"mode": mode, "project": project_path})
+        return {"success": True, "message": "Supervisor daemon started", **daemon.get_status()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/supervisor/stop")
+async def supervisor_stop(request: Request):
+    """Stop the 24/7 supervisor daemon."""
+    _rate_limit_or_429(request)
+    try:
+        from core.supervisor_daemon import get_supervisor_daemon
+        daemon = get_supervisor_daemon()
+        daemon.stop()
+        emit_event("supervisor.stopped", {})
+        return {"success": True, "message": "Supervisor daemon stopped"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/supervisor/mode")
+async def supervisor_set_mode(request: Request):
+    """Change supervisor operating mode (observe/advise/intervene/full_auto)."""
+    _rate_limit_or_429(request)
+    try:
+        body = await request.json()
+        mode = body.get("mode", "full_auto")
+        from core.supervisor_daemon import get_supervisor_daemon
+        daemon = get_supervisor_daemon()
+        daemon.set_mode(mode)
+        emit_event("supervisor.mode_changed", {"mode": mode})
+        return {"success": True, "mode": mode}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/supervisor/decisions")
+async def supervisor_decisions(limit: int = Query(default=20, ge=1, le=100)):
+    """Get recent supervisor decisions."""
+    try:
+        from core.supervisor_daemon import get_supervisor_daemon
+        daemon = get_supervisor_daemon()
+        return {"success": True, "decisions": daemon.get_recent_decisions(limit)}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/supervisor/terminal")
+async def supervisor_terminal():
+    """Get current terminal content observed by supervisor."""
+    try:
+        from core.supervisor_daemon import get_supervisor_daemon
+        daemon = get_supervisor_daemon()
+        content = daemon.get_terminal_content()
+        return {"success": True, "content": content[-3000:], "length": len(content)}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/supervisor/project")
+async def supervisor_project():
+    """Get project summary from supervisor."""
+    try:
+        from core.supervisor_daemon import get_supervisor_daemon
+        daemon = get_supervisor_daemon()
+        return {"success": True, **daemon.get_project_summary()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/supervisor/scan")
+async def supervisor_force_scan(request: Request):
+    """Force an immediate project scan."""
+    _rate_limit_or_429(request)
+    try:
+        from core.supervisor_daemon import get_supervisor_daemon
+        daemon = get_supervisor_daemon()
+        result = daemon.force_scan()
+        return {"success": True, **result}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/supervisor/command")
+async def supervisor_execute_command(request: Request):
+    """Execute a terminal command via supervisor."""
+    _rate_limit_or_429(request)
+    try:
+        body = await request.json()
+        command = body.get("command", "")
+        if not command:
+            raise HTTPException(400, "command required")
+        from core.supervisor_daemon import get_supervisor_daemon
+        daemon = get_supervisor_daemon()
+        result = daemon.execute_command(command)
+        emit_event("supervisor.command_executed", {"command": command[:100]})
+        return {"success": True, **result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/supervisor/screenshot")
+async def supervisor_screenshot(request: Request):
+    """Take a screenshot via supervisor."""
+    _rate_limit_or_429(request)
+    try:
+        from core.supervisor_daemon import get_supervisor_daemon
+        daemon = get_supervisor_daemon()
+        result = daemon.take_screenshot()
+        return result
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 # ==================== MAIN ====================
 
 if __name__ == "__main__":
