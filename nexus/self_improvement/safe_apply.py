@@ -68,7 +68,7 @@ class SafeApplier:
         """Load apply history."""
         if self.history_file.exists():
             try:
-                with open(self.history_file, 'r') as f:
+                with open(self.history_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 self.history = [ApplyResult(**r) for r in data.get("history", [])]
             except Exception as e:
@@ -84,7 +84,7 @@ class SafeApplier:
                 "rolled_back": len([r for r in self.history if r.rolled_back]),
                 "history": [asdict(r) for r in self.history[-200:]]
             }
-            with open(self.history_file, 'w') as f:
+            with open(self.history_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
 
     def apply_patch(self, patch: Dict, auto_rollback: bool = True) -> ApplyResult:
@@ -129,7 +129,7 @@ class SafeApplier:
 
         # Step 3: Apply patch
         try:
-            with open(full_path, 'w') as f:
+            with open(full_path, 'w', encoding='utf-8') as f:
                 f.write(patched_code)
             logger.info(f"Applied patch {patch_id} to {file_path}")
         except Exception as e:

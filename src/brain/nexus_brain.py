@@ -48,6 +48,12 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 import random
 
+import logging
+
+from core.nexus_logger import get_logger
+
+logger = get_logger(__name__)
+
 # Project paths
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 DATA_DIR = PROJECT_ROOT / "data" / "brain"
@@ -160,7 +166,7 @@ class KnowledgeScout:
                         "url": repo.get("url", ""),
                         "stars": repo.get("stargazersCount", 0),
                     })
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError, UnicodeError, json.JSONDecodeError) as e:
             self.brain.log(f"GitHub scan error: {e}", "WARN")
 
         return findings
@@ -205,7 +211,7 @@ class KnowledgeScout:
                     "status": "found",
                     "output": result.stdout[:500]
                 }
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError, UnicodeError):
             pass
 
         return {"library": library, "status": "unknown"}
@@ -247,7 +253,7 @@ class KnowledgeScout:
                     relevance=finding.get("relevance", 0.7)
                 )
 
-        except Exception as e:
+        except (OSError, ValueError, TypeError) as e:
             mission.status = "failed"
             mission.error = str(e)
 
@@ -271,13 +277,13 @@ class SkillTracker:
     def _load(self):
         if self.skills_file.exists():
             try:
-                with open(self.skills_file, 'r') as f:
+                with open(self.skills_file, 'r', encoding='utf-8') as f:
                     self.skills = json.load(f)
-            except:
-                pass
+            except (json.JSONDecodeError, OSError, KeyError) as e:
+                logger.warning(f"Failed to load skills: {e}")
 
     def _save(self):
-        with open(self.skills_file, 'w') as f:
+        with open(self.skills_file, 'w', encoding='utf-8') as f:
             json.dump(self.skills, f, indent=2, default=str)
 
     def record_execution(self, skill_name: str, duration_ms: float, success: bool, context: Dict = None):
@@ -362,6 +368,90 @@ class SkillTracker:
             for name, data in self.skills.items()
         }
 
+    def get_skill_recommendation(self, task_type: str) -> Dict:
+        """Recommend how to handle a task based on skill data."""
+        skill = self.skills.get(task_type, None)
+
+        if skill is None:
+            return {
+                'recommendation': 'learn',
+                'confidence': 0.0,
+                'reason': f'No experience with {task_type}',
+                'suggested_approach': 'cautious',
+            }
+
+        level = skill.get('level', 1)
+        total = skill.get('total_executions', 0)
+        failures = skill.get('total_failures', 0)
+        success_rate = (total - failures) / max(total, 1)
+        mastered = skill.get('mastered', False)
+        can_delegate = skill.get('can_delegate', False)
+
+        if can_delegate:
+            return {
+                'recommendation': 'delegate',
+                'confidence': min(1.0, success_rate),
+                'reason': f'Mastered skill (level {level}, {success_rate:.0%} success)',
+                'suggested_approach': 'autonomous',
+            }
+        elif mastered:
+            return {
+                'recommendation': 'execute',
+                'confidence': min(1.0, success_rate),
+                'reason': f'High proficiency (level {level})',
+                'suggested_approach': 'confident',
+            }
+        elif level >= 5 and success_rate >= 0.7:
+            return {
+                'recommendation': 'execute',
+                'confidence': success_rate * 0.8,
+                'reason': f'Moderate proficiency (level {level})',
+                'suggested_approach': 'standard',
+            }
+        elif level >= 3:
+            return {
+                'recommendation': 'execute_with_verification',
+                'confidence': success_rate * 0.5,
+                'reason': f'Learning phase (level {level})',
+                'suggested_approach': 'careful',
+            }
+        else:
+            return {
+                'recommendation': 'learn_then_execute',
+                'confidence': max(0.1, success_rate * 0.3),
+                'reason': f'Beginner (level {level}, {total} attempts)',
+                'suggested_approach': 'cautious',
+            }
+
+    def get_best_skill_for_task(self, task_description: str) -> Optional[str]:
+        """Find the most relevant skill for a task based on keyword matching."""
+        if not self.skills:
+            return None
+
+        task_lower = task_description.lower()
+        best_match = None
+        best_score = 0.0
+
+        for skill_name, skill_data in self.skills.items():
+            # Keyword match score
+            skill_words = skill_name.lower().replace('_', ' ').replace('-', ' ').split()
+            match_count = sum(1 for w in skill_words if w in task_lower)
+            if match_count == 0:
+                continue
+
+            keyword_score = match_count / max(len(skill_words), 1)
+            level_score = skill_data.get('level', 1) / 10.0
+            total = skill_data.get('total_executions', 0)
+            failures = skill_data.get('total_failures', 0)
+            success_score = (total - failures) / max(total, 1)
+
+            combined = keyword_score * 0.4 + level_score * 0.3 + success_score * 0.3
+            if combined > best_score:
+                best_score = combined
+                best_match = skill_name
+
+        return best_match
+
 
 class MemoryHub:
     """
@@ -394,29 +484,29 @@ class MemoryHub:
         """Load all data from disk"""
         # Load knowledge
         if self.knowledge_file.exists():
-            with open(self.knowledge_file, 'r') as f:
+            with open(self.knowledge_file, 'r', encoding='utf-8') as f:
                 for line in f:
                     try:
                         item = json.loads(line)
                         self.knowledge_cache[item["id"]] = KnowledgeItem(**item)
-                    except:
-                        pass
+                    except (json.JSONDecodeError, KeyError, TypeError) as e:
+                        continue  # Skip malformed lines
 
         # Load patterns
         if self.patterns_file.exists():
-            with open(self.patterns_file, 'r') as f:
+            with open(self.patterns_file, 'r', encoding='utf-8') as f:
                 for line in f:
                     try:
                         item = json.loads(line)
                         self.patterns_cache[item["id"]] = item
-                    except:
-                        pass
+                    except (json.JSONDecodeError, KeyError, TypeError):
+                        continue  # Skip malformed lines
 
     def store_knowledge(self, item: KnowledgeItem):
         """Store knowledge item"""
         with self._lock:
             self.knowledge_cache[item.id] = item
-            with open(self.knowledge_file, 'a') as f:
+            with open(self.knowledge_file, 'a', encoding='utf-8') as f:
                 f.write(json.dumps(asdict(item), default=str) + "\n")
 
     def store_pattern(self, pattern: Dict):
@@ -425,7 +515,7 @@ class MemoryHub:
             pattern_id = pattern.get("id", f"pattern_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
             pattern["id"] = pattern_id
             self.patterns_cache[pattern_id] = pattern
-            with open(self.patterns_file, 'a') as f:
+            with open(self.patterns_file, 'a', encoding='utf-8') as f:
                 f.write(json.dumps(pattern, default=str) + "\n")
 
     def store_event(self, event: Dict):
@@ -433,7 +523,7 @@ class MemoryHub:
         with self._lock:
             event["timestamp"] = datetime.now().isoformat()
             self.events_cache.append(event)
-            with open(self.events_file, 'a') as f:
+            with open(self.events_file, 'a', encoding='utf-8') as f:
                 f.write(json.dumps(event, default=str) + "\n")
 
     def search_knowledge(self, query: str, limit: int = 10) -> List[KnowledgeItem]:
@@ -458,12 +548,17 @@ class MemoryHub:
 
     def get_stats(self) -> Dict:
         """Get memory statistics"""
+        by_source = defaultdict(int)
+        by_type = defaultdict(int)
+        for item in self.knowledge_cache.values():
+            by_source[item.source] += 1
+            by_type[item.type] += 1
         return {
             "total_knowledge": len(self.knowledge_cache),
             "total_patterns": len(self.patterns_cache),
             "total_events": len(self.events_cache),
-            "knowledge_by_source": defaultdict(int, {item.source: 1 for item in self.knowledge_cache.values()}),
-            "knowledge_by_type": defaultdict(int, {item.type: 1 for item in self.knowledge_cache.values()}),
+            "knowledge_by_source": by_source,
+            "knowledge_by_type": by_type,
         }
 
 
@@ -520,9 +615,20 @@ class NexusBrain:
         """Log message"""
         timestamp = datetime.now().isoformat()
         line = f"[{timestamp}] [{level}] {message}\n"
-        with open(self.log_file, 'a') as f:
+        with open(self.log_file, 'a', encoding='utf-8') as f:
             f.write(line)
-        print(f"[BRAIN] [{level}] {message}")
+        try:
+            level_upper = level.upper()
+            if level_upper == "ERROR":
+                logger.error(message)
+            elif level_upper in ("WARN", "WARNING"):
+                logger.warning(message)
+            elif level_upper == "DEBUG":
+                logger.debug(message)
+            else:
+                logger.info(message)
+        except ValueError:
+            pass  # stderr closed during shutdown
 
     # ==================== LEARNING ====================
 
@@ -624,17 +730,17 @@ class NexusBrain:
                     self.log(f"Running cycle: {name}")
                     try:
                         callback()
-                    except Exception as e:
+                    except (OSError, ValueError, TypeError, RuntimeError) as e:
                         self.log(f"Cycle {name} error: {e}", "ERROR")
 
                     self._last_cycles[name] = now
 
                 # Sleep
-                time.sleep(60)  # Check every minute
+                time.sleep(int(os.getenv("NEXUS_CYCLE_INTERVAL", "60")))
 
-            except Exception as e:
+            except (OSError, ValueError, TypeError, RuntimeError) as e:
                 self.log(f"Cycle thread error: {e}", "ERROR")
-                time.sleep(60)
+                time.sleep(int(os.getenv("NEXUS_CYCLE_INTERVAL", "60")))
 
     def _cycle_news_scan(self):
         """Scan news for new knowledge"""
@@ -688,7 +794,7 @@ class NexusBrain:
         }
 
         report_file = self.data_dir / f"report_{datetime.now().strftime('%Y%m%d')}.json"
-        with open(report_file, 'w') as f:
+        with open(report_file, 'w', encoding='utf-8') as f:
             json.dump(report, f, indent=2, default=str)
 
         self.log(f"Daily report generated: {report_file}")
@@ -729,6 +835,8 @@ class NexusBrain:
     def shutdown(self):
         """Shutdown Nexus Brain"""
         self.running = False
+        # Suppress logging errors during interpreter shutdown (stderr may be closed)
+        logging.raiseExceptions = False
         self.log("NEXUS BRAIN SHUTTING DOWN")
 
         # Wait for threads

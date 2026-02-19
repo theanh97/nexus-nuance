@@ -12,11 +12,13 @@ import imaplib
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import time
 import unicodedata
 import uuid
 import secrets
+import concurrent.futures
 from datetime import datetime, timedelta
 from email import message_from_bytes
 from email.header import decode_header
@@ -152,6 +154,10 @@ _openclaw_metrics: Dict[str, int] = {
 }
 _openclaw_metric_events: List[Dict[str, Any]] = []
 _openclaw_metrics_updated_at: Optional[datetime] = None
+_OPENCLAW_RUNTIME_GUARD_LOCK = threading.Lock()
+_openclaw_runtime_disabled_until: Optional[datetime] = None
+_openclaw_runtime_disable_reason: str = ""
+_openclaw_attach_fail_streak = 0
 
 
 def _openclaw_attach_depth() -> int:
@@ -175,6 +181,77 @@ def _openclaw_attach_scope_exit() -> None:
         _OPENCLAW_ATTACH_CONTEXT.depth = 0
     else:
         _OPENCLAW_ATTACH_CONTEXT.depth = depth - 1
+
+
+def _openclaw_runtime_guard_snapshot() -> Dict[str, Any]:
+    global _openclaw_runtime_disabled_until, _openclaw_runtime_disable_reason, _openclaw_attach_fail_streak
+    with _OPENCLAW_RUNTIME_GUARD_LOCK:
+        now = datetime.now()
+        if _openclaw_runtime_disabled_until and _openclaw_runtime_disabled_until <= now:
+            _openclaw_runtime_disabled_until = None
+            _openclaw_runtime_disable_reason = ""
+            _openclaw_attach_fail_streak = 0
+        active = bool(_openclaw_runtime_disabled_until and _openclaw_runtime_disabled_until > now)
+        retry_after = int((_openclaw_runtime_disabled_until - now).total_seconds()) if active and _openclaw_runtime_disabled_until else 0
+        return {
+            "active": active,
+            "disabled_until": _openclaw_runtime_disabled_until.isoformat() if _openclaw_runtime_disabled_until else None,
+            "reason": _openclaw_runtime_disable_reason or "",
+            "attach_fail_streak": int(_openclaw_attach_fail_streak),
+            "attach_fail_threshold": int(OPENCLAW_ATTACH_FAIL_STREAK_THRESHOLD),
+            "retry_after_sec": max(0, retry_after),
+        }
+
+
+def _openclaw_runtime_guard_allows(command_type: str, context: Optional[Dict[str, Any]] = None, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    if not OPENCLAW_FAIL_FAST_ON_ATTACH_STREAK:
+        return {"allowed": True}
+    data = payload if isinstance(payload, dict) else {}
+    if _to_bool(data.get("force_openclaw", False)):
+        return {"allowed": True, "force_openclaw": True}
+    snapshot = _openclaw_runtime_guard_snapshot()
+    if not snapshot.get("active"):
+        return {"allowed": True}
+    return {
+        "allowed": False,
+        "error_code": "OPENCLAW_TEMP_DISABLED",
+        "error": "OpenClaw is temporarily disabled after repeated attach failures",
+        "reason": snapshot.get("reason") or "attach_failure_streak",
+        "retry_after_sec": snapshot.get("retry_after_sec", 0),
+        "guard": snapshot,
+        "command_type": str(command_type or "").strip().lower(),
+        "source": str((context or {}).get("source", "manual")),
+    }
+
+
+def _openclaw_runtime_guard_record_attach(success: bool, detail: str = "") -> None:
+    global _openclaw_runtime_disabled_until, _openclaw_runtime_disable_reason, _openclaw_attach_fail_streak
+    if not OPENCLAW_FAIL_FAST_ON_ATTACH_STREAK:
+        return
+    now = datetime.now()
+    with _OPENCLAW_RUNTIME_GUARD_LOCK:
+        if success:
+            cleared = bool(_openclaw_runtime_disabled_until and _openclaw_runtime_disabled_until > now)
+            _openclaw_attach_fail_streak = 0
+            _openclaw_runtime_disabled_until = None
+            _openclaw_runtime_disable_reason = ""
+            if cleared:
+                _openclaw_metrics_event("runtime_guard_cleared", {"detail": detail or "attach_success"})
+            return
+
+        _openclaw_attach_fail_streak = int(_openclaw_attach_fail_streak) + 1
+        if _openclaw_attach_fail_streak >= OPENCLAW_ATTACH_FAIL_STREAK_THRESHOLD:
+            _openclaw_runtime_disabled_until = now + timedelta(seconds=OPENCLAW_RUNTIME_DISABLE_SEC)
+            _openclaw_runtime_disable_reason = "attach_failure_streak"
+            _openclaw_metrics_event(
+                "runtime_guard_opened",
+                {
+                    "streak": int(_openclaw_attach_fail_streak),
+                    "threshold": int(OPENCLAW_ATTACH_FAIL_STREAK_THRESHOLD),
+                    "disable_sec": int(OPENCLAW_RUNTIME_DISABLE_SEC),
+                    "detail": detail,
+                },
+            )
 
 try:
     import pyautogui  # type: ignore
@@ -213,6 +290,8 @@ MONITOR_STARTUP_GRACE_SEC = max(5, int(os.getenv("MONITOR_STARTUP_GRACE_SEC", "2
 MONITOR_AUTO_APPROVE_SAFE_DECISIONS = _env_bool("MONITOR_AUTO_APPROVE_SAFE_DECISIONS", True)
 MONITOR_AUTO_APPROVE_ALL_DECISIONS = _env_bool("MONITOR_AUTO_APPROVE_ALL_DECISIONS", True)
 MONITOR_AUTO_EXECUTE_COMMANDS = _env_bool("MONITOR_AUTO_EXECUTE_COMMANDS", True)
+AUTOMATION_FULL_AUTO_AUTO_RESPOND_HUMAN_INPUT = _env_bool("AUTOMATION_FULL_AUTO_AUTO_RESPOND_HUMAN_INPUT", True)
+AUTONOMY_NO_HUMAN_PROMPTS = _env_bool("AUTONOMY_NO_HUMAN_PROMPTS", True)
 MONITOR_ALLOW_UNSAFE_COMMANDS = _env_bool("MONITOR_ALLOW_UNSAFE_COMMANDS", False)
 MONITOR_COMPUTER_CONTROL_ENABLED_DEFAULT = _env_bool("MONITOR_COMPUTER_CONTROL_ENABLED", True)
 OPENCLAW_AUTONOMOUS_UI_ENABLED = _env_bool("OPENCLAW_AUTONOMOUS_UI_ENABLED", False)
@@ -226,6 +305,20 @@ MONITOR_AUTOPILOT_OPENCLAW_FLOW_CHAT = str(
 ).strip()
 OPENCLAW_BROWSER_AUTO_START = _env_bool("OPENCLAW_BROWSER_AUTO_START", False)
 OPENCLAW_BROWSER_TIMEOUT_MS = max(5000, int(os.getenv("OPENCLAW_BROWSER_TIMEOUT_MS", "30000")))
+OPENCLAW_SYNC_WAIT_TIMEOUT_MS = max(
+    1200,
+    int(os.getenv("OPENCLAW_SYNC_WAIT_TIMEOUT_MS", "4500")),
+)
+OPENCLAW_DEFAULT_ASYNC_BROWSER_ACTIONS = {
+    item.strip().lower()
+    for item in str(
+        os.getenv(
+            "OPENCLAW_DEFAULT_ASYNC_BROWSER_ACTIONS",
+            "open,navigate,click,type,press,snapshot,hard_refresh",
+        ) or ""
+    ).split(",")
+    if item.strip()
+}
 OPENCLAW_DASHBOARD_URL = os.getenv("OPENCLAW_DASHBOARD_URL", "http://127.0.0.1:5050/")
 OPENCLAW_SELF_HEAL_ENABLED = _env_bool("OPENCLAW_SELF_HEAL_ENABLED", False)
 OPENCLAW_SELF_HEAL_INTERVAL_SEC = max(5, int(os.getenv("OPENCLAW_SELF_HEAL_INTERVAL_SEC", "20")))
@@ -239,6 +332,7 @@ OPENCLAW_FLOW_OPEN_COOLDOWN_SEC = max(5, int(os.getenv("OPENCLAW_FLOW_OPEN_COOLD
 OPENCLAW_ACTION_DEBOUNCE_SEC = max(2.0, float(os.getenv("OPENCLAW_ACTION_DEBOUNCE_SEC", "6")))
 OPENCLAW_AUTO_IDEMPOTENCY_ENABLED = _env_bool("OPENCLAW_AUTO_IDEMPOTENCY_ENABLED", True)
 OPENCLAW_AUTO_IDEMPOTENCY_WINDOW_SEC = max(3, int(os.getenv("OPENCLAW_AUTO_IDEMPOTENCY_WINDOW_SEC", "8")))
+OPENCLAW_EXTENSION_AUTOMATION_ENABLED = _env_bool("OPENCLAW_EXTENSION_AUTOMATION_ENABLED", False)
 OPENCLAW_FLOW_CHAT_PLACEHOLDERS = [
     "nhập lệnh",
     "nhập yêu cầu",
@@ -253,18 +347,32 @@ OPENCLAW_FLOW_CHAT_PLACEHOLDERS = [
     "type natural command...",
     "type natural command... e.g.",
 ]
-OPENCLAW_AUTO_ATTACH_ENABLED = _env_bool("OPENCLAW_AUTO_ATTACH_ENABLED", _OPENCLAW_FLOW_MODE_ENABLED)
+OPENCLAW_AUTO_ATTACH_ENABLED = _env_bool(
+    "OPENCLAW_AUTO_ATTACH_ENABLED",
+    _OPENCLAW_FLOW_MODE_ENABLED and OPENCLAW_EXTENSION_AUTOMATION_ENABLED,
+)
 OPENCLAW_AUTO_ATTACH_RETRIES = max(1, int(os.getenv("OPENCLAW_AUTO_ATTACH_RETRIES", "2")))
 OPENCLAW_AUTO_ATTACH_DELAY_SEC = float(os.getenv("OPENCLAW_AUTO_ATTACH_DELAY_SEC", "1.2"))
 OPENCLAW_AUTO_ATTACH_HEURISTIC = _env_bool("OPENCLAW_AUTO_ATTACH_HEURISTIC", True)
 OPENCLAW_AUTO_ATTACH_ICON_MATCH = _env_bool("OPENCLAW_AUTO_ATTACH_ICON_MATCH", True)
+OPENCLAW_FAIL_FAST_ON_ATTACH_STREAK = _env_bool("OPENCLAW_FAIL_FAST_ON_ATTACH_STREAK", True)
+OPENCLAW_ATTACH_FAIL_STREAK_THRESHOLD = max(1, int(os.getenv("OPENCLAW_ATTACH_FAIL_STREAK_THRESHOLD", "2")))
+OPENCLAW_RUNTIME_DISABLE_SEC = max(30, int(os.getenv("OPENCLAW_RUNTIME_DISABLE_SEC", "600")))
 OPENCLAW_CHROME_APP = os.getenv("OPENCLAW_CHROME_APP", "Google Chrome")
-OPENCLAW_LAUNCH_WITH_EXTENSION = _env_bool("OPENCLAW_LAUNCH_WITH_EXTENSION", _OPENCLAW_FLOW_MODE_ENABLED)
+OPENCLAW_LAUNCH_WITH_EXTENSION = _env_bool(
+    "OPENCLAW_LAUNCH_WITH_EXTENSION",
+    _OPENCLAW_FLOW_MODE_ENABLED and OPENCLAW_EXTENSION_AUTOMATION_ENABLED,
+)
 OPENCLAW_FORCE_NEW_CHROME_INSTANCE = _env_bool("OPENCLAW_FORCE_NEW_CHROME_INSTANCE", _OPENCLAW_FLOW_MODE_ENABLED)
 OPENCLAW_CHROME_BOUNDS = os.getenv("OPENCLAW_CHROME_BOUNDS", "0,24,1440,900")
 OPENCLAW_CLI_MAX_RETRIES = max(1, int(os.getenv("OPENCLAW_CLI_MAX_RETRIES", "2")))
 OPENCLAW_CLI_RETRY_DELAY_SEC = float(os.getenv("OPENCLAW_CLI_RETRY_DELAY_SEC", "0.4"))
 OPENCLAW_AUTO_ATTACH_COOLDOWN_SEC = max(5, float(os.getenv("OPENCLAW_AUTO_ATTACH_COOLDOWN_SEC", "30")))
+if not OPENCLAW_EXTENSION_AUTOMATION_ENABLED:
+    OPENCLAW_AUTO_ATTACH_ENABLED = False
+    OPENCLAW_LAUNCH_WITH_EXTENSION = False
+    OPENCLAW_SELF_HEAL_ENABLED = False
+    OPENCLAW_SELF_HEAL_BOOTSTRAP = False
 MONITOR_PROGRESS_SNAPSHOT_ENABLED = _env_bool("MONITOR_PROGRESS_SNAPSHOT_ENABLED", True)
 MONITOR_PROGRESS_SNAPSHOT_INTERVAL_SEC = max(30, int(os.getenv("MONITOR_PROGRESS_SNAPSHOT_INTERVAL_SEC", "120")))
 MONITOR_PROGRESS_SNAPSHOT_PATH = Path(
@@ -307,17 +415,24 @@ OPENCLAW_CIRCUIT_ESCALATE_AFTER = max(1, int(os.getenv("OPENCLAW_CIRCUIT_ESCALAT
 OPENCLAW_REQUIRE_TASK_LEASE = _env_bool("OPENCLAW_REQUIRE_TASK_LEASE", False)
 OPENCLAW_LEASE_HEARTBEAT_SEC = max(15, int(os.getenv("OPENCLAW_LEASE_HEARTBEAT_SEC", "90")))
 AGENT_COORDINATION_AUTO_CREATE_TASKS = _env_bool("AGENT_COORDINATION_AUTO_CREATE_TASKS", True)
+HUB_DISPATCH_ASYNC_DEFAULT = _env_bool("HUB_DISPATCH_ASYNC_DEFAULT", True)
+HUB_DISPATCH_WAIT_TIMEOUT_SEC = max(3.0, float(os.getenv("HUB_DISPATCH_WAIT_TIMEOUT_SEC", "20")))
 AUTOMATION_TASK_HISTORY_MAX = max(50, int(os.getenv("AUTOMATION_TASK_HISTORY_MAX", "500")))
 AUTOMATION_ENABLE_APP_CONTROL = _env_bool("AUTOMATION_ENABLE_APP_CONTROL", True)
 AUTOMATION_ENABLE_TERMINAL_EXEC = _env_bool("AUTOMATION_ENABLE_TERMINAL_EXEC", True)
 AUTOMATION_ENABLE_MAIL_READ = _env_bool("AUTOMATION_ENABLE_MAIL_READ", True)
 AUTOMATION_ENABLE_MESSAGES_READ = _env_bool("AUTOMATION_ENABLE_MESSAGES_READ", True)
+AUTOMATION_BROWSER_PROVIDER_DEFAULT = str(
+    os.getenv("AUTOMATION_BROWSER_PROVIDER_DEFAULT", "local") or "local"
+).strip().lower()
+if AUTOMATION_BROWSER_PROVIDER_DEFAULT not in {"local", "openclaw"}:
+    AUTOMATION_BROWSER_PROVIDER_DEFAULT = "local"
 AUTOMATION_TERMINAL_TIMEOUT_SEC = max(3, int(os.getenv("AUTOMATION_TERMINAL_TIMEOUT_SEC", "20")))
 AUTOMATION_TERMINAL_ALLOWED_BINS = {
     token.strip().lower()
     for token in os.getenv(
         "AUTOMATION_TERMINAL_ALLOWED_BINS",
-        "python3,pytest,git,ls,cat,rg,tail,head,openclaw,curl,open,osascript,pwd,date",
+        "python,python3,pytest,git,ls,cat,rg,tail,head,openclaw,curl,open,osascript,pwd,date",
     ).split(",")
     if token.strip()
 }
@@ -400,6 +515,333 @@ _hub_next_action_autopilot_stop_event = threading.Event()
 _hub_next_action_autopilot_lock = threading.RLock()
 _hub_next_action_autopilot_last_run: Optional[datetime] = None
 _hub_next_action_autopilot_last_error: Optional[str] = None
+_autopilot_background_thread: Optional[threading.Thread] = None
+_autopilot_background_lock = threading.RLock()
+_autopilot_background_last_run: Optional[datetime] = None
+_autopilot_background_last_error: Optional[str] = None
+_AUTOPILOT_BACKGROUND_START_LOCK = threading.RLock()
+
+
+def _normalize_autopilot_executor(raw_value: str) -> str:
+    value = str(raw_value or "policy_loop").strip().lower()
+    return value if value in {"policy_loop", "hub_loop"} else "policy_loop"
+
+
+def _autopilot_configured_interval() -> int:
+    if "_AUTOPILOT_STATE" in globals() and isinstance(_AUTOPILOT_STATE, dict):
+        return max(5, int(_AUTOPILOT_STATE.get("interval", HUB_NEXT_ACTION_AUTOPILOT_INTERVAL_SEC)))
+    return HUB_NEXT_ACTION_AUTOPILOT_INTERVAL_SEC
+
+
+def _autopilot_configured_max_actions() -> int:
+    if "_AUTOPILOT_STATE" in globals() and isinstance(_AUTOPILOT_STATE, dict):
+        configured = int(_AUTOPILOT_STATE.get("max_actions_per_cycle", HUB_NEXT_ACTION_AUTOPILOT_MAX_PER_TICK))
+        return max(1, min(10, configured))
+    return HUB_NEXT_ACTION_AUTOPILOT_MAX_PER_TICK
+
+
+def _autopilot_active_executor() -> str:
+    if "_AUTOPILOT_STATE" in globals() and isinstance(_AUTOPILOT_STATE, dict):
+        return _normalize_autopilot_executor(_AUTOPILOT_STATE.get("active_executor", "policy_loop"))
+    return _normalize_autopilot_executor("policy_loop")
+
+
+def _autopilot_is_enabled() -> bool:
+    if "_AUTOPILOT_STATE" in globals() and isinstance(_AUTOPILOT_STATE, dict):
+        return bool(_AUTOPILOT_STATE.get("enabled", False))
+    return bool(HUB_NEXT_ACTION_AUTOPILOT_ENABLED)
+
+
+def _autopilot_set_enabled(enabled: bool) -> None:
+    if "_AUTOPILOT_STATE" in globals() and isinstance(_AUTOPILOT_STATE, dict):
+        _AUTOPILOT_STATE["enabled"] = bool(enabled)
+        if "state" in _AUTOPILOT_STATE:
+            _AUTOPILOT_STATE["state"] = "running" if bool(enabled) else "stopped"
+
+
+def _autopilot_runtime_snapshot() -> Dict[str, Any]:
+    """Return unified autopilot runtime state for status and dashboard rendering."""
+    with _hub_next_action_autopilot_lock:
+        hub_running = bool(_hub_next_action_autopilot_thread and _hub_next_action_autopilot_thread.is_alive())
+        with _autopilot_background_lock:
+            policy_running = bool(_autopilot_background_thread and _autopilot_background_thread.is_alive())
+
+    state = _AUTOPILOT_STATE if isinstance(_AUTOPILOT_STATE, dict) else {}
+    stats = state.get("stats", {}) if isinstance(state.get("stats", {}), dict) else {}
+    raw_last_cycle = state.get("stats", {}).get("last_cycle") if isinstance(state, dict) else None
+
+    return {
+        "enabled": _autopilot_is_enabled(),
+        "dry_run": bool(state.get("dry_run", False) if isinstance(state, dict) else False),
+        "active_executor": _autopilot_active_executor(),
+        "interval": _autopilot_configured_interval(),
+        "max_actions_per_cycle": _autopilot_configured_max_actions(),
+        "hub_loop_running": hub_running,
+        "policy_loop_running": policy_running,
+        "executor_conflict": bool(hub_running and policy_running),
+        "allowed_types": sorted(set(HUB_NEXT_ACTION_AUTOPILOT_ALLOW_TYPES)),
+        "last_cycle": raw_last_cycle,
+        "last_run": _hub_next_action_autopilot_last_run.isoformat() if _hub_next_action_autopilot_last_run else None,
+        "last_error": _hub_next_action_autopilot_last_error,
+        "policy_loop_last_run": _autopilot_background_last_run.isoformat() if _autopilot_background_last_run else None,
+        "policy_loop_last_error": _autopilot_background_last_error,
+        "state": state.get("state") if isinstance(state, dict) else None,
+        "policy": state.get("policy", {}) if isinstance(state.get("policy", {}), dict) else {},
+        "stats": {
+            "total_cycles": int(stats.get("total_cycles", 0) or 0),
+            "actions_executed": int(stats.get("actions_executed", 0) or 0),
+            "actions_blocked": int(stats.get("actions_blocked", 0) or 0),
+            "errors": int(stats.get("errors", 0) or 0),
+            "timeouts": int(stats.get("timeouts", 0) or 0),
+            "consecutive_timeouts": int(stats.get("consecutive_timeouts", 0) or 0),
+            "timeout_circuit_opens": int(stats.get("timeout_circuit_opens", 0) or 0),
+            "last_cycle": raw_last_cycle,
+        },
+        "guard": _autopilot_guard_snapshot(),
+    }
+
+
+def _build_hub_autopilot_status_payload(include_legacy_aliases: bool = False) -> Dict[str, Any]:
+    """Return autopilot status in dashboard/API format with optional legacy aliases."""
+    snapshot = _autopilot_runtime_snapshot()
+    payload = {
+        "success": True,
+        "enabled": snapshot.get("enabled"),
+        "dry_run": snapshot.get("dry_run"),
+        "active_executor": snapshot.get("active_executor"),
+        "executor_conflict": bool(snapshot.get("executor_conflict")),
+        "interval": snapshot.get("interval"),
+        "interval_sec": snapshot.get("interval"),
+        "max_actions_per_cycle": snapshot.get("max_actions_per_cycle"),
+        "max_per_tick": snapshot.get("max_actions_per_cycle"),
+        "running": bool(snapshot.get("hub_loop_running") or snapshot.get("policy_loop_running")),
+        "hub_loop_running": snapshot.get("hub_loop_running"),
+        "policy_loop_running": snapshot.get("policy_loop_running"),
+        "last_run": snapshot.get("last_run"),
+        "last_error": snapshot.get("last_error"),
+        "last_cycle": snapshot.get("last_cycle"),
+        "action_timeout_sec": _AUTOPILOT_ACTION_TIMEOUT_SEC if "_AUTOPILOT_ACTION_TIMEOUT_SEC" in globals() else None,
+        "allowed_types": snapshot.get("allowed_types", []),
+        "policy": snapshot.get("policy", {}),
+        "stats": snapshot.get("stats"),
+        "guard": snapshot.get("guard"),
+        "timestamp": datetime.now().isoformat(),
+        "state": snapshot.get("state"),
+    }
+    if include_legacy_aliases:
+        payload["interval_sec"] = payload.get("interval")
+        payload["max_per_tick"] = payload.get("max_actions_per_cycle")
+        payload["executor"] = payload.get("active_executor")
+        payload["running_mode"] = "hub_loop" if payload.get("hub_loop_running") else "policy_loop"
+    return payload
+
+
+def _autopilot_parse_bool(raw_value: Any, default: bool = False) -> bool:
+    if isinstance(raw_value, bool):
+        return raw_value
+    if raw_value is None:
+        return bool(default)
+    token = str(raw_value).strip().lower()
+    if token in {"1", "true", "yes", "y", "on", "enable", "enabled"}:
+        return True
+    if token in {"0", "false", "no", "n", "off", "disable", "disabled"}:
+        return False
+    return bool(default)
+
+
+def _autopilot_policy_patch(policy_raw: Any) -> Tuple[Dict[str, Any], List[str]]:
+    if not isinstance(policy_raw, dict):
+        return {}, ["policy must be an object"]
+    patch: Dict[str, Any] = {}
+    errors: List[str] = []
+    bool_keys = {
+        "allow_dispatch",
+        "allow_reassign",
+        "allow_release_lease",
+        "allow_inspect_terminal",
+    }
+    for key in bool_keys:
+        if key in policy_raw:
+            patch[key] = bool(policy_raw.get(key))
+
+    if "require_confidence" in policy_raw:
+        try:
+            patch["require_confidence"] = max(0.0, min(1.0, float(policy_raw.get("require_confidence"))))
+        except (TypeError, ValueError):
+            errors.append("policy.require_confidence must be a number")
+
+    if "max_priority" in policy_raw:
+        priority = str(policy_raw.get("max_priority") or "").strip().lower()
+        if priority not in {"p0", "p1", "p2", "p3"}:
+            errors.append("policy.max_priority must be one of p0,p1,p2,p3")
+        else:
+            patch["max_priority"] = priority
+
+    if "blocked_actions" in policy_raw:
+        blocked_raw = policy_raw.get("blocked_actions")
+        if not isinstance(blocked_raw, list):
+            errors.append("policy.blocked_actions must be a list")
+        else:
+            blocked: List[str] = []
+            for item in blocked_raw:
+                action_name = str(item or "").strip()
+                if action_name and action_name not in blocked:
+                    blocked.append(action_name)
+            patch["blocked_actions"] = blocked
+
+    return patch, errors
+
+
+def _autopilot_parse_max_actions(raw_value: Any) -> Tuple[Optional[int], Optional[str]]:
+    if raw_value is None:
+        return None, None
+    try:
+        value = max(1, min(10, int(raw_value)))
+        return value, None
+    except (TypeError, ValueError):
+        return None, "max_actions_per_cycle must be an integer"
+
+
+def _autopilot_apply_control(action_raw: str, options: Optional[Dict[str, Any]] = None) -> Tuple[bool, Dict[str, Any], str]:
+    """Apply autopilot control action and return (success, state_snapshot, message)."""
+    action = str(action_raw or "").strip().lower()
+    opts = options if isinstance(options, dict) else {}
+
+    if action == "start":
+        requested_executor = str(
+            opts.get("active_executor") or opts.get("executor") or _autopilot_active_executor()
+        ).strip()
+        executor = _normalize_autopilot_executor(requested_executor)
+        interval_raw = opts.get("interval", opts.get("interval_sec"))
+        max_actions_raw = opts.get("max_actions_per_cycle", opts.get("max_per_tick"))
+        max_actions, max_actions_error = _autopilot_parse_max_actions(max_actions_raw)
+        policy_patch, policy_errors = ({}, [])
+        if "policy" in opts:
+            policy_patch, policy_errors = _autopilot_policy_patch(opts.get("policy"))
+        if policy_errors:
+            error_message = "; ".join(policy_errors)
+            return False, {"success": False, "error": error_message}, error_message
+        if "_AUTOPILOT_STATE" in globals() and isinstance(_AUTOPILOT_STATE, dict):
+            _AUTOPILOT_STATE["enabled"] = True
+            _AUTOPILOT_STATE["active_executor"] = executor
+            if interval_raw is not None:
+                try:
+                    _AUTOPILOT_STATE["interval"] = max(5, int(interval_raw))
+                except (TypeError, ValueError):
+                    return False, {"success": False, "error": "interval must be an integer"}, "interval must be an integer"
+            if max_actions_error:
+                return False, {"success": False, "error": max_actions_error}, max_actions_error
+            if max_actions is not None:
+                _AUTOPILOT_STATE["max_actions_per_cycle"] = max_actions
+            if "dry_run" in opts:
+                _AUTOPILOT_STATE["dry_run"] = _autopilot_parse_bool(opts.get("dry_run"), default=bool(_AUTOPILOT_STATE.get("dry_run", True)))
+            if policy_patch:
+                _AUTOPILOT_STATE["policy"].update(policy_patch)
+        _autopilot_set_enabled(True)
+        force_restart = _autopilot_parse_bool(opts.get("force_restart"), default=True)
+        _autopilot_reconcile_runtimes(force_restart=force_restart)
+        if "_AUTOPILOT_STATE" in globals() and isinstance(_AUTOPILOT_STATE, dict):
+            _AUTOPILOT_STATE["active_executor"] = executor
+        return True, _build_hub_autopilot_status_payload(include_legacy_aliases=True), "Autopilot started"
+
+    if action == "stop":
+        _autopilot_set_enabled(False)
+        _autopilot_reconcile_runtimes(force_restart=False)
+        return True, _build_hub_autopilot_status_payload(include_legacy_aliases=True), "Autopilot stopped"
+
+    if action == "trigger":
+        max_actions_raw = opts.get("max_actions_per_cycle", opts.get("max_per_tick"))
+        max_actions, max_actions_error = _autopilot_parse_max_actions(max_actions_raw)
+        if max_actions_error:
+            return False, {"success": False, "error": max_actions_error}, max_actions_error
+        dry_run_override = None
+        if "dry_run" in opts:
+            dry_run_override = _autopilot_parse_bool(opts.get("dry_run"), default=bool(_AUTOPILOT_STATE.get("dry_run", True)))
+        auto_enable = _autopilot_parse_bool(opts.get("auto_enable"), default=True)
+        try:
+            if not _autopilot_is_enabled():
+                if not auto_enable:
+                    return False, {"success": False, "error": "Autopilot disabled"}, "Autopilot disabled"
+                _autopilot_set_enabled(True)
+            _autopilot_reconcile_runtimes(force_restart=False)
+            result = _autopilot_cycle_once(
+                dry_run_override=dry_run_override,
+                use_max_actions=max_actions if max_actions is not None else _autopilot_configured_max_actions(),
+                context="hub_loop_legacy_trigger",
+            )
+            result["running"] = bool(_hub_next_action_autopilot_thread and _hub_next_action_autopilot_thread.is_alive())
+            result["last_error"] = result.get("error") or _hub_next_action_autopilot_last_error
+            result["state"] = _build_hub_autopilot_status_payload(include_legacy_aliases=True)
+            result["auto_enabled"] = bool(auto_enable and result["state"].get("enabled"))
+            return True, result, "Autopilot triggered"
+        except Exception as exc:
+            return False, {"success": False, "error": str(exc)}, f"Autopilot trigger failed: {exc}"
+
+    return False, {"success": False, "error": "Unknown action"}, "Unknown action"
+
+
+def _stop_hub_autopilot_loop() -> bool:
+    """Stop hub-loop thread if running."""
+    global _hub_next_action_autopilot_thread
+    stopped = False
+    with _hub_next_action_autopilot_lock:
+        if _hub_next_action_autopilot_thread and _hub_next_action_autopilot_thread.is_alive():
+            _hub_next_action_autopilot_stop_event.set()
+            _hub_next_action_autopilot_thread.join(timeout=4)
+            stopped = True
+        _hub_next_action_autopilot_stop_event.clear()
+        _hub_next_action_autopilot_thread = None
+    return stopped
+
+
+def _stop_policy_autopilot_loop() -> bool:
+    """Stop policy-loop thread if running."""
+    stopped = False
+    global _autopilot_background_thread
+    if "_autopilot_background_stop_event" not in globals():
+        return False
+    with _autopilot_background_lock:
+        if _autopilot_background_thread and _autopilot_background_thread.is_alive():
+            _autopilot_background_stop_event.set()
+            _autopilot_background_thread.join(timeout=4)
+            stopped = True
+        _autopilot_background_stop_event.clear()
+        _autopilot_background_thread = None
+    return stopped
+
+
+def _set_autopilot_executor(executor: str, reason: str = "", force_restart: bool = True) -> str:
+    """Switch active executor atomically and return the active executor."""
+    target = _normalize_autopilot_executor(executor)
+    if "_AUTOPILOT_STATE" not in globals() or not isinstance(_AUTOPILOT_STATE, dict):
+        return target
+    current = _autopilot_active_executor()
+    if target == current and _autopilot_is_enabled() and force_restart:
+        if target == "hub_loop":
+            _ensure_hub_autopilot_started()
+        else:
+            _ensure_autopilot_background_started()
+        return current
+
+    # stop the other loop so we never run two loops in parallel
+    if current == "hub_loop":
+        _stop_hub_autopilot_loop()
+    elif current == "policy_loop":
+        _stop_policy_autopilot_loop()
+
+    _AUTOPILOT_STATE["active_executor"] = target
+    if "autopilot_executor" in _AUTOPILOT_STATE:
+        _AUTOPILOT_STATE["autopilot_executor"] = target
+
+    if _autopilot_is_enabled():
+        if target == "hub_loop":
+            _ensure_hub_autopilot_started()
+        else:
+            _ensure_autopilot_background_started()
+
+    if reason:
+        state.add_orion_log(f"Autopilot executor switched to {target} ({reason})", "info")
+    return target
 
 
 def _hub_next_action_autopilot_loop() -> None:
@@ -409,63 +851,45 @@ def _hub_next_action_autopilot_loop() -> None:
 
     while not _hub_next_action_autopilot_stop_event.is_set():
         try:
-            if not HUB_NEXT_ACTION_AUTOPILOT_ENABLED:
-                _hub_next_action_autopilot_stop_event.wait(HUB_NEXT_ACTION_AUTOPILOT_INTERVAL_SEC)
-                continue
-            if "_AUTOPILOT_STATE" in dir():
-                active_executor = str(_AUTOPILOT_STATE.get("active_executor", "policy_loop")).strip().lower()
-                if active_executor != "hub_loop":
-                    _hub_next_action_autopilot_stop_event.wait(HUB_NEXT_ACTION_AUTOPILOT_INTERVAL_SEC)
-                    continue
-
-            actions = _hub_next_actions(limit=HUB_NEXT_ACTION_AUTOPILOT_MAX_PER_TICK * 2)
-            if not actions:
-                _hub_next_action_autopilot_stop_event.wait(HUB_NEXT_ACTION_AUTOPILOT_INTERVAL_SEC)
+            if not _autopilot_is_enabled() or _autopilot_active_executor() != "hub_loop":
+                if _hub_next_action_autopilot_stop_event.is_set():
+                    break
+                _hub_next_action_autopilot_stop_event.wait(_autopilot_configured_interval())
                 continue
 
-            executed_count = 0
-            for action in actions[:HUB_NEXT_ACTION_AUTOPILOT_MAX_PER_TICK]:
-                action_type = action.get("action_type", "")
-
-                if HUB_NEXT_ACTION_AUTOPILOT_ALLOW_TYPES and action_type.lower() not in HUB_NEXT_ACTION_AUTOPILOT_ALLOW_TYPES:
-                    logger.debug(f"Skipping {action_type}: not allowed")
-                    continue
-
-                should_exec, reason = True, "Allowed"
-                if "_AUTOPILOT_STATE" in dir():
-                    should_exec, reason = _autopilot_should_execute(action)
-
-                if not should_exec:
-                    logger.debug(f"Blocked: {reason}")
-                    continue
-
-                result = _autopilot_execute_action(action)
-                executed_count += 1
-
-                if result.get("success"):
-                    logger.info(f"✅ Autopilot: {action_type}")
-                    state.add_agent_log("autopilot", f"🎯 Auto: {action.get('title', action_type)}", "success")
-                else:
-                    logger.warning(f"❌ Autopilot failed: {result.get('error')}")
-                    state.add_agent_log("autopilot", f"⚠️ Failed: {action.get('title', action_type)}", "warning")
-
+            result = _autopilot_cycle_once(dry_run_override=None, use_max_actions=_autopilot_configured_max_actions(), context="hub_loop")
             _hub_next_action_autopilot_last_run = datetime.now()
-            _hub_next_action_autopilot_last_error = None
-            if executed_count > 0:
-                logger.info(f"🤖 Autopilot: {executed_count} actions")
+            _hub_next_action_autopilot_last_error = result.get("error")
+            if result.get("executed"):
+                logger.info(
+                    "🤖 Hub autopilot: {} executed, {} blocked, {} errors".format(
+                        len(result.get("executed", [])),
+                        len(result.get("blocked", [])),
+                        len(result.get("errors", [])),
+                    )
+                )
+            if not result.get("success", False) and result.get("error"):
+                logger.warning(f"Hub autopilot cycle skipped: {result.get('error')}")
+            if not result.get("scanned") and not result.get("errors") and not result.get("blocked"):
+                _hub_next_action_autopilot_stop_event.wait(_autopilot_configured_interval())
+                continue
 
         except Exception as exc:
             logger.error(f"Autopilot error: {exc}")
             _hub_next_action_autopilot_last_error = str(exc)
 
-        _hub_next_action_autopilot_stop_event.wait(HUB_NEXT_ACTION_AUTOPILOT_INTERVAL_SEC)
+        _hub_next_action_autopilot_stop_event.wait(_autopilot_configured_interval())
 
 
 def _ensure_hub_autopilot_started() -> None:
     global _hub_next_action_autopilot_thread
+    if not _autopilot_is_enabled() or _autopilot_active_executor() != "hub_loop":
+        _stop_hub_autopilot_loop()
+        return
     with _hub_next_action_autopilot_lock:
         if _hub_next_action_autopilot_thread and _hub_next_action_autopilot_thread.is_alive():
             return
+        _stop_policy_autopilot_loop()
         _hub_next_action_autopilot_stop_event.clear()
         _hub_next_action_autopilot_thread = threading.Thread(
             target=_hub_next_action_autopilot_loop,
@@ -473,6 +897,8 @@ def _ensure_hub_autopilot_started() -> None:
             daemon=True,
         )
         _hub_next_action_autopilot_thread.start()
+        if "_AUTOPILOT_STATE" in globals() and isinstance(_AUTOPILOT_STATE, dict):
+            _AUTOPILOT_STATE["state"] = "running"
         logger.info("✅ Hub autopilot started")
 
 
@@ -515,6 +941,7 @@ _INTERNAL_LOOPBACK_AUTH_EXEMPT_PATHS = {
     "/api/automation/memory",
     "/api/automation/memory/analyze",
     "/api/automation/preferences",
+    "/api/automation/intake",
     "/api/automation/metrics",
     "/api/automation/health",
     "/api/automation/alerts",
@@ -535,10 +962,12 @@ _INTERNAL_LOOPBACK_AUTH_EXEMPT_PATHS = {
     "/api/hub/autopilot/preview",
     # Hub endpoints for local testing
     "/api/hub/next-actions",
+    "/api/hub/strategic-brief",
     "/api/hub/next-action/autopilot/status",
     "/api/hub/next-action/autopilot/control",
     "/api/hub/workload",
     "/api/hub/tasks",
+    "/api/interventions",
     # Bridge endpoints
     "/api/bridge/sync/terminals",
     "/api/bridge/terminals",
@@ -742,6 +1171,10 @@ def _get_autonomy_profile() -> str:
 
 def _is_full_auto_profile() -> bool:
     return _get_autonomy_profile() == "full_auto"
+
+
+def _autonomy_no_human_prompts_enabled() -> bool:
+    return bool(AUTONOMY_NO_HUMAN_PROMPTS or _is_full_auto_profile())
 
 
 def _set_autonomy_profile(profile: str) -> str:
@@ -1914,7 +2347,7 @@ class PersistentState:
         if state_file.exists():
             try:
                 with self._lock:
-                    with open(state_file, 'r') as f:
+                    with open(state_file, 'r', encoding='utf-8') as f:
                         data = json.load(f)
                         loaded_agent_logs = data.get('agent_logs', {})
                         if isinstance(loaded_agent_logs, dict):
@@ -1944,7 +2377,7 @@ class PersistentState:
                 tmp_path = state_file.with_name(
                     f"{state_file.name}.{os.getpid()}.{threading.get_ident()}.tmp"
                 )
-                with open(tmp_path, 'w') as f:
+                with open(tmp_path, 'w', encoding='utf-8') as f:
                     json.dump({
                         'agent_logs': {agent: logs[-100:] for agent, logs in self.agent_logs.items()},
                         'orion_logs': self.orion_logs[-100:],
@@ -2115,6 +2548,28 @@ class PersistentState:
                     self._save()
                     socketio.emit('decision_updated', decision)
                     return dict(decision)
+            return None
+
+    def respond_decision(
+        self,
+        decision_id: str,
+        response: Dict[str, Any],
+        actor: str = "dashboard",
+    ) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            for decision in self.pending_decisions:
+                if decision.get("id") != decision_id:
+                    continue
+                decision["decision"] = "responded"
+                decision["manual"] = True
+                decision["response"] = dict(response or {})
+                decision["response_actor"] = str(actor or "dashboard").strip() or "dashboard"
+                decision["response_at"] = datetime.now().isoformat()
+                self.decision_history.append(decision)
+                self.pending_decisions.remove(decision)
+                self._save()
+                socketio.emit("decision_updated", decision)
+                return dict(decision)
             return None
 
     def get_status(self) -> Dict:
@@ -2662,6 +3117,12 @@ def _monitor_auto_approve_safe_decisions() -> None:
     for item in pending:
         try:
             kind = str(item.get("kind", "")).strip()
+            if kind == "human_input_request":
+                if _autonomy_no_human_prompts_enabled() and AUTOMATION_FULL_AUTO_AUTO_RESPOND_HUMAN_INPUT:
+                    auto_resolved = _automation_try_auto_respond_human_input_request(item, actor="monitor_auto")
+                    if auto_resolved.get("success"):
+                        continue
+                continue
             if kind != "command_intervention":
                 if auto_approve_all:
                     decision_id = str(item.get("id", "")).strip()
@@ -3032,6 +3493,10 @@ def build_status_payload() -> Dict[str, Any]:
     payload["ops_snapshot"] = ops
     payload["events_digest"] = digest
     payload["ai_summary"] = _build_ai_summary_payload(payload, ops, digest, feedback_recent)
+    try:
+        payload["autopilot"] = _build_hub_autopilot_status_payload(include_legacy_aliases=True)
+    except Exception as exc:
+        payload["autopilot"] = {"success": False, "error": str(exc)}
 
     return payload
 
@@ -3066,6 +3531,7 @@ def _build_system_slo_snapshot() -> Dict[str, Any]:
     return {
         "timestamp": now.isoformat(),
         "uptime_sec": max(0, int((now - _monitor_process_started_at).total_seconds())),
+        "autopilot": _build_hub_autopilot_status_payload(include_legacy_aliases=True),
         "monitor": {
             "autopilot_enabled": bool(monitor.get("enabled")),
             "thread_alive": bool(monitor.get("thread_alive")),
@@ -3636,6 +4102,7 @@ def _monitor_supervisor_status() -> Dict[str, Any]:
             "full_auto_user_pause_max_sec": MONITOR_FULL_AUTO_USER_PAUSE_MAX_SEC,
             "full_auto_maintenance_lease_sec": MONITOR_FULL_AUTO_MAINTENANCE_LEASE_SEC,
             "openclaw_execution_mode": OPENCLAW_EXECUTION_MODE,
+            "openclaw_extension_automation_enabled": OPENCLAW_EXTENSION_AUTOMATION_ENABLED,
             "openclaw_autopilot_flow_enabled": MONITOR_AUTOPILOT_OPENCLAW_FLOW_ENABLED,
             "openclaw_autopilot_flow_cooldown_sec": MONITOR_AUTOPILOT_OPENCLAW_FLOW_COOLDOWN_SEC,
             "last_openclaw_flow": {key: value.isoformat() for key, value in _monitor_last_openclaw_flow_at.items()},
@@ -3682,6 +4149,28 @@ def _monitor_maybe_enqueue_openclaw_flow(instance_id: str, reason: str) -> Dict[
             return {"attempted": False, "success": False, "reason": "cooldown"}
         _monitor_last_openclaw_flow_at[instance_id] = now
 
+    autopilot_session = f"autopilot:{instance_id}"
+    if OPENCLAW_QUEUE_ENABLED:
+        snapshot = _openclaw_command_manager.queue_snapshot()
+        sessions = snapshot.get("sessions") if isinstance(snapshot.get("sessions"), list) else []
+        for row in sessions:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("session_id") or "").strip() != autopilot_session:
+                continue
+            queue_depth = int(row.get("queue_depth", 0) or 0)
+            active_request = str(row.get("active_request_id") or "").strip()
+            if queue_depth > 0 or active_request:
+                return {
+                    "attempted": False,
+                    "success": False,
+                    "reason": "queue_busy",
+                    "session_id": autopilot_session,
+                    "queue_depth": queue_depth,
+                    "active_request_id": active_request or None,
+                }
+            break
+
     chat_text = MONITOR_AUTOPILOT_OPENCLAW_FLOW_CHAT or "auto unstick run one cycle resume"
     queued = _enqueue_openclaw_command(
         "flow",
@@ -3689,7 +4178,7 @@ def _monitor_maybe_enqueue_openclaw_flow(instance_id: str, reason: str) -> Dict[
             "chat_text": chat_text,
             "source": "autopilot",
             "mode": "async",
-            "session_id": f"autopilot:{instance_id}",
+            "session_id": autopilot_session,
             "route_mode": "auto",
             "priority": 1,
             "risk_level": "medium",
@@ -4147,6 +4636,7 @@ def _build_openclaw_metrics_snapshot(include_events: bool = False, event_limit: 
         "mode_capabilities": {
             "browser_actions_enabled": _openclaw_browser_actions_enabled(),
             "dashboard_flow_enabled": _openclaw_dashboard_flow_enabled(),
+            "extension_automation_enabled": OPENCLAW_EXTENSION_AUTOMATION_ENABLED,
         },
         "counters": counters,
         "attach_success_rate": round(float(counters.get("attach_success", 0)) / attach_attempts, 4),
@@ -4161,6 +4651,7 @@ def _build_openclaw_metrics_snapshot(include_events: bool = False, event_limit: 
         },
         "updated_at": updated_at,
         "attach_state": attach_state,
+        "runtime_guard": _openclaw_runtime_guard_snapshot(),
         "token": {
             "present": bool(info.token),
             "source": info.source,
@@ -4724,9 +5215,19 @@ def _openclaw_attempt_attach(force: bool = False) -> Dict[str, Any]:
         steps: List[Dict[str, Any]] = []
         _openclaw_metrics_inc("attach_attempts")
 
+        if not OPENCLAW_EXTENSION_AUTOMATION_ENABLED:
+            _openclaw_metrics_inc("attach_failed")
+            _openclaw_metrics_event("attach_blocked", {"reason": "extension_automation_disabled"})
+            return {
+                "success": False,
+                "error": "OpenClaw extension automation is disabled",
+                "error_code": "EXTENSION_AUTOMATION_DISABLED",
+            }
+
         if not pyautogui:
             _openclaw_metrics_inc("attach_failed")
             _openclaw_metrics_event("attach_failed", {"error": "pyautogui not available"})
+            _openclaw_runtime_guard_record_attach(False, detail="pyautogui_unavailable")
             return {"success": False, "error": "pyautogui not available"}
 
         with _ATTACH_STATE_LOCK:
@@ -4761,6 +5262,7 @@ def _openclaw_attempt_attach(force: bool = False) -> Dict[str, Any]:
                 _attach_state.cooldown_until = datetime.now() + timedelta(seconds=OPENCLAW_AUTO_ATTACH_COOLDOWN_SEC)
             _openclaw_metrics_inc("attach_failed")
             _openclaw_metrics_event("attach_failed", {"error": "Extension path unavailable"})
+            _openclaw_runtime_guard_record_attach(False, detail="extension_path_unavailable")
             return {"success": False, "error": "Extension path unavailable", "steps": steps}
 
         if OPENCLAW_LAUNCH_WITH_EXTENSION:
@@ -4820,9 +5322,11 @@ def _openclaw_attempt_attach(force: bool = False) -> Dict[str, Any]:
 
         if attached:
             _openclaw_metrics_inc("attach_success")
+            _openclaw_runtime_guard_record_attach(True, detail="attach_success")
         else:
             _openclaw_metrics_inc("attach_failed")
             _openclaw_metrics_event("attach_failed", {"method": method_used or "unknown"})
+            _openclaw_runtime_guard_record_attach(False, detail=f"method:{method_used or 'unknown'}")
 
         return {"success": attached, "method": method_used, "steps": steps}
     finally:
@@ -5045,6 +5549,122 @@ def _openclaw_flow_fallback(chat_text: str) -> Optional[Dict[str, Any]]:
             "result": snapshot,
         })
 
+    # Business due-diligence fallback when browser flow cannot open dashboard.
+    if any(token in normalized for token in ("teams", "gmail", "email", "ravin", "khiem", "hop tac", "hợp tác", "partnership")):
+        intake = _automation_get_intake_store(redact_secret=False)
+        channels = intake.get("channels") if isinstance(intake.get("channels"), dict) else {}
+        partners = intake.get("partners") if isinstance(intake.get("partners"), dict) else {}
+        accounts = intake.get("accounts") if isinstance(intake.get("accounts"), dict) else {}
+        mail_mode = str(channels.get("mail_mode", "edge_gmail") or "edge_gmail").strip().lower()
+        target_gmail = str(partners.get("target_gmail", "") or "").strip()
+        khiem_selected = str(accounts.get("khiem_selected", "") or partners.get("khiem_team_hint", "") or "").strip()
+
+        if _automation_prompt_on_stuck_enabled() and not khiem_selected:
+            prompt = _automation_request_due_diligence_context(
+                reason="missing_khiem_account",
+                source="openclaw_flow_fallback",
+                chat_text=chat_text,
+            )
+            record(
+                "human_input_request",
+                {
+                    "success": True,
+                    "decision_id": prompt.get("id"),
+                    "reason": "missing_khiem_account",
+                },
+            )
+
+        app_rows = _automation_execute_app("list_running", {})
+        record("app_list_running", app_rows)
+
+        window_rows = _automation_execute_window("list", {})
+        record("window_list", window_rows)
+
+        mail_params: Dict[str, Any] = {"limit": 20}
+        if "ravin" in normalized:
+            mail_params["query"] = "ravin"
+        if target_gmail:
+            mail_params.setdefault("account_contains", target_gmail)
+
+        if mail_mode == "edge_gmail":
+            mail_recent = {
+                "success": False,
+                "error": "Mail route is configured for Edge Gmail. Use browser flow in Edge to inspect inbox.",
+                "error_code": "MAIL_CHANNEL_BROWSER_REQUIRED",
+                "channel": "edge_gmail",
+                "target_gmail": target_gmail,
+                "next_step": "open_edge_gmail_and_switch_account",
+            }
+            if _automation_prompt_on_stuck_enabled() and not target_gmail:
+                prompt = _automation_request_due_diligence_context(
+                    reason="missing_target_gmail",
+                    source="openclaw_flow_fallback",
+                    chat_text=chat_text,
+                )
+                record(
+                    "human_input_request",
+                    {
+                        "success": True,
+                        "decision_id": prompt.get("id"),
+                        "reason": "missing_target_gmail",
+                    },
+                )
+        else:
+            mail_recent = _automation_execute_mail("list_recent", mail_params)
+            if (
+                not bool(mail_recent.get("success"))
+                and str(mail_recent.get("error_code", "")).strip() in {"MAIL_CREDENTIALS_MISSING", "MAIL_UNAVAILABLE"}
+                and _automation_prompt_on_stuck_enabled()
+            ):
+                prompt = _automation_request_due_diligence_context(
+                    reason="mail_access_blocked",
+                    source="openclaw_flow_fallback",
+                    chat_text=chat_text,
+                )
+                record(
+                    "human_input_request",
+                    {
+                        "success": True,
+                        "decision_id": prompt.get("id"),
+                        "reason": "mail_access_blocked",
+                    },
+                )
+        record("mail_list_recent", mail_recent)
+
+    if any(token in normalized for token in ("50k", "50000", "20%", "equity", "valuation", "dinh gia")):
+        intake = _automation_get_intake_store(redact_secret=True)
+        valuation_cfg = intake.get("valuation") if isinstance(intake.get("valuation"), dict) else {}
+        raise_match = re.search(r"(\d+(?:[\\.,]\d+)?)\\s*k", normalized)
+        equity_match = re.search(r"(\d+(?:[\\.,]\d+)?)\\s*%", normalized)
+        raise_usd = float(valuation_cfg.get("raise_usd", 0) or 0)
+        equity_pct = float(valuation_cfg.get("equity_pct", 0) or 0)
+        if raise_match:
+            raise_usd = float(str(raise_match.group(1)).replace(",", ".")) * 1000.0
+        if equity_match:
+            equity_pct = float(str(equity_match.group(1)).replace(",", "."))
+
+        result: Dict[str, Any] = {
+            "raise_usd": round(raise_usd, 2),
+            "equity_pct": round(equity_pct, 4),
+            "verdict": "insufficient_data",
+        }
+        if raise_usd > 0 and equity_pct > 0:
+            post_money = raise_usd / (equity_pct / 100.0)
+            pre_money = post_money - raise_usd
+            result.update(
+                {
+                    "post_money_valuation_usd": round(post_money, 2),
+                    "pre_money_valuation_usd": round(pre_money, 2),
+                }
+            )
+            if post_money < 500000:
+                result["verdict"] = "likely_too_low_for_ambitious_multi-product_ai"
+                result["recommendation"] = "Prefer SAFE/note or lower equity (e.g. 5-10%) unless deal brings exceptional strategic distribution."
+            else:
+                result["verdict"] = "potentially_reasonable_if_traction_and_strategic_value_are_real"
+                result["recommendation"] = "Validate investor strategic support and milestone-based release terms."
+        actions.append({"action": "valuation_quick_assessment", "success": True, "result": result})
+
     if not actions:
         return None
 
@@ -5085,6 +5705,13 @@ def _openclaw_mode_gate(command_type: str) -> Dict[str, Any]:
             "error_code": "FLOW_MODE_DISABLED",
             "error": "OpenClaw dashboard flow requires OPENCLAW_EXECUTION_MODE=browser",
             "reason": f"execution_mode_{OPENCLAW_EXECUTION_MODE}",
+        }
+    if ctype == "attach" and not OPENCLAW_EXTENSION_AUTOMATION_ENABLED:
+        return {
+            "allowed": False,
+            "error_code": "EXTENSION_AUTOMATION_DISABLED",
+            "error": "OpenClaw extension automation is disabled",
+            "reason": "extension_automation_disabled",
         }
     if ctype == "attach" and OPENCLAW_EXECUTION_MODE != "browser":
         return {
@@ -5163,6 +5790,7 @@ def _openclaw_self_heal_status() -> Dict[str, Any]:
             "last_open": _openclaw_self_heal_last_open.isoformat() if _openclaw_self_heal_last_open else None,
             "last_fallback": _openclaw_self_heal_last_fallback.isoformat() if _openclaw_self_heal_last_fallback else None,
             "last_error": _openclaw_self_heal_last_error,
+            "runtime_guard": _openclaw_runtime_guard_snapshot(),
         }
 
 
@@ -5303,12 +5931,19 @@ def _openclaw_self_heal_once() -> Dict[str, Any]:
     return detail
 
 
-def _openclaw_dashboard_flow(chat_text: str = "", approve: bool = True, deny: bool = False) -> Dict[str, Any]:
+def _openclaw_dashboard_flow(chat_text: str = "", approve: bool = True, deny: bool = False, dashboard_url: str = "") -> Dict[str, Any]:
     global _openclaw_flow_last_open
     steps: List[Dict[str, Any]] = []
     _openclaw_metrics_inc("flow_runs")
     token_info = _collect_token_info()
     token_status = _create_token_status(token_info)
+    target_dashboard_url = str(dashboard_url or OPENCLAW_DASHBOARD_URL).strip() or OPENCLAW_DASHBOARD_URL
+    query_suffix = ""
+    try:
+        parsed_dashboard = urlparse(target_dashboard_url)
+        query_suffix = f"?{parsed_dashboard.query}" if parsed_dashboard.query else ""
+    except Exception:
+        query_suffix = ""
     def _fail_flow(result: Dict[str, Any], event: str, detail: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         _openclaw_metrics_inc("flow_failures")
         _openclaw_metrics_event(event, detail)
@@ -5407,22 +6042,41 @@ def _openclaw_dashboard_flow(chat_text: str = "", approve: bool = True, deny: bo
 
     did_open_dashboard = False
     if allow_open_dashboard():
-        if _openclaw_is_loopback_dashboard_url(OPENCLAW_DASHBOARD_URL):
-            probe_result = _probe_http_url(OPENCLAW_DASHBOARD_URL, timeout_sec=1.2)
-            steps.append(_record_flow_step("dashboard_probe", probe_result))
-            if not probe_result.get("success"):
+        candidate_urls = [target_dashboard_url]
+        fallback_urls = [
+            f"http://127.0.0.1:5000/live{query_suffix}",
+            f"http://localhost:5000/live{query_suffix}",
+            f"http://127.0.0.1:5050/live{query_suffix}",
+            f"http://localhost:5050/live{query_suffix}",
+        ]
+        for candidate in fallback_urls:
+            if candidate not in candidate_urls:
+                candidate_urls.append(candidate)
+
+        selected_dashboard_url = target_dashboard_url
+        if _openclaw_is_loopback_dashboard_url(target_dashboard_url):
+            selected_dashboard_url = ""
+            last_probe: Dict[str, Any] = {}
+            for candidate in candidate_urls:
+                probe_result = _probe_http_url(candidate, timeout_sec=1.2)
+                last_probe = probe_result
+                steps.append(_record_flow_step("dashboard_probe", probe_result, detail=candidate))
+                if probe_result.get("success"):
+                    selected_dashboard_url = candidate
+                    break
+            if not selected_dashboard_url:
                 if fallback := attempt_fallback("dashboard_unreachable"):
                     return fallback
                 return _fail_flow(
                     {"success": False, "steps": steps, "token_status": token_status},
                     "flow_dashboard_probe_failed",
-                    {"url": OPENCLAW_DASHBOARD_URL, "error": probe_result.get("error")},
+                    {"url": target_dashboard_url, "error": last_probe.get("error")},
                 )
 
-        open_step = run_step("open", ["open", OPENCLAW_DASHBOARD_URL])
+        open_step = run_step("open", ["open", selected_dashboard_url or target_dashboard_url])
         if not open_step["success"]:
             if needs_attach(open_step.get("result", {})) and attempt_attach("open_failed"):
-                open_retry = run_step("open_retry", ["open", OPENCLAW_DASHBOARD_URL])
+                open_retry = run_step("open_retry", ["open", selected_dashboard_url or target_dashboard_url])
                 if open_retry["success"]:
                     open_step = open_retry
             if not open_step["success"]:
@@ -5605,6 +6259,8 @@ def _classify_openclaw_failure(result: Any) -> str:
         return "health"
     if error_code in {"ATTACH_FAILED", "ATTACH_THROTTLED"}:
         return "attach"
+    if error_code in {"OPENCLAW_TEMP_DISABLED"}:
+        return "policy"
     if error_code in {"BROWSER_MODE_DISABLED", "FLOW_MODE_DISABLED", "ATTACH_MODE_DISABLED"}:
         return "policy"
     if error_code in {"MANUAL_REQUIRED", "POLICY_DENIED", "FAILURE_CLASS_BLOCKED"}:
@@ -5950,7 +6606,12 @@ def _execute_openclaw_flow_action(data: Dict[str, Any]) -> Dict[str, Any]:
             },
             "timestamp": datetime.now().isoformat(),
         }
-    result = _openclaw_dashboard_flow(chat_text=chat_text, approve=approve, deny=deny)
+    result = _openclaw_dashboard_flow(
+        chat_text=chat_text,
+        approve=approve,
+        deny=deny,
+        dashboard_url=str(data.get("dashboard_url", "") or ""),
+    )
     return {
         "success": bool(result.get("success")),
         "flow": result,
@@ -6119,11 +6780,20 @@ def _parse_openclaw_queue_context(command_type: str, data: Dict[str, Any]) -> Di
     source = str(data.get("source", "manual")).strip().lower() or "manual"
     if source not in {"manual", "autopilot", "system"}:
         source = "manual"
-    mode = str(data.get("mode", "sync")).strip().lower() or "sync"
+    ctype = str(command_type or "").strip().lower()
+    action = str(data.get("action", "")).strip().lower()
+    mode = str(data.get("mode", "")).strip().lower()
     if mode not in {"sync", "async"}:
-        mode = "sync"
+        if ctype in {"flow", "attach"}:
+            mode = "async"
+        elif ctype == "browser" and action in OPENCLAW_DEFAULT_ASYNC_BROWSER_ACTIONS:
+            mode = "async"
+        else:
+            mode = "sync"
     session_id = str(data.get("session_id", "default")).strip() or "default"
     timeout_ms = max(1000, int(data.get("timeout_ms") or OPENCLAW_BROWSER_TIMEOUT_MS))
+    if mode == "sync":
+        timeout_ms = min(timeout_ms, OPENCLAW_SYNC_WAIT_TIMEOUT_MS)
     priority = int(data.get("priority", 0) or 0)
     idempotency_key = str(data.get("idempotency_key", "") or "").strip()
     if not idempotency_key:
@@ -6162,6 +6832,24 @@ def _enqueue_openclaw_command(command_type: str, data: Dict[str, Any]) -> Dict[s
             "resolved_worker": "",
             "queue_state": _openclaw_command_manager.queue_snapshot() if OPENCLAW_QUEUE_ENABLED else {"enabled": False},
             "session_id": context.get("session_id"),
+        }
+
+    runtime_gate = _openclaw_runtime_guard_allows(command_type, context=context, payload=data)
+    if not runtime_gate.get("allowed"):
+        return {
+            "success": False,
+            "error": runtime_gate.get("error", "OpenClaw temporarily disabled"),
+            "error_code": runtime_gate.get("error_code", "OPENCLAW_TEMP_DISABLED"),
+            "decision": "denied",
+            "risk_level": context.get("risk_level", "medium"),
+            "policy_reasons": [runtime_gate.get("reason", "runtime_guard")],
+            "token_status": {},
+            "target_worker": context.get("target_worker", ""),
+            "resolved_worker": "",
+            "queue_state": _openclaw_command_manager.queue_snapshot() if OPENCLAW_QUEUE_ENABLED else {"enabled": False},
+            "session_id": context.get("session_id"),
+            "retry_after_sec": runtime_gate.get("retry_after_sec", 0),
+            "runtime_guard": runtime_gate.get("guard", {}),
         }
 
     lease_validation = _validate_openclaw_task_lease(data)
@@ -6295,8 +6983,28 @@ def _enqueue_openclaw_command(command_type: str, data: Dict[str, Any]) -> Dict[s
         }
     finished = str(waited.get("state", "")) in {"completed", "failed", "cancelled"}
     outcome = waited.get("result") if isinstance(waited.get("result"), dict) else {}
+    outcome_result = outcome.get("result") if isinstance(outcome.get("result"), dict) else {}
+    outcome_success = bool(outcome.get("success", False)) if finished else False
+    if not finished:
+        error_code = "QUEUE_TIMEOUT"
+        error = "Command execution timeout; poll command status"
+    elif outcome_success:
+        error_code = ""
+        error = ""
+    else:
+        error_code = str(
+            outcome.get("error_code")
+            or outcome_result.get("error_code")
+            or ""
+        ).strip().upper()
+        raw_error = outcome.get("error")
+        if raw_error is None:
+            raw_error = outcome_result.get("error")
+        error = str(raw_error).strip() if raw_error is not None else ""
+        if not error:
+            error = "OpenClaw command failed"
     return {
-        "success": bool(outcome.get("success", False)) if finished else False,
+        "success": outcome_success,
         "request_id": request_id,
         "mode": "sync",
         "timed_out": not finished,
@@ -6304,6 +7012,8 @@ def _enqueue_openclaw_command(command_type: str, data: Dict[str, Any]) -> Dict[s
         "session_id": context["session_id"],
         "command": waited,
         "result": outcome if finished else {},
+        "error": error,
+        "error_code": error_code,
         "queue_state": _openclaw_command_manager.queue_snapshot(),
         "decision": policy.get("decision", "auto_approved"),
         "risk_level": policy.get("risk_level", "medium"),
@@ -6311,7 +7021,7 @@ def _enqueue_openclaw_command(command_type: str, data: Dict[str, Any]) -> Dict[s
         "resolved_worker": policy.get("resolved_worker", ""),
         "policy_reasons": policy.get("reasons", []),
         "token_status": policy.get("token_status", {}),
-        "failure_class": _classify_openclaw_failure(outcome) if finished and not bool(outcome.get("success")) else "",
+        "failure_class": _classify_openclaw_failure(outcome) if finished and not outcome_success else "",
     }
 
 
@@ -6319,8 +7029,14 @@ def _openclaw_error_http_status(error_code: str) -> int:
     code = str(error_code or "").strip().upper()
     if code == "QUEUE_FULL":
         return 429
+    if code == "QUEUE_TIMEOUT":
+        return 202
     if code in {"BROWSER_MODE_DISABLED", "FLOW_MODE_DISABLED", "ATTACH_MODE_DISABLED"}:
         return 409
+    if code in {"EXTENSION_AUTOMATION_DISABLED"}:
+        return 409
+    if code in {"OPENCLAW_TEMP_DISABLED"}:
+        return 423
     if code in {"MANUAL_REQUIRED"}:
         return 409
     if code in {"WORKER_UNAVAILABLE", "WORKER_UNHEALTHY", "CIRCUIT_OPEN"}:
@@ -6712,6 +7428,317 @@ def _infer_flexible_chat_request(text: str) -> Optional[str]:
     return None
 
 
+def _extract_task_priority(text: str) -> str:
+    normalized = _normalize_intent_text(text)
+    if re.search(r"\b(p0|critical|urgent|khan cap|nghiem trong|gap)\b", normalized):
+        return "critical"
+    if re.search(r"\b(p1|high|cao|quan trong)\b", normalized):
+        return "high"
+    if re.search(r"\b(p3|low|thap|nhe)\b", normalized):
+        return "low"
+    if re.search(r"\b(p2|medium|trung binh|vua)\b", normalized):
+        return "medium"
+    return "medium"
+
+
+def _extract_task_assignee(text: str) -> Optional[str]:
+    lower = str(text or "").lower()
+    m = re.search(r"\borion[\s\-_]?(\d+)\b", lower)
+    if m:
+        return f"orion-{m.group(1)}"
+    for token in ("nova", "pixel", "echo", "cipher", "flux", "guardian"):
+        if re.search(rf"\b{token}\b", lower):
+            return token
+    if re.search(r"\borion\b", lower):
+        return LOCAL_INSTANCE_ID
+    return None
+
+
+def _extract_task_title_description(text: str) -> Dict[str, str]:
+    raw = str(text or "").strip()
+    title = ""
+    description = ""
+    quote = re.search(r"[\"“](.+?)[\"”]", raw)
+    if quote:
+        title = quote.group(1).strip()
+    tail = re.sub(
+        r"^\s*(tao|them|create|new|add)\s*(task|cong viec)?\s*[:\-]?\s*",
+        "",
+        raw,
+        flags=re.IGNORECASE,
+    ).strip()
+    if not title:
+        split = re.split(r"\b(mô tả|mo ta|description|desc|nội dung|noi dung|chi tiet)\b\s*[:\-]?\s*", tail, maxsplit=1, flags=re.IGNORECASE)
+        if split:
+            title = str(split[0]).strip(" -:,.")
+        if len(split) >= 3:
+            description = str(split[2]).strip()
+    if not description:
+        m = re.search(r"\b(mô tả|mo ta|description|desc|nội dung|noi dung|chi tiet)\b\s*[:\-]?\s*(.+)$", tail, flags=re.IGNORECASE)
+        if m:
+            description = str(m.group(2)).strip()
+    title = re.sub(r"\s+", " ", title).strip(" -:,.")
+    title = re.sub(r"^\s*(tao|tạo|them|thêm|create|new|add)\s*(task|cong viec)?\s*[:\-]?\s*", "", title, flags=re.IGNORECASE).strip(" -:,.")
+    title = re.sub(
+        r"\b(?:priority|uu tien)\s*[:\-]?\s*(?:p[0-3]|critical|high|medium|low)\b",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    ).strip(" -:,.")
+    title = re.sub(r"\b(?:cho|for|assigned to|giao cho)\s+[a-z0-9._-]+\b$", "", title, flags=re.IGNORECASE).strip(" -:,.")
+    description = re.sub(r"\s+", " ", description).strip()
+    if len(title) > 180:
+        title = title[:180].rstrip()
+    if len(description) > 1200:
+        description = description[:1200].rstrip()
+    return {"title": title, "description": description}
+
+
+def _task_status_bucket(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"done", "completed", "resolved", "closed"}:
+        return "done"
+    if raw in {"in_progress", "running", "active", "claimed", "doing"}:
+        return "in_progress"
+    if raw in {"blocked", "stuck", "waiting", "hold", "on_hold"}:
+        return "blocked"
+    if raw in {"review", "qa", "testing", "verify"}:
+        return "review"
+    if raw in {"todo", "to_do", "to-do", "backlog", "open", "new"}:
+        return "todo"
+    return "todo"
+
+
+def _task_intelligence_query_keywords(text: str) -> List[str]:
+    normalized = _normalize_intent_text(text)
+    if not normalized:
+        return []
+    stopwords = {
+        "task",
+        "cong",
+        "viec",
+        "giao",
+        "cho",
+        "xong",
+        "chua",
+        "status",
+        "trang",
+        "thai",
+        "tien",
+        "do",
+        "dang",
+        "lam",
+        "gi",
+        "bao",
+        "nhieu",
+        "hien",
+        "tai",
+        "current",
+        "progress",
+        "pending",
+        "backlog",
+        "done",
+        "in",
+        "review",
+        "blocked",
+        "help",
+        "check",
+        "with",
+        "and",
+        "for",
+        "the",
+    }
+    tokens = [token for token in normalized.split() if token and token not in stopwords and len(token) >= 3]
+    unique: List[str] = []
+    for token in tokens:
+        if token not in unique:
+            unique.append(token)
+    return unique[:8]
+
+
+def _build_task_intelligence_snapshot(query: str = "", limit: int = 8) -> Dict[str, Any]:
+    cap = max(1, min(20, int(limit)))
+    if "_hub" not in globals() or _hub is None:
+        return {
+            "available": False,
+            "error": "hub_unavailable",
+            "total_tasks": 0,
+            "counts": {"todo": 0, "in_progress": 0, "blocked": 0, "review": 0, "done": 0},
+            "pending_count": 0,
+            "completion_rate_pct": 0.0,
+            "query_keywords": _task_intelligence_query_keywords(query),
+            "matched_count": 0,
+            "matched_tasks": [],
+            "focus_tasks": [],
+        }
+
+    try:
+        tasks_raw = _hub.list_tasks()
+    except Exception as exc:
+        return {
+            "available": False,
+            "error": str(exc),
+            "total_tasks": 0,
+            "counts": {"todo": 0, "in_progress": 0, "blocked": 0, "review": 0, "done": 0},
+            "pending_count": 0,
+            "completion_rate_pct": 0.0,
+            "query_keywords": _task_intelligence_query_keywords(query),
+            "matched_count": 0,
+            "matched_tasks": [],
+            "focus_tasks": [],
+        }
+
+    tasks: List[Dict[str, Any]] = [row for row in tasks_raw if isinstance(row, dict)] if isinstance(tasks_raw, list) else []
+    tasks_sorted = sorted(
+        tasks,
+        key=lambda row: str(row.get("updated_at") or row.get("created_at") or ""),
+        reverse=True,
+    )
+    counts = {"todo": 0, "in_progress": 0, "blocked": 0, "review": 0, "done": 0}
+    normalized_rows: List[Dict[str, Any]] = []
+    for row in tasks_sorted:
+        status_bucket = _task_status_bucket(row.get("status"))
+        counts[status_bucket] += 1
+        normalized_rows.append(
+            {
+                "id": str(row.get("id") or ""),
+                "title": str(row.get("title") or "Untitled"),
+                "description": str(row.get("description") or ""),
+                "status": str(row.get("status") or "todo"),
+                "status_bucket": status_bucket,
+                "priority": str(row.get("priority") or "medium"),
+                "assigned_to": str(row.get("assigned_to") or "unassigned"),
+                "updated_at": str(row.get("updated_at") or row.get("created_at") or ""),
+                "created_at": str(row.get("created_at") or ""),
+            }
+        )
+
+    keywords = _task_intelligence_query_keywords(query)
+    matched: List[Dict[str, Any]] = []
+    for row in normalized_rows:
+        if not keywords:
+            continue
+        searchable = _normalize_intent_text(
+            " ".join(
+                [
+                    row.get("id", ""),
+                    row.get("title", ""),
+                    row.get("description", ""),
+                    row.get("assigned_to", ""),
+                    row.get("status", ""),
+                    row.get("priority", ""),
+                ]
+            )
+        )
+        score = sum(1 for token in keywords if token and token in searchable)
+        if score <= 0:
+            continue
+        item = dict(row)
+        item["match_score"] = score
+        matched.append(item)
+
+    matched.sort(
+        key=lambda row: (
+            int(row.get("match_score", 0) or 0),
+            str(row.get("updated_at") or ""),
+        ),
+        reverse=True,
+    )
+
+    total = len(normalized_rows)
+    done = counts["done"]
+    pending_count = counts["todo"] + counts["in_progress"] + counts["blocked"] + counts["review"]
+    completion_rate = round((done / total) * 100.0, 1) if total else 0.0
+    matched_preview = matched[:cap]
+    focus = (matched_preview if matched_preview else normalized_rows[:cap])
+
+    verdict = "unknown"
+    if matched_preview:
+        if all(str(item.get("status_bucket")) == "done" for item in matched_preview):
+            verdict = "done"
+        elif any(str(item.get("status_bucket")) in {"todo", "in_progress", "blocked", "review"} for item in matched_preview):
+            verdict = "in_progress"
+
+    return {
+        "available": True,
+        "error": "",
+        "total_tasks": total,
+        "counts": counts,
+        "pending_count": pending_count,
+        "completion_rate_pct": completion_rate,
+        "query_keywords": keywords,
+        "matched_count": len(matched),
+        "matched_tasks": matched_preview,
+        "focus_tasks": focus,
+        "verdict": verdict,
+    }
+
+
+def _format_task_intelligence_reply(instance_label: str, snapshot: Dict[str, Any], query: str = "") -> str:
+    if not isinstance(snapshot, dict) or not bool(snapshot.get("available")):
+        reason = str(snapshot.get("error", "hub_unavailable")) if isinstance(snapshot, dict) else "hub_unavailable"
+        return (
+            f"[{instance_label}] Task intelligence chưa sẵn sàng ({reason}). "
+            "Mình chưa thể xác nhận tiến độ chính xác lúc này."
+        )
+
+    total = int(snapshot.get("total_tasks", 0) or 0)
+    counts = snapshot.get("counts") if isinstance(snapshot.get("counts"), dict) else {}
+    matched = snapshot.get("matched_tasks") if isinstance(snapshot.get("matched_tasks"), list) else []
+    focus = snapshot.get("focus_tasks") if isinstance(snapshot.get("focus_tasks"), list) else []
+    verdict = str(snapshot.get("verdict", "unknown") or "unknown")
+    keywords = snapshot.get("query_keywords") if isinstance(snapshot.get("query_keywords"), list) else []
+    is_done_question = bool(re.search(r"(xong|hoan thanh|done|complete)", _normalize_intent_text(query)))
+
+    if total <= 0:
+        return (
+            f"[{instance_label}] Hiện chưa có task nào được tracking trên Hub, nên chưa thể kết luận task đã xong hay chưa.\n"
+            "Bạn có thể tạo nhanh ngay trong chat:\n"
+            "`tạo task Check Teams Khiem + Ravin email partnership + valuation p1 cho orion-1`"
+        )
+
+    header = (
+        f"[{instance_label}] Snapshot task hiện tại: total={total}, pending={int(snapshot.get('pending_count', 0) or 0)}, "
+        f"in_progress={int(counts.get('in_progress', 0) or 0)}, blocked={int(counts.get('blocked', 0) or 0)}, "
+        f"done={int(counts.get('done', 0) or 0)}."
+    )
+    verdict_line = ""
+    if is_done_question:
+        if matched:
+            if verdict == "done":
+                verdict_line = "Kết luận nhanh: các task khớp hiện đang DONE."
+            else:
+                verdict_line = "Kết luận nhanh: các task khớp vẫn CHƯA xong (còn pending/in_progress/blocked)."
+        elif keywords:
+            verdict_line = "Kết luận nhanh: chưa thấy task khớp trong board, nên không thể xác nhận đã xong."
+
+    rows = matched if matched else focus
+    lines: List[str] = []
+    for idx, row in enumerate(rows[:6], start=1):
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status_bucket") or row.get("status") or "todo")
+        priority = str(row.get("priority") or "medium")
+        assignee = str(row.get("assigned_to") or "unassigned")
+        task_id = str(row.get("id") or "-")
+        title = str(row.get("title") or "Untitled")
+        lines.append(f"{idx}. [{task_id}] {title} | {status} | {priority} | {assignee}")
+
+    scope_line = ""
+    if keywords:
+        scope_line = f"Keyword match: {keywords} (matched={len(matched)})."
+
+    detail_block = "\n".join(lines) if lines else "Không có task hiển thị."
+    parts = [header]
+    if verdict_line:
+        parts.append(verdict_line)
+    if scope_line:
+        parts.append(scope_line)
+    parts.append("Top tasks:")
+    parts.append(detail_block)
+    return "\n".join(parts)
+
+
 def _build_nexus_rules_text(
     instance_label: str,
     runtime_line: str,
@@ -6817,7 +7844,8 @@ def _build_project_chat_reply(
     instance_id: Optional[str] = None,
     member_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    text = str(message or "").strip()
+    original_text = str(message or "").strip()
+    text = original_text
     lowered = text.lower()
     compact = re.sub(r"\s+", "", lowered)
     # Accept compact menu shortcuts from unified chat UI.
@@ -6831,6 +7859,7 @@ def _build_project_chat_reply(
         text = "guardian gỡ kẹt"
         lowered = text
 
+    normalized_original = _normalize_intent_text(original_text)
     inferred = _infer_flexible_chat_request(text)
     if inferred:
         text = inferred
@@ -6884,7 +7913,10 @@ def _build_project_chat_reply(
         elif re.search(r"(tai sao|why|sao|bug|loi|error|ket|stuck)", normalized_intent):
             tone = "Mình thấy bạn đang báo vấn đề cần xử lý ngay, nên sẽ ưu tiên nhánh ổn định trước."
 
-        suggestion = "Bạn có thể nói tự nhiên như: 'còn gì đang chạy', 'guardian gỡ kẹt', 'pause all', 'pixel status'."
+        suggestion = (
+            "Bạn có thể nói tự nhiên như: 'còn gì đang chạy', 'guardian gỡ kẹt', "
+            "'tạo task Fix chat UX p1 cho nova', 'list tasks'."
+        )
         if error > 0:
             suggestion = "Mình đề xuất xử lý lỗi trước: 'guardian gỡ kẹt' hoặc 'pause all' rồi 'resume all'."
         elif warning > 4:
@@ -6900,6 +7932,278 @@ def _build_project_chat_reply(
             f"{suggestion}"
         )
 
+    task_create_intent = bool(
+        re.search(r"(tao|them|create|new|add).*(task|cong viec)", normalized_original)
+        or re.search(r"(task|cong viec).*(moi|new)", normalized_original)
+    )
+    task_list_intent = bool(
+        re.search(r"(list|xem|hien|show|liet ke).*(task|cong viec)", normalized_original)
+        or re.search(r"(task|cong viec).*(dang co|hien co|bao nhieu)", normalized_original)
+    )
+    task_howto_intent = bool(
+        re.search(r"(lam sao|how|cach).*(tao|them|create).*(task|cong viec)", normalized_original)
+    )
+
+    if task_howto_intent:
+        return {
+            "intent": "task_help",
+            "executed": False,
+            "result": _with_context({}),
+            "reply": (
+                f"[{instance_label}] Tạo task nhanh ngay trong chat theo mẫu:\n"
+                "1) `tạo task Fix chat UX p1 cho nova`\n"
+                "2) `create task \"Improve task board\" priority high assign pixel description improve drag and drop`\n"
+                "3) `list tasks` để xem danh sách hiện tại."
+            ),
+        }
+
+    if task_list_intent:
+        if "_hub" not in globals() or _hub is None:
+            return {
+                "intent": "task_list",
+                "executed": False,
+                "result": _with_context({"error": "hub_unavailable"}),
+                "reply": f"[{instance_label}] Hub task board chưa sẵn sàng trên runtime này.",
+            }
+        try:
+            tasks = _hub.list_tasks()
+        except Exception as exc:
+            return {
+                "intent": "task_list",
+                "executed": False,
+                "result": _with_context({"error": str(exc)}),
+                "reply": f"[{instance_label}] Không lấy được danh sách task: {exc}",
+            }
+        if not isinstance(tasks, list) or not tasks:
+            return {
+                "intent": "task_list",
+                "executed": False,
+                "result": _with_context({"tasks": []}),
+                "reply": (
+                    f"[{instance_label}] Hiện chưa có task nào.\n"
+                    "Bạn có thể tạo ngay bằng: `tạo task Fix chat UX p1 cho nova`"
+                ),
+            }
+        tasks_sorted = sorted(
+            [row for row in tasks if isinstance(row, dict)],
+            key=lambda row: str(row.get("updated_at") or row.get("created_at") or ""),
+            reverse=True,
+        )
+        lines: List[str] = []
+        for idx, row in enumerate(tasks_sorted[:8], start=1):
+            task_id = str(row.get("id") or "-")
+            title = str(row.get("title") or "Untitled")
+            status = str(row.get("status") or "todo")
+            priority = str(row.get("priority") or "medium")
+            assignee = str(row.get("assigned_to") or "unassigned")
+            lines.append(f"{idx}. [{task_id}] {title} | {status} | {priority} | {assignee}")
+        return {
+            "intent": "task_list",
+            "executed": False,
+            "result": _with_context({"tasks": tasks_sorted[:8], "total": len(tasks_sorted)}),
+            "reply": (
+                f"[{instance_label}] Task hiện tại ({len(tasks_sorted)}):\n"
+                + "\n".join(lines)
+                + "\n\nBạn có thể tạo thêm bằng câu tự nhiên: `tạo task <tiêu đề> p1 cho nova`"
+            ),
+        }
+
+    if task_create_intent:
+        if "_hub" not in globals() or _hub is None:
+            return {
+                "intent": "task_create",
+                "executed": False,
+                "result": _with_context({"error": "hub_unavailable"}),
+                "reply": f"[{instance_label}] Không tạo được task vì Hub chưa sẵn sàng.",
+            }
+        fields = _extract_task_title_description(original_text)
+        title = str(fields.get("title") or "").strip()
+        description = str(fields.get("description") or "").strip()
+        auto_title = False
+        if not title or title.lower() in {"task", "new task", "cong viec", "task moi", "tao task", "tạo task", "create task", "them task", "thêm task"}:
+            fallback_seed = description or original_text
+            fallback_seed = re.sub(
+                r"^\s*(tao|tạo|them|thêm|create|new|add)\s*(task|cong viec)?\s*[:\-]?\s*",
+                "",
+                fallback_seed,
+                flags=re.IGNORECASE,
+            ).strip()
+            fallback_seed = re.split(
+                r"\b(mô tả|mo ta|description|desc|nội dung|noi dung|chi tiet)\b",
+                fallback_seed,
+                maxsplit=1,
+                flags=re.IGNORECASE,
+            )[0].strip(" -:,.")
+            fallback_seed = re.sub(
+                r"\b(p[0-3]|critical|high|medium|low|urgent|khan cap|quan trong)\b",
+                "",
+                fallback_seed,
+                flags=re.IGNORECASE,
+            )
+            fallback_seed = re.sub(
+                r"\b(?:cho|for|assigned to|giao cho)\s+[a-z0-9._-]+\b",
+                "",
+                fallback_seed,
+                flags=re.IGNORECASE,
+            )
+            fallback_seed = re.sub(r"\s+", " ", fallback_seed).strip(" -:,.")
+            if not fallback_seed:
+                fallback_seed = f"Task auto {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            title = fallback_seed[:180].rstrip()
+            if not description:
+                description = original_text[:1200]
+            auto_title = True
+        priority = _extract_task_priority(original_text)
+        assigned_to = _extract_task_assignee(original_text)
+        try:
+            created = _hub.create_task_safe(
+                title=title,
+                description=description,
+                priority=priority,
+                assigned_to=assigned_to,
+                expected_version=None,
+            )
+        except Exception as exc:
+            return {
+                "intent": "task_create",
+                "executed": False,
+                "result": _with_context({"error": str(exc)}),
+                "reply": f"[{instance_label}] Tạo task thất bại: {exc}",
+            }
+        ok = bool(created.get("success"))
+        task_obj = created.get("task") if isinstance(created.get("task"), dict) else {}
+        task_id = str(task_obj.get("id") or created.get("task_id") or "")
+        reply = (
+            f"[{instance_label}] Đã tạo task mới thành công.\n"
+            f"- ID: {task_id or 'n/a'}\n"
+            f"- Title: {title}\n"
+            f"- Priority: {priority}\n"
+            f"- Assignee: {assigned_to or 'unassigned'}"
+        )
+        if description:
+            reply += f"\n- Mô tả: {description[:180]}"
+        if auto_title:
+            reply += "\n- Note: Tiêu đề được auto-generate để không chặn luồng thực thi."
+        reply += "\nMở tab Công Việc để theo dõi, hoặc gõ `list tasks` ngay trong chat."
+        return {
+            "intent": "task_create",
+            "executed": ok,
+            "result": _with_context(created),
+            "reply": reply,
+        }
+
+    task_progress_intent = bool(
+        re.search(r"(task|cong viec|khiem|ravin|kanban|backlog|pending|ton dong)", normalized_original)
+        and re.search(r"(xong|chua|trang thai|status|tien do|bao nhieu|dang|done|in progress|blocked|hoan thanh)", normalized_original)
+    )
+    if task_progress_intent:
+        snapshot = _build_task_intelligence_snapshot(query=original_text, limit=8)
+        reply = _format_task_intelligence_reply(instance_label, snapshot, query=original_text)
+        return {
+            "intent": "task_status_intelligence",
+            "executed": False,
+            "result": _with_context({"task_intelligence": snapshot}),
+            "reply": reply,
+        }
+
+    autonomous_execute_intent = bool(
+        (
+            re.search(r"(hoc hoi|phat trien|nang cap|cai thien|hoan thien|toi uu|trien khai|fix|sua loi)", normalized_original)
+            and re.search(r"(giup toi|dum toi|cho toi|tu dong|full automation|lam luon|khong ban giao|khong hoi|dung hoi|khong can hoi)", normalized_original)
+        )
+        or re.search(r"(tai sao|vi sao).*(ban giao|loi|stuck|khong hoat dong|that bai)", normalized_original)
+    )
+    if autonomous_execute_intent:
+        goal = original_text or "Continuous autonomous improvement without user handoff"
+        resolved_member = normalize_member_id(member_id)
+        payload = _execute_agent_coordination(
+            goal=goal,
+            member_id=resolved_member,
+            max_agents=4,
+            compact_mode=True,
+            execute=True,
+            priority="high",
+            instance_ids=[],
+            multi_instance=True,
+        )
+
+        materialized = {"enabled": False, "created": 0, "results": []}
+        if "_hub" in globals() and _hub is not None:
+            materialized = _materialize_coordination_tasks(
+                goal=goal,
+                coordination_payload=payload,
+                priority="high",
+                member_id=resolved_member,
+                max_tasks=4,
+            )
+
+        dispatch_rows: List[Dict[str, Any]] = []
+        dispatched_success = 0
+        for row in materialized.get("results", []):
+            if not isinstance(row, dict):
+                continue
+            task_obj = row.get("task") if isinstance(row.get("task"), dict) else {}
+            task_id = str(task_obj.get("id") or row.get("task_id") or "").strip()
+            if not task_id:
+                continue
+            status_code, body = _invoke_internal_post(
+                path=f"/api/hub/tasks/{task_id}/dispatch",
+                view_func=lambda task_id=task_id: dispatch_hub_task(task_id),
+                payload={
+                    "ensure_assigned": True,
+                    "priority": "high",
+                    "options": {
+                        "source": "chat_autonomous_execute",
+                        "async_dispatch": True,
+                        "wait_timeout_sec": HUB_DISPATCH_WAIT_TIMEOUT_SEC,
+                    },
+                },
+            )
+            accepted = status_code < 400 and isinstance(body, dict) and bool(body.get("success"))
+            if accepted:
+                dispatched_success += 1
+            dispatch_rows.append(
+                {
+                    "task_id": task_id,
+                    "success": bool(accepted),
+                    "status_code": int(status_code),
+                    "instance_id": str((body or {}).get("instance_id") if isinstance(body, dict) else ""),
+                }
+            )
+
+        payload["task_materialization"] = materialized
+        payload["task_dispatch"] = {
+            "attempted": len(dispatch_rows),
+            "dispatched_success": dispatched_success,
+            "results": dispatch_rows,
+        }
+        execution = payload.get("execution") if isinstance(payload.get("execution"), dict) else {}
+        total_sent = int(execution.get("total_sent", 0) or 0)
+        total_success = int(execution.get("total_success", 0) or 0)
+        created_tasks = int(materialized.get("created", 0) or 0)
+        level = "success" if (total_success > 0 or dispatched_success > 0) else "warning"
+        state.add_agent_log(
+            "guardian",
+            (
+                "🚀 Chat autonomous execute: "
+                f"coord_sent={total_sent} coord_success={total_success} "
+                f"tasks_created={created_tasks} tasks_dispatched={dispatched_success}"
+            ),
+            level,
+        )
+        return {
+            "intent": "autonomous_execute",
+            "executed": bool(total_success > 0 or dispatched_success > 0),
+            "result": _with_context(payload),
+            "reply": (
+                f"[{instance_label}] Đã chuyển sang chế độ tự triển khai, không bàn giao lại cho bạn.\n"
+                f"- Coordination commands: {total_sent} (success {total_success})\n"
+                f"- Hub tasks created: {created_tasks}\n"
+                f"- Hub tasks dispatched: {dispatched_success}\n"
+                "Hệ thống đang tự chạy vòng cải tiến; bạn chỉ cần giám sát kết quả realtime."
+            ),
+        }
+
     if normalized_intent in {"nexus rules", "project rules", "rules", "rule"}:
         runtime_line = str(activity.get("summary") or _runtime_status_text(runtime))
         return {
@@ -6913,7 +8217,7 @@ def _build_project_chat_reply(
             "reply": _build_nexus_rules_text(instance_label, runtime_line, feedback_recent),
         }
 
-    if re.search(r"(khong hoi|khong can hoi|khong xac nhan|hoi lien tuc|confirm lien tuc|qua nhieu hoi)", normalized_intent):
+    if re.search(r"(khong hoi|khong can hoi|khong xac nhan|hoi lien tuc|confirm lien tuc|qua nhieu hoi|dung hoi|ngung hoi|hoi nua)", normalized_intent):
         _monitor_set_supervisor_enabled(True)
         result = _call_instance_command(resolved_instance, "guardian", "autopilot_on", "high", {"source": "chat_feedback_guard"})
         return {
@@ -7008,10 +8312,12 @@ def _build_project_chat_reply(
         decision = str(advice_result.get("decision", "ask_user"))
         reason = str(advice_result.get("reason", ""))
         safer = str(advice_result.get("safer_alternative", "")).strip()
+        no_prompt_mode = _autonomy_no_human_prompts_enabled()
         if MONITOR_AUTO_APPROVE_ALL_DECISIONS and decision not in {"approved", "approve"}:
             decision = "approved"
             reason = "Auto-approved by monitor (MONITOR_AUTO_APPROVE_ALL_DECISIONS)."
-        if decision in {"approved", "approve"} and MONITOR_AUTO_EXECUTE_COMMANDS:
+        should_auto_execute = bool(MONITOR_AUTO_EXECUTE_COMMANDS or no_prompt_mode)
+        if decision in {"approved", "approve"} and should_auto_execute:
             execution = _execute_approved_shell_command(command_candidate)
             if execution.get("success"):
                 state.add_agent_log("guardian", f"🤖 Auto-executed command: {execution.get('command')}", "success")
@@ -7030,6 +8336,32 @@ def _build_project_chat_reply(
                 "executed": bool(execution.get("success")),
                 "result": _with_context(execution),
                 "reply": reply,
+                "pending_decision": None,
+            }
+        if no_prompt_mode:
+            fallback_reply = (
+                f"[{instance_label}] Guardian đánh giá command: {decision} (risk={risk}). "
+                "Hệ thống đang ở chế độ không hỏi lại người dùng nên không tạo pending decision."
+            )
+            if reason:
+                fallback_reply += f"\nReason: {reason}"
+            if safer:
+                fallback_reply += f"\nSafer alternative: {safer}"
+            return {
+                "intent": "guardian_command_autonomous_no_prompt",
+                "executed": False,
+                "result": _with_context(
+                    {
+                        "advice": advice,
+                        "decision": decision,
+                        "risk": risk,
+                        "reason": reason,
+                        "safer_alternative": safer,
+                        "pending_decision": None,
+                        "no_prompt_mode": True,
+                    }
+                ),
+                "reply": fallback_reply,
                 "pending_decision": None,
             }
         pending = state.find_pending_command_decision(command_candidate, resolved_instance)
@@ -7229,6 +8561,47 @@ def _build_project_chat_reply(
             "reply": reply,
         }
 
+    if re.search(r"(openclaw|agent|model|orchestr|phoi hop|dieu phoi|linh dong|level|self.?learn|tu hoc)", normalized_original):
+        control_plane = _control_plane_registry.snapshot() if "_control_plane_registry" in globals() else {}
+        workers = control_plane.get("workers") if isinstance(control_plane, dict) else {}
+        worker_rows = list(workers.values()) if isinstance(workers, dict) else []
+        online_workers = sum(1 for row in worker_rows if isinstance(row, dict) and bool(row.get("online")))
+        openclaw_snapshot = _build_openclaw_metrics_snapshot(include_events=False)
+        queue = openclaw_snapshot.get("queue") if isinstance(openclaw_snapshot.get("queue"), dict) else {}
+        queue_depth = int(queue.get("queue_depth", 0) or 0)
+        queue_running = int(queue.get("running_sessions", 0) or 0)
+        mode = str((openclaw_snapshot.get("runtime") or {}).get("execution_mode", OPENCLAW_EXECUTION_MODE))
+        browser_enabled = bool((openclaw_snapshot.get("runtime") or {}).get("browser_actions_enabled"))
+        flow_enabled = bool((openclaw_snapshot.get("runtime") or {}).get("dashboard_flow_enabled"))
+        reply = (
+            f"[{instance_label}] Mình đang vận hành theo 3 tầng orchestration để linh động theo level task:\n"
+            f"1) L1 Realtime control (OpenClaw): thao tác UI như người cho browser/app/desktop (mode={mode}, browser={browser_enabled}, flow={flow_enabled}).\n"
+            "2) L2 Structured automation: task bus + lease + circuit breaker + intervention popup khi thiếu thông tin.\n"
+            "3) L3 Strategic reasoning: Orion/Guardian điều phối multi-agent, tự tạo/dispatch task, tối ưu token.\n"
+            f"Runtime hiện tại: workers_online={online_workers}/{len(worker_rows)}, openclaw_queue_depth={queue_depth}, running_sessions={queue_running}.\n"
+            "Nếu bạn giao mục tiêu nghiệp vụ, mình sẽ ưu tiên route tác vụ thao tác thực tế qua OpenClaw; phần phân tích/ra quyết định giữ ở Orion/Guardian."
+        )
+        return {
+            "intent": "orchestration_strategy",
+            "executed": False,
+            "result": _with_context(
+                {
+                    "agent_activity": activity,
+                    "orchestration": {
+                        "layers": ["openclaw_realtime", "structured_automation", "strategic_reasoning"],
+                        "openclaw_mode": mode,
+                        "openclaw_browser_enabled": browser_enabled,
+                        "openclaw_flow_enabled": flow_enabled,
+                        "control_plane_online_workers": online_workers,
+                        "control_plane_total_workers": len(worker_rows),
+                        "openclaw_queue_depth": queue_depth,
+                        "openclaw_running_sessions": queue_running,
+                    },
+                }
+            ),
+            "reply": reply,
+        }
+
     # Quick helper for option (2) in unified chat menu.
     if re.search(r"(điều khiển flow|flow control|nhóm 2|group 2|option 2)", lowered):
         return {
@@ -7261,12 +8634,25 @@ def _build_project_chat_reply(
                 iteration = remote_status.get("iteration", "n/a")
                 mode = "đang chạy" if running and not paused else ("tạm dừng" if paused else "đang rảnh")
                 runtime_line = f"{instance_label} {mode}, vòng lặp hiện tại: {iteration}."
+        task_snapshot = _build_task_intelligence_snapshot(query=original_text, limit=5)
+        task_line = "Task intelligence: Hub chưa sẵn sàng."
+        if bool(task_snapshot.get("available")):
+            task_counts = task_snapshot.get("counts") if isinstance(task_snapshot.get("counts"), dict) else {}
+            task_line = (
+                "Task intelligence: "
+                f"total={int(task_snapshot.get('total_tasks', 0) or 0)}, "
+                f"pending={int(task_snapshot.get('pending_count', 0) or 0)}, "
+                f"in_progress={int(task_counts.get('in_progress', 0) or 0)}, "
+                f"blocked={int(task_counts.get('blocked', 0) or 0)}, "
+                f"done={int(task_counts.get('done', 0) or 0)}."
+            )
         agent_block = "\n".join([f"- {line}" for line in activity_lines]) if activity_lines else "- Chưa có telemetry agent."
         reply = (
             f"{runtime_line}\n"
             f"Tín hiệu quan trọng: {counts['error']} lỗi, {counts['warning']} cảnh báo, {counts['success']} thành công.\n"
             f"Agent hoạt động nhiều nhất gần đây: {top_agent}.\n"
             f"Sự kiện gần nhất: {latest_msg}\n"
+            f"{task_line}\n"
             f"Agent realtime:\n{agent_block}\n\n"
             f"Phản hồi gần nhất: {[item.get('category') for item in feedback_recent][:2]}"
         )
@@ -7275,6 +8661,7 @@ def _build_project_chat_reply(
             "executed": False,
             "result": _with_context({
                 "agent_activity": activity,
+                "task_intelligence": task_snapshot,
                 "ai_summary": ai_summary,
                 "reasoning": reasoning,
                 "feedback_recent": feedback_recent,
@@ -7431,6 +8818,12 @@ def control_center():
 def live_monitor():
     """Live Agent Monitor"""
     return render_template('live-monitor.html')
+
+
+@app.route('/favicon.ico')
+def favicon():
+    """Silence missing favicon errors in dashboard consoles."""
+    return ("", 204)
 
 
 @app.route('/api/status')
@@ -7601,21 +8994,6 @@ def openclaw_browser_command():
     if not action:
         return jsonify({"success": False, "error": "Missing action"}), 400
     queued = _enqueue_openclaw_command("browser", data)
-    if not queued.get("success"):
-        return jsonify({
-            "success": False,
-            "error": queued.get("error", "OpenClaw queue failed"),
-            "error_code": queued.get("error_code", "QUEUE_FAILED"),
-            "queue_state": queued.get("queue_state", {}),
-            "session_id": queued.get("session_id"),
-            "decision": queued.get("decision"),
-            "risk_level": queued.get("risk_level"),
-            "policy_reasons": queued.get("policy_reasons", []),
-            "token_status": queued.get("token_status", {}),
-            "target_worker": queued.get("target_worker"),
-            "resolved_worker": queued.get("resolved_worker"),
-            "timestamp": datetime.now().isoformat(),
-        }), _openclaw_error_http_status(str(queued.get("error_code", "")))
     if queued.get("mode") == "async":
         return jsonify({
             "success": True,
@@ -7644,6 +9022,21 @@ def openclaw_browser_command():
             "resolved_worker": queued.get("resolved_worker"),
             "timestamp": datetime.now().isoformat(),
         }), 202
+    if not queued.get("success"):
+        return jsonify({
+            "success": False,
+            "error": queued.get("error", "OpenClaw queue failed"),
+            "error_code": queued.get("error_code", "QUEUE_FAILED"),
+            "queue_state": queued.get("queue_state", {}),
+            "session_id": queued.get("session_id"),
+            "decision": queued.get("decision"),
+            "risk_level": queued.get("risk_level"),
+            "policy_reasons": queued.get("policy_reasons", []),
+            "token_status": queued.get("token_status", {}),
+            "target_worker": queued.get("target_worker"),
+            "resolved_worker": queued.get("resolved_worker"),
+            "timestamp": datetime.now().isoformat(),
+        }), _openclaw_error_http_status(str(queued.get("error_code", "")))
     result = queued.get("result") if isinstance(queued.get("result"), dict) else {}
     browser_result = result.get("result") if isinstance(result.get("result"), dict) else result
     payload = {
@@ -7673,21 +9066,6 @@ def openclaw_flow_dashboard():
         return rate_limited
     data = request.get_json(silent=True) or {}
     queued = _enqueue_openclaw_command("flow", data)
-    if not queued.get("success"):
-        return jsonify({
-            "success": False,
-            "error": queued.get("error", "OpenClaw flow queue failed"),
-            "error_code": queued.get("error_code", "QUEUE_FAILED"),
-            "queue_state": queued.get("queue_state", {}),
-            "session_id": queued.get("session_id"),
-            "decision": queued.get("decision"),
-            "risk_level": queued.get("risk_level"),
-            "policy_reasons": queued.get("policy_reasons", []),
-            "token_status": queued.get("token_status", {}),
-            "target_worker": queued.get("target_worker"),
-            "resolved_worker": queued.get("resolved_worker"),
-            "timestamp": datetime.now().isoformat(),
-        }), _openclaw_error_http_status(str(queued.get("error_code", "")))
     if queued.get("mode") == "async":
         return jsonify({
             "success": True,
@@ -7715,6 +9093,21 @@ def openclaw_flow_dashboard():
             "resolved_worker": queued.get("resolved_worker"),
             "timestamp": datetime.now().isoformat(),
         }), 202
+    if not queued.get("success"):
+        return jsonify({
+            "success": False,
+            "error": queued.get("error", "OpenClaw flow queue failed"),
+            "error_code": queued.get("error_code", "QUEUE_FAILED"),
+            "queue_state": queued.get("queue_state", {}),
+            "session_id": queued.get("session_id"),
+            "decision": queued.get("decision"),
+            "risk_level": queued.get("risk_level"),
+            "policy_reasons": queued.get("policy_reasons", []),
+            "token_status": queued.get("token_status", {}),
+            "target_worker": queued.get("target_worker"),
+            "resolved_worker": queued.get("resolved_worker"),
+            "timestamp": datetime.now().isoformat(),
+        }), _openclaw_error_http_status(str(queued.get("error_code", "")))
     result = queued.get("result") if isinstance(queued.get("result"), dict) else {}
     return jsonify({
         "success": bool(result.get("success")),
@@ -7738,21 +9131,6 @@ def openclaw_extension_attach():
         return rate_limited
     data = request.get_json(silent=True) or {}
     queued = _enqueue_openclaw_command("attach", data)
-    if not queued.get("success"):
-        return jsonify({
-            "success": False,
-            "error": queued.get("error", "OpenClaw attach queue failed"),
-            "error_code": queued.get("error_code", "QUEUE_FAILED"),
-            "queue_state": queued.get("queue_state", {}),
-            "session_id": queued.get("session_id"),
-            "decision": queued.get("decision"),
-            "risk_level": queued.get("risk_level"),
-            "policy_reasons": queued.get("policy_reasons", []),
-            "token_status": queued.get("token_status", {}),
-            "target_worker": queued.get("target_worker"),
-            "resolved_worker": queued.get("resolved_worker"),
-            "timestamp": datetime.now().isoformat(),
-        }), _openclaw_error_http_status(str(queued.get("error_code", "")))
     if queued.get("mode") == "async":
         return jsonify({
             "success": True,
@@ -7780,6 +9158,21 @@ def openclaw_extension_attach():
             "resolved_worker": queued.get("resolved_worker"),
             "timestamp": datetime.now().isoformat(),
         }), 202
+    if not queued.get("success"):
+        return jsonify({
+            "success": False,
+            "error": queued.get("error", "OpenClaw attach queue failed"),
+            "error_code": queued.get("error_code", "QUEUE_FAILED"),
+            "queue_state": queued.get("queue_state", {}),
+            "session_id": queued.get("session_id"),
+            "decision": queued.get("decision"),
+            "risk_level": queued.get("risk_level"),
+            "policy_reasons": queued.get("policy_reasons", []),
+            "token_status": queued.get("token_status", {}),
+            "target_worker": queued.get("target_worker"),
+            "resolved_worker": queued.get("resolved_worker"),
+            "timestamp": datetime.now().isoformat(),
+        }), _openclaw_error_http_status(str(queued.get("error_code", "")))
     result = queued.get("result") if isinstance(queued.get("result"), dict) else {}
     return jsonify({
         "success": bool(result.get("success")),
@@ -8040,6 +9433,594 @@ AUTOMATION_ACTION_MEMORY_MAX = 1000
 # User preference learning
 _AUTOMATION_USER_PREFERENCES_LOCK = threading.RLock()
 _AUTOMATION_USER_PREFERENCES: Dict[str, Dict[str, Any]] = {}  # {owner_id: {preferred_task_types, frequent_actions, avg_duration_ms}}
+AUTOMATION_INTAKE_PATH = AUTOMATION_STATE_DIR / "automation_intake.json"
+_AUTOMATION_INTAKE_LOCK = threading.RLock()
+_automation_intake_store: Dict[str, Any] = {}
+
+
+def _automation_intake_default() -> Dict[str, Any]:
+    return {
+        "mail": {
+            "imap_host": "",
+            "imap_port": 993,
+            "imap_username": "",
+            "imap_password": "",
+            "imap_folder": "INBOX",
+            "imap_ssl": True,
+        },
+        "channels": {
+            "mail_mode": "edge_gmail",
+            "mail_browser": "Microsoft Edge",
+            "teams_mode": "teams_app",
+            "teams_app_name": "Microsoft Teams",
+        },
+        "accounts": {
+            "khiem_selected": "",
+            "khiem_candidates": [],
+        },
+        "partners": {
+            "khiem_team_hint": "",
+            "ravin_contact_hint": "",
+            "target_gmail": "admin@algoxpert.org",
+        },
+        "valuation": {
+            "raise_usd": 50000,
+            "equity_pct": 20,
+            "notes": "",
+        },
+        "automation": {
+            "auto_prompt_on_stuck": True,
+        },
+        "updated_at": None,
+    }
+
+
+def _automation_merge_dict(base: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
+    merged: Dict[str, Any] = dict(base)
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _automation_merge_dict(merged.get(key) or {}, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _automation_load_intake_store() -> None:
+    global _automation_intake_store
+    default = _automation_intake_default()
+    try:
+        if AUTOMATION_INTAKE_PATH.exists():
+            loaded = json.loads(AUTOMATION_INTAKE_PATH.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                _automation_intake_store = _automation_merge_dict(default, loaded)
+                return
+    except Exception as exc:
+        logger.warning(f"Failed to load automation intake store: {exc}")
+    _automation_intake_store = default
+
+
+def _automation_save_intake_store() -> None:
+    AUTOMATION_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp_path = AUTOMATION_INTAKE_PATH.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(_automation_intake_store, ensure_ascii=True, indent=2), encoding="utf-8")
+    tmp_path.replace(AUTOMATION_INTAKE_PATH)
+
+
+def _automation_get_intake_store(redact_secret: bool = True) -> Dict[str, Any]:
+    with _AUTOMATION_INTAKE_LOCK:
+        row = _automation_merge_dict(_automation_intake_default(), _automation_intake_store if isinstance(_automation_intake_store, dict) else {})
+    if redact_secret:
+        mail = row.get("mail") if isinstance(row.get("mail"), dict) else {}
+        if isinstance(mail, dict):
+            has_password = bool(str(mail.get("imap_password", "")).strip())
+            mail["imap_password"] = ""
+            mail["imap_password_configured"] = has_password
+            row["mail"] = mail
+    return row
+
+
+def _automation_update_intake_store(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return _automation_get_intake_store(redact_secret=True)
+    with _AUTOMATION_INTAKE_LOCK:
+        merged = _automation_merge_dict(_automation_intake_store if isinstance(_automation_intake_store, dict) else _automation_intake_default(), payload)
+        merged["updated_at"] = datetime.now().isoformat()
+        _automation_intake_store.clear()
+        _automation_intake_store.update(merged)
+        _automation_save_intake_store()
+    return _automation_get_intake_store(redact_secret=True)
+
+
+def _automation_parse_csv_list(raw: Any, max_items: int = 10) -> List[str]:
+    if isinstance(raw, list):
+        out = [str(item or "").strip() for item in raw if str(item or "").strip()]
+        return out[: max(1, int(max_items))]
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    out = [chunk.strip() for chunk in text.replace("\n", ",").split(",") if chunk.strip()]
+    return out[: max(1, int(max_items))]
+
+
+def _automation_prompt_on_stuck_enabled() -> bool:
+    intake = _automation_get_intake_store(redact_secret=False)
+    automation_cfg = intake.get("automation") if isinstance(intake.get("automation"), dict) else {}
+    raw = automation_cfg.get("auto_prompt_on_stuck", True)
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _automation_default_human_input_value(field: Dict[str, Any], intake: Dict[str, Any]) -> Any:
+    key = str(field.get("key", "")).strip()
+    if not key:
+        return None
+    default_value = field.get("default")
+    if isinstance(default_value, (str, int, float, bool)) and str(default_value).strip():
+        return default_value
+
+    channels = intake.get("channels") if isinstance(intake.get("channels"), dict) else {}
+    accounts = intake.get("accounts") if isinstance(intake.get("accounts"), dict) else {}
+    partners = intake.get("partners") if isinstance(intake.get("partners"), dict) else {}
+    mail = intake.get("mail") if isinstance(intake.get("mail"), dict) else {}
+
+    if key == "mail_mode":
+        return str(channels.get("mail_mode", "edge_gmail") or "edge_gmail")
+    if key == "mail_browser":
+        return str(channels.get("mail_browser", "Microsoft Edge") or "Microsoft Edge")
+    if key == "target_gmail":
+        return str(partners.get("target_gmail", "admin@algoxpert.org") or "admin@algoxpert.org")
+    if key == "teams_mode":
+        return str(channels.get("teams_mode", "teams_app") or "teams_app")
+    if key == "teams_app_name":
+        return str(channels.get("teams_app_name", "Microsoft Teams") or "Microsoft Teams")
+    if key == "khiem_selected":
+        return str(accounts.get("khiem_selected", "") or partners.get("khiem_team_hint", "") or "Khiem - Work")
+    if key == "khiem_candidates":
+        candidates = accounts.get("khiem_candidates")
+        if isinstance(candidates, list):
+            return ", ".join(str(item).strip() for item in candidates if str(item).strip())
+        return ""
+    if key == "ravin_contact_hint":
+        return str(partners.get("ravin_contact_hint", "") or "ravin")
+    if key == "imap_host":
+        return str(mail.get("imap_host", AUTOMATION_EMAIL_IMAP_HOST) or "")
+    if key == "imap_username":
+        return str(mail.get("imap_username", AUTOMATION_EMAIL_IMAP_USERNAME) or "")
+    if key == "imap_password":
+        return str(mail.get("imap_password", AUTOMATION_EMAIL_IMAP_PASSWORD) or "")
+
+    options = field.get("options") if isinstance(field.get("options"), list) else []
+    if options:
+        first = str(options[0] or "").strip()
+        if first:
+            return first
+
+    required = bool(field.get("required", False))
+    if required:
+        field_type = str(field.get("type", "text")).strip().lower()
+        if field_type == "number":
+            return 0
+        return "auto_filled"
+    return None
+
+
+def _automation_try_auto_respond_human_input_request(decision: Dict[str, Any], actor: str = "full_auto") -> Dict[str, Any]:
+    if not isinstance(decision, dict):
+        return {"success": False, "error": "invalid_decision"}
+    if str(decision.get("kind", "")).strip() != "human_input_request":
+        return {"success": False, "error": "unsupported_kind"}
+    decision_id = str(decision.get("id", "")).strip()
+    if not decision_id:
+        return {"success": False, "error": "missing_decision_id"}
+
+    details = decision.get("details") if isinstance(decision.get("details"), dict) else {}
+    fields = details.get("fields") if isinstance(details.get("fields"), list) else []
+    intake = _automation_get_intake_store(redact_secret=False)
+    values: Dict[str, Any] = {}
+    for raw_field in fields:
+        if not isinstance(raw_field, dict):
+            continue
+        key = str(raw_field.get("key", "")).strip()
+        if not key:
+            continue
+        inferred = _automation_default_human_input_value(raw_field, intake)
+        if inferred is None:
+            continue
+        values[key] = inferred
+
+    if not values and fields:
+        first = fields[0] if isinstance(fields[0], dict) else {}
+        first_key = str(first.get("key", "")).strip()
+        if first_key:
+            values[first_key] = "auto_filled"
+
+    intake_snapshot = _automation_get_intake_store(redact_secret=True)
+    applied_keys: List[str] = []
+    if values:
+        intake_snapshot, applied_keys = _automation_apply_human_input_values(values)
+
+    response_payload = {
+        "values": values,
+        "remember": bool(values),
+        "applied_keys": applied_keys,
+        "auto_resolved": True,
+        "timestamp": datetime.now().isoformat(),
+    }
+    resolved = state.respond_decision(decision_id=decision_id, response=response_payload, actor=actor)
+    if not resolved:
+        return {"success": False, "error": "decision_not_pending"}
+
+    _append_intervention_history(
+        action="auto_responded",
+        decision_id=str(decision_id),
+        success=True,
+        actor=actor,
+        detail={"applied_keys": applied_keys, "auto_resolved": True},
+    )
+    state.add_agent_log(
+        "guardian",
+        f"🤖 Full-auto resolved human input: {resolved.get('title', 'Need input')}",
+        "success",
+    )
+    return {
+        "success": True,
+        "decision": resolved,
+        "values": values,
+        "applied_keys": applied_keys,
+        "intake": intake_snapshot,
+    }
+
+
+def _find_pending_human_input_request(request_key: str) -> Optional[Dict[str, Any]]:
+    target = str(request_key or "").strip()
+    if not target:
+        return None
+    for item in state.list_pending_decisions():
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("kind", "")).strip() != "human_input_request":
+            continue
+        details = item.get("details") if isinstance(item.get("details"), dict) else {}
+        if str(details.get("request_key", "")).strip() == target:
+            return item
+    return None
+
+
+def _automation_enqueue_human_input_request(
+    *,
+    request_key: str,
+    title: str,
+    prompt: str,
+    fields: List[Dict[str, Any]],
+    source: str = "automation",
+    context: Optional[Dict[str, Any]] = None,
+    risk_level: str = "medium",
+) -> Dict[str, Any]:
+    key = str(request_key or "").strip() or "human_input_request"
+    existing = _find_pending_human_input_request(key)
+    if existing:
+        return existing
+
+    cleaned_fields: List[Dict[str, Any]] = []
+    for raw_field in fields:
+        if not isinstance(raw_field, dict):
+            continue
+        field_key = str(raw_field.get("key", "")).strip()
+        if not field_key:
+            continue
+        field_type = str(raw_field.get("type", "text")).strip().lower() or "text"
+        if field_type not in {"text", "select", "number", "password", "textarea"}:
+            field_type = "text"
+        field_payload: Dict[str, Any] = {
+            "key": field_key,
+            "label": str(raw_field.get("label", field_key)).strip() or field_key,
+            "type": field_type,
+            "required": bool(raw_field.get("required", False)),
+        }
+        options_raw = raw_field.get("options")
+        if isinstance(options_raw, list):
+            options = [str(item or "").strip() for item in options_raw if str(item or "").strip()]
+            if options:
+                field_payload["options"] = options[:12]
+        placeholder = str(raw_field.get("placeholder", "")).strip()
+        if placeholder:
+            field_payload["placeholder"] = placeholder
+        default_value = raw_field.get("default")
+        if isinstance(default_value, (str, int, float, bool)) and str(default_value).strip():
+            field_payload["default"] = default_value
+        cleaned_fields.append(field_payload)
+
+    decision = state.add_pending_decision(
+        {
+            "action": "human_input_request",
+            "kind": "human_input_request",
+                "title": str(title or "Need input").strip() or "Need input",
+                "risk_level": _normalize_risk_level(risk_level, fallback="medium"),
+                "instance_id": LOCAL_INSTANCE_ID,
+                "instance_name": str(LOCAL_INSTANCE_ID),
+                "details": {
+                    "request_key": key,
+                    "prompt": str(prompt or "").strip(),
+                "fields": cleaned_fields,
+                "source": str(source or "automation").strip() or "automation",
+                "context": dict(context or {}),
+            },
+        }
+    )
+    _append_intervention_history(
+        action="prompted",
+        decision_id=str(decision.get("id", "")),
+        success=True,
+        actor="system",
+        detail={"kind": "human_input_request", "request_key": key, "source": source},
+    )
+    state.add_agent_log("guardian", f"🧩 Human input requested: {decision.get('title', 'Need input')}", "warning")
+    if _autonomy_no_human_prompts_enabled() and AUTOMATION_FULL_AUTO_AUTO_RESPOND_HUMAN_INPUT:
+        auto_resolved = _automation_try_auto_respond_human_input_request(decision, actor="full_auto")
+        resolved_item = auto_resolved.get("decision") if isinstance(auto_resolved.get("decision"), dict) else None
+        if isinstance(resolved_item, dict):
+            payload = dict(resolved_item)
+            payload["auto_resolved"] = True
+            return payload
+    return decision
+
+
+def _automation_request_due_diligence_context(reason: str, source: str, chat_text: str = "") -> Dict[str, Any]:
+    intake = _automation_get_intake_store(redact_secret=False)
+    channels = intake.get("channels") if isinstance(intake.get("channels"), dict) else {}
+    accounts = intake.get("accounts") if isinstance(intake.get("accounts"), dict) else {}
+    partners = intake.get("partners") if isinstance(intake.get("partners"), dict) else {}
+
+    khiem_candidates = accounts.get("khiem_candidates")
+    if isinstance(khiem_candidates, list):
+        khiem_candidates_text = ", ".join(str(item).strip() for item in khiem_candidates if str(item).strip())
+    else:
+        khiem_candidates_text = ""
+
+    fields = [
+        {
+            "key": "mail_mode",
+            "label": "Email channel",
+            "type": "select",
+            "required": True,
+            "default": str(channels.get("mail_mode", "edge_gmail") or "edge_gmail"),
+            "options": ["edge_gmail", "mail_app", "imap"],
+        },
+        {
+            "key": "mail_browser",
+            "label": "Browser for Gmail",
+            "type": "text",
+            "default": str(channels.get("mail_browser", "Microsoft Edge") or "Microsoft Edge"),
+            "placeholder": "Microsoft Edge",
+        },
+        {
+            "key": "target_gmail",
+            "label": "Target Gmail account",
+            "type": "text",
+            "default": str(partners.get("target_gmail", "admin@algoxpert.org") or "admin@algoxpert.org"),
+            "placeholder": "admin@algoxpert.org",
+        },
+        {
+            "key": "teams_mode",
+            "label": "Teams channel",
+            "type": "select",
+            "required": True,
+            "default": str(channels.get("teams_mode", "teams_app") or "teams_app"),
+            "options": ["teams_app", "browser"],
+        },
+        {
+            "key": "teams_app_name",
+            "label": "Teams app name",
+            "type": "text",
+            "default": str(channels.get("teams_app_name", "Microsoft Teams") or "Microsoft Teams"),
+            "placeholder": "Microsoft Teams",
+        },
+        {
+            "key": "khiem_selected",
+            "label": "Khiem account to open",
+            "type": "text",
+            "required": True,
+            "default": str(accounts.get("khiem_selected", "") or partners.get("khiem_team_hint", "")),
+            "placeholder": "e.g. Khiem - Work account",
+        },
+        {
+            "key": "khiem_candidates",
+            "label": "Khiem account options (comma-separated)",
+            "type": "text",
+            "default": khiem_candidates_text,
+            "placeholder": "Khiem Work, Khiem Personal",
+        },
+        {
+            "key": "ravin_contact_hint",
+            "label": "Ravin contact hint",
+            "type": "text",
+            "default": str(partners.get("ravin_contact_hint", "") or ""),
+            "placeholder": "name/email to search",
+        },
+    ]
+    return _automation_enqueue_human_input_request(
+        request_key="due_diligence_context",
+        title="Need operator input to continue due diligence",
+        prompt=(
+            "Automation is blocked on channel/account selection. "
+            "Please confirm Gmail/Teams route and the exact Khiem account."
+        ),
+        fields=fields,
+        source=source,
+        context={"reason": str(reason or "").strip(), "chat_text": str(chat_text or "").strip()},
+        risk_level="medium",
+    )
+
+
+def _automation_apply_human_input_values(values: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
+    if not isinstance(values, dict):
+        return _automation_get_intake_store(redact_secret=True), []
+
+    patch: Dict[str, Any] = {}
+    applied: List[str] = []
+
+    def write(path: str, value: Any) -> None:
+        parts = [part.strip() for part in str(path or "").split(".") if part.strip()]
+        if not parts:
+            return
+        cursor = patch
+        for part in parts[:-1]:
+            node = cursor.get(part)
+            if not isinstance(node, dict):
+                node = {}
+                cursor[part] = node
+            cursor = node
+        cursor[parts[-1]] = value
+
+    for key, raw_value in values.items():
+        field_key = str(key or "").strip().lower()
+        if not field_key:
+            continue
+        value = raw_value
+        if isinstance(value, str):
+            value = value.strip()
+        if field_key in {"mail_mode"} and value:
+            write("channels.mail_mode", str(value).strip().lower())
+            applied.append("channels.mail_mode")
+        elif field_key in {"mail_browser"} and value:
+            write("channels.mail_browser", str(value).strip())
+            applied.append("channels.mail_browser")
+        elif field_key in {"teams_mode"} and value:
+            write("channels.teams_mode", str(value).strip().lower())
+            applied.append("channels.teams_mode")
+        elif field_key in {"teams_app_name"} and value:
+            write("channels.teams_app_name", str(value).strip())
+            applied.append("channels.teams_app_name")
+        elif field_key in {"target_gmail"} and value:
+            write("partners.target_gmail", str(value).strip())
+            applied.append("partners.target_gmail")
+        elif field_key in {"khiem_selected", "khiem_account"} and value:
+            selected = str(value).strip()
+            write("accounts.khiem_selected", selected)
+            write("partners.khiem_team_hint", selected)
+            applied.extend(["accounts.khiem_selected", "partners.khiem_team_hint"])
+        elif field_key in {"khiem_candidates", "khiem_accounts"}:
+            candidates = _automation_parse_csv_list(value)
+            write("accounts.khiem_candidates", candidates)
+            applied.append("accounts.khiem_candidates")
+        elif field_key in {"ravin_contact_hint"} and value:
+            write("partners.ravin_contact_hint", str(value).strip())
+            applied.append("partners.ravin_contact_hint")
+        elif field_key in {"imap_host", "imap_username", "imap_password"} and value:
+            write(f"mail.{field_key}", str(value).strip())
+            applied.append(f"mail.{field_key}")
+        elif field_key in {"raise_usd", "equity_pct"}:
+            try:
+                numeric = float(value)
+            except Exception:
+                continue
+            write(f"valuation.{field_key}", numeric)
+            applied.append(f"valuation.{field_key}")
+        elif field_key in {"auto_prompt_on_stuck"}:
+            write("automation.auto_prompt_on_stuck", _to_bool(value))
+            applied.append("automation.auto_prompt_on_stuck")
+
+    if not patch:
+        return _automation_get_intake_store(redact_secret=True), []
+    updated = _automation_update_intake_store(patch)
+    unique_applied = sorted(set(applied))
+    return updated, unique_applied
+
+
+def _automation_maybe_enqueue_stuck_prompt(task: Dict[str, Any], result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not _automation_prompt_on_stuck_enabled():
+        return None
+    if not isinstance(task, dict) or not isinstance(result, dict):
+        return None
+
+    task_type = str(task.get("task_type", "")).strip().lower()
+    action = str(task.get("action", "")).strip().lower()
+    error_code = str(result.get("error_code", "")).strip().upper()
+    missing_info = result.get("missing_info") if isinstance(result.get("missing_info"), list) else []
+
+    if error_code in {"MAIL_CHANNEL_BROWSER_REQUIRED", "MAIL_CREDENTIALS_MISSING", "MAIL_UNAVAILABLE"}:
+        return _automation_request_due_diligence_context(
+            reason=error_code.lower() or "mail_blocked",
+            source="automation_execute_task",
+        )
+
+    if not missing_info:
+        return None
+
+    unique_fields: List[str] = []
+    for raw in missing_info:
+        field = str(raw or "").strip()
+        if not field:
+            continue
+        if field in unique_fields:
+            continue
+        unique_fields.append(field)
+        if len(unique_fields) >= 8:
+            break
+
+    prompt_fields: List[Dict[str, Any]] = []
+    for index, path in enumerate(unique_fields):
+        leaf = str(path.split(".")[-1]).strip().lower() or f"field_{index + 1}"
+        prompt_fields.append(
+            {
+                "key": leaf,
+                "label": f"Provide: {path}",
+                "type": "text",
+                "required": True,
+                "placeholder": path,
+            }
+        )
+
+    if not prompt_fields:
+        return None
+
+    return _automation_enqueue_human_input_request(
+        request_key=f"missing_input:{task_type}:{action}",
+        title=f"Need input for {task_type}/{action}",
+        prompt="Automation is blocked because required inputs are missing. Please fill fields below.",
+        fields=prompt_fields,
+        source="automation_execute_task",
+        context={
+            "task_type": task_type,
+            "action": action,
+            "missing_info": unique_fields,
+            "task_id": str(task.get("task_id", "")),
+        },
+        risk_level="medium",
+    )
+
+
+def _automation_mail_runtime_config() -> Dict[str, Any]:
+    intake = _automation_get_intake_store(redact_secret=False)
+    mail = intake.get("mail") if isinstance(intake.get("mail"), dict) else {}
+    host = str(mail.get("imap_host") or AUTOMATION_EMAIL_IMAP_HOST).strip()
+    port_raw = mail.get("imap_port", AUTOMATION_EMAIL_IMAP_PORT)
+    try:
+        port = max(1, int(port_raw))
+    except Exception:
+        port = AUTOMATION_EMAIL_IMAP_PORT
+    username = str(mail.get("imap_username") or AUTOMATION_EMAIL_IMAP_USERNAME).strip()
+    password = str(mail.get("imap_password") or AUTOMATION_EMAIL_IMAP_PASSWORD).strip()
+    folder = str(mail.get("imap_folder") or AUTOMATION_EMAIL_IMAP_FOLDER or "INBOX").strip() or "INBOX"
+    ssl_value = mail.get("imap_ssl")
+    if ssl_value is None:
+        ssl_enabled = bool(AUTOMATION_EMAIL_IMAP_SSL)
+    elif isinstance(ssl_value, bool):
+        ssl_enabled = ssl_value
+    else:
+        ssl_enabled = str(ssl_value).strip().lower() in {"1", "true", "yes", "on"}
+    return {
+        "host": host,
+        "port": port,
+        "username": username,
+        "password": password,
+        "folder": folder,
+        "ssl": ssl_enabled,
+    }
+
+
+_automation_load_intake_store()
 
 
 # Phase 4: Context Functions
@@ -8669,37 +10650,94 @@ def _automation_dlq_clear(owner_id: Optional[str] = None) -> int:
 # Phase 3: Window Management Functions
 
 def _automation_list_windows() -> List[Dict[str, Any]]:
-    """List all visible windows using Quartz (macOS)."""
-    try:
-        import subprocess
-        result = subprocess.run(
-            ["osascript", "-e", '''
-            tell application "System Events"
-                set windowList to {}
-                repeat with proc in (every process whose background only is false)
+    """List all visible windows (line-delimited output from AppleScript)."""
+    script = """
+    tell application "System Events"
+        set outputLines to {}
+        repeat with proc in (every process whose background only is false)
+            try
+                set procName to name of proc
+                repeat with win in (every window of proc)
+                    set winTitle to ""
+                    set winX to 0
+                    set winY to 0
+                    set winW to 0
+                    set winH to 0
                     try
-                        set procName to name of proc
-                        repeat with win in (every window of proc)
-                            set winTitle to name of win
-                            set winPos to position of win
-                            set winSize to size of win
-                            set end of windowList to {appName:procName, title:winTitle, x:item 1 of winPos, y:item 2 of winPos, width:item 1 of winSize, height:item 2 of winSize}
-                        end repeat
+                        set winTitle to name of win
                     end try
+                    try
+                        set winPos to position of win
+                        set winX to item 1 of winPos
+                        set winY to item 2 of winPos
+                    end try
+                    try
+                        set winSize to size of win
+                        set winW to item 1 of winSize
+                        set winH to item 2 of winSize
+                    end try
+                    set end of outputLines to (procName & tab & winTitle & tab & (winX as text) & tab & (winY as text) & tab & (winW as text) & tab & (winH as text))
                 end repeat
-                return windowList
-            end tell
-            '''],
+            end try
+        end repeat
+    end tell
+    set AppleScript's text item delimiters to linefeed
+    set outText to outputLines as text
+    set AppleScript's text item delimiters to ""
+    return outText
+    """
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script],
             capture_output=True,
             text=True,
-            timeout=10
+            timeout=10,
+            check=False,
         )
-        if result.returncode == 0 and result.stdout.strip():
-            import json
-            windows = json.loads(result.stdout.strip())
-            return [{"window_id": f"win_{i}", **w} for i, w in enumerate(windows)]
-    except Exception as e:
-        logger.warning(f"Failed to list windows: {e}")
+        if result.returncode != 0:
+            stderr = str(result.stderr or "").strip()
+            logger.warning(f"Failed to list windows: {stderr or 'unknown osascript error'}")
+            return []
+        output = str(result.stdout or "").strip()
+        if not output:
+            return []
+
+        def _to_int(value: Any, default: int = 0) -> int:
+            try:
+                return int(float(str(value).strip()))
+            except Exception:
+                return default
+
+        windows: List[Dict[str, Any]] = []
+        for idx, line in enumerate(output.splitlines(), start=1):
+            row = str(line or "").strip()
+            if not row:
+                continue
+            parts = row.split("\t")
+            if len(parts) < 6:
+                continue
+            app_name = str(parts[0] or "").strip()
+            title = str(parts[1] or "").strip()
+            x = _to_int(parts[2], 0)
+            y = _to_int(parts[3], 0)
+            width = _to_int(parts[4], 0)
+            height = _to_int(parts[5], 0)
+            safe_app = re.sub(r"[^a-z0-9]+", "-", app_name.lower()).strip("-") or "app"
+            windows.append(
+                {
+                    "window_id": f"win_{safe_app}_{idx}",
+                    "app": app_name,
+                    "appName": app_name,
+                    "title": title,
+                    "x": x,
+                    "y": y,
+                    "width": width,
+                    "height": height,
+                }
+            )
+        return windows
+    except Exception as exc:
+        logger.warning(f"Failed to list windows: {exc}")
     return []
 
 
@@ -8816,7 +10854,7 @@ def _automation_surface_list() -> List[Dict[str, Any]]:
                 _AUTOMATION_SURFACE_REGISTRY[surface_id] = {
                     "type": "window",
                     "title": w.get("title", ""),
-                    "app": w.get("appName", ""),
+                    "app": w.get("appName", "") or w.get("app", ""),
                     "position": {"x": w.get("x", 0), "y": w.get("y", 0)},
                     "size": {"width": w.get("width", 0), "height": w.get("height", 0)},
                     "last_seen": datetime.now().isoformat(),
@@ -8825,7 +10863,7 @@ def _automation_surface_list() -> List[Dict[str, Any]]:
                 "surface_id": surface_id,
                 "type": "window",
                 "title": w.get("title", ""),
-                "app": w.get("appName", ""),
+                "app": w.get("appName", "") or w.get("app", ""),
             })
     except Exception as e:
         logger.warning(f"Failed to list surfaces: {e}")
@@ -8839,9 +10877,49 @@ def _automation_surface_info(surface_id: str) -> Dict[str, Any]:
 
 
 def _automation_surface_capture(surface_id: str) -> Dict[str, Any]:
-    """Capture screenshot of a surface."""
-    # This would require pyautogui or similar
-    return {"success": False, "error": "Screenshot not implemented", "error_code": "NOT_IMPLEMENTED"}
+    """Capture screenshot with best-effort focus on the selected surface."""
+    with _AUTOMATION_SURFACE_REGISTRY_LOCK:
+        surface = dict(_AUTOMATION_SURFACE_REGISTRY.get(surface_id, {}))
+    if not surface:
+        return {"success": False, "error": "Surface not found", "error_code": "SURFACE_NOT_FOUND"}
+
+    app_name = str(surface.get("app", "") or "").strip()
+    if app_name:
+        subprocess.run(
+            ["osascript", "-e", f'tell application "{app_name}" to activate'],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    target = _automation_safe_path(f"/tmp/automation_surface_{surface_id}_{ts}.png", create_parent=True)
+    done = subprocess.run(
+        ["screencapture", "-x", str(target)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    if done.returncode != 0:
+        return {
+            "success": False,
+            "error": str(done.stderr or done.stdout or "screencapture failed").strip()[:300],
+            "error_code": "SCREENSHOT_FAILED",
+        }
+    size = 0
+    try:
+        size = int(target.stat().st_size)
+    except Exception:
+        size = 0
+    return {
+        "success": True,
+        "surface_id": surface_id,
+        "filepath": str(target),
+        "bytes": size,
+        "capture_mode": "fullscreen_after_focus",
+    }
 
 
 # Phase 3: Cross-surface Workflow Functions
@@ -9027,7 +11105,137 @@ def _automation_poll_debounced(task_type: str, action: str, session_id: str, own
     return False, 0.0
 
 
+def _automation_browser_open_fallback(url: str) -> Dict[str, Any]:
+    target = str(url or "").strip()
+    if not target:
+        return {"success": False, "error": "Missing url", "error_code": "MISSING_URL"}
+    try:
+        if sys.platform == "darwin":
+            cmd = ["open", "-a", OPENCLAW_CHROME_APP, target]
+        else:
+            cmd = ["xdg-open", target]
+        completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        return {
+            "success": completed.returncode == 0,
+            "returncode": completed.returncode,
+            "command": " ".join(cmd),
+            "stdout": str(completed.stdout or "").strip(),
+            "stderr": str(completed.stderr or "").strip(),
+            "url": target,
+        }
+    except Exception as exc:
+        return {"success": False, "error": str(exc), "error_code": "BROWSER_FALLBACK_FAILED", "url": target}
+
+
+def _automation_resolve_browser_provider(params: Dict[str, Any]) -> str:
+    raw = str(
+        params.get("provider")
+        or params.get("browser_provider")
+        or params.get("engine")
+        or ""
+    ).strip().lower()
+    if raw in {"openclaw", "local"}:
+        return raw
+    if raw in {"native", "system", "core", "headless"}:
+        return "local"
+    return AUTOMATION_BROWSER_PROVIDER_DEFAULT
+
+
+def _automation_execute_browser_local(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    act = str(action or "").strip().lower()
+    if act in {"status", "start"}:
+        return {
+            "success": True,
+            "provider": "local",
+            "mode": "local",
+            "action": act,
+            "ready": True,
+        }
+    if act in {"open", "navigate"}:
+        fallback = _automation_browser_open_fallback(str(params.get("url", "") or ""))
+        return {
+            "success": bool(fallback.get("success")),
+            "provider": "local",
+            "mode": "local",
+            "action": act,
+            "result": fallback,
+            "error": fallback.get("error"),
+            "error_code": fallback.get("error_code"),
+        }
+    if act == "flow":
+        fallback = _openclaw_flow_fallback(str(params.get("chat_text", "") or ""))
+        if isinstance(fallback, dict):
+            return {
+                "success": bool(fallback.get("success", False)),
+                "provider": "local",
+                "mode": "fallback",
+                "error_code": "FLOW_FALLBACK_EXECUTED",
+                "result": fallback,
+                "fallback_reason": "local_provider",
+            }
+        return {
+            "success": False,
+            "provider": "local",
+            "mode": "fallback",
+            "error": "No local flow fallback available",
+            "error_code": "FLOW_FALLBACK_UNAVAILABLE",
+        }
+    if act == "press":
+        key = str(params.get("key", "")).strip().lower()
+        result = _computer_control_action("press", {"key": key})
+        return {
+            "success": bool(result.get("success")),
+            "provider": "local",
+            "mode": "local",
+            "action": act,
+            "result": result,
+            "error": result.get("error"),
+            "error_code": result.get("error_code"),
+        }
+    if act == "type":
+        text = str(params.get("text", "") or "")
+        result = _computer_control_action("type_text", {"text": text})
+        return {
+            "success": bool(result.get("success")),
+            "provider": "local",
+            "mode": "local",
+            "action": act,
+            "result": result,
+            "error": result.get("error"),
+            "error_code": result.get("error_code"),
+        }
+    if act == "snapshot":
+        return {
+            "success": False,
+            "provider": "local",
+            "mode": "local",
+            "error": "Local provider does not support browser snapshots",
+            "error_code": "ACTION_REQUIRES_OPENCLAW",
+        }
+    if act == "click":
+        return {
+            "success": False,
+            "provider": "local",
+            "mode": "local",
+            "error": "Local provider does not support semantic browser click",
+            "error_code": "ACTION_REQUIRES_OPENCLAW",
+        }
+    return {
+        "success": False,
+        "provider": "local",
+        "mode": "local",
+        "error": f"Unsupported browser action '{act}'",
+        "error_code": "INVALID_ACTION",
+    }
+
+
 def _automation_execute_browser(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    provider = _automation_resolve_browser_provider(params)
+    if provider == "local":
+        local_result = _automation_execute_browser_local(action, params)
+        local_result.setdefault("provider", "local")
+        return local_result
+
     if action == "flow":
         queued = _enqueue_openclaw_command("flow", dict(params))
     else:
@@ -9035,9 +11243,66 @@ def _automation_execute_browser(action: str, params: Dict[str, Any]) -> Dict[str
         payload["action"] = action
         queued = _enqueue_openclaw_command("browser", payload)
     if not queued.get("success"):
-        return {"success": False, "error": queued.get("error"), "error_code": queued.get("error_code")}
+        error_code = str(queued.get("error_code", "") or "").strip().upper()
+        security_blocked_codes = {
+            "MANUAL_REQUIRED",
+            "POLICY_DENIED",
+            "LEASE_CONFLICT",
+            "LEASE_CONTEXT_REQUIRED",
+            "LEASE_EXPIRED",
+            "FAILURE_CLASS_BLOCKED",
+        }
+        if action in {"open", "navigate"} and error_code not in security_blocked_codes:
+            fallback = _automation_browser_open_fallback(str(params.get("url", "") or ""))
+            if fallback.get("success"):
+                return {
+                    "success": True,
+                    "provider": "openclaw",
+                    "mode": "fallback_local_browser",
+                    "request_id": queued.get("request_id"),
+                    "session_id": queued.get("session_id"),
+                    "error_code": "OPENCLAW_FALLBACK_EXECUTED",
+                    "result": fallback,
+                    "fallback_reason": error_code or "openclaw_unavailable",
+                }
+        if action == "flow" and error_code in {"FLOW_MODE_DISABLED", "BROWSER_MODE_DISABLED"}:
+            fallback = _openclaw_flow_fallback(str(params.get("chat_text", "") or ""))
+            if isinstance(fallback, dict):
+                return {
+                    "success": bool(fallback.get("success", False)),
+                    "provider": "openclaw",
+                    "mode": "fallback",
+                    "request_id": queued.get("request_id"),
+                    "session_id": queued.get("session_id"),
+                    "error_code": "FLOW_FALLBACK_EXECUTED",
+                    "result": fallback,
+                    "fallback_reason": error_code or "flow_mode_disabled",
+                }
+        if action == "flow" and error_code in {"OPENCLAW_TEMP_DISABLED", "ATTACH_FAILED", "ATTACH_THROTTLED"}:
+            fallback = _openclaw_flow_fallback(str(params.get("chat_text", "") or ""))
+            if isinstance(fallback, dict):
+                return {
+                    "success": bool(fallback.get("success", False)),
+                    "provider": "openclaw",
+                    "mode": "fallback",
+                    "request_id": queued.get("request_id"),
+                    "session_id": queued.get("session_id"),
+                    "error_code": "FLOW_FALLBACK_EXECUTED",
+                    "result": fallback,
+                    "fallback_reason": error_code or "openclaw_temp_disabled",
+                }
+        queued_error = queued.get("error")
+        if queued_error is None:
+            queued_error = "OpenClaw execution failed"
+        return {
+            "success": False,
+            "provider": "openclaw",
+            "error": str(queued_error),
+            "error_code": error_code or "OPENCLAW_EXECUTION_FAILED",
+        }
     return {
         "success": True,
+        "provider": "openclaw",
         "request_id": queued.get("request_id"),
         "mode": queued.get("mode"),
         "session_id": queued.get("session_id"),
@@ -9082,13 +11347,84 @@ def _automation_execute_terminal(action: str, params: Dict[str, Any]) -> Dict[st
         return {"success": False, "error": "Command timeout", "error_code": "EXEC_TIMEOUT"}
 
 
+def _automation_is_python_dashboard_alias(app_name: str) -> bool:
+    normalized = " ".join(str(app_name or "").strip().lower().split())
+    if not normalized:
+        return False
+    direct_aliases = {
+        "python automation",
+        "python app",
+        "python monitor",
+        "python dashboard",
+        "monitor python",
+        "automation python",
+    }
+    if normalized in direct_aliases:
+        return True
+    return ("python" in normalized) and any(token in normalized for token in ("automation", "dashboard", "monitor", "app.py"))
+
+
+def _automation_dashboard_is_running(host: str = "127.0.0.1", port: int = 5001, timeout_sec: float = 0.35) -> bool:
+    try:
+        with socket.create_connection((host, int(port)), timeout=max(0.1, float(timeout_sec))):
+            return True
+    except OSError:
+        return False
+
+
+def _automation_launch_python_dashboard() -> Dict[str, Any]:
+    target_url = "http://localhost:5001/live"
+    if _automation_dashboard_is_running():
+        return {
+            "success": True,
+            "already_running": True,
+            "url": target_url,
+            "message": "Python automation dashboard is already running",
+        }
+    script_path = Path(__file__).resolve()
+    try:
+        subprocess.Popen(
+            [sys.executable, str(script_path)],
+            cwd=str(script_path.parent.parent),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as exc:
+        return {"success": False, "error": str(exc), "error_code": "PYTHON_AUTOMATION_START_FAILED"}
+
+    deadline = time.time() + 4.0
+    while time.time() < deadline:
+        if _automation_dashboard_is_running():
+            return {
+                "success": True,
+                "started": True,
+                "url": target_url,
+                "message": "Python automation dashboard started",
+            }
+        time.sleep(0.25)
+    return {
+        "success": False,
+        "error": "Python automation dashboard start timeout",
+        "error_code": "PYTHON_AUTOMATION_START_TIMEOUT",
+        "url": target_url,
+    }
+
+
 def _automation_execute_app(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
     if action == "launch":
         app_name = str(params.get("app_name", "") or params.get("app_path", "")).strip()
         if not app_name:
             return {"success": False, "error": "Missing app_name", "error_code": "MISSING_APP"}
+        if _automation_is_python_dashboard_alias(app_name):
+            return _automation_launch_python_dashboard()
         done = subprocess.run(["open", "-a", app_name], capture_output=True, text=True, check=False)
-        return {"success": done.returncode == 0, "returncode": done.returncode, "app_name": app_name}
+        return {
+            "success": done.returncode == 0,
+            "returncode": done.returncode,
+            "app_name": app_name,
+            "stderr": str(done.stderr or "").strip(),
+        }
     if action == "activate":
         app_name = str(params.get("app_name", "")).strip()
         if not app_name:
@@ -9117,15 +11453,156 @@ def _automation_decode_header(value: Any) -> str:
     return "".join(out).strip()
 
 
+def _automation_filter_mail_rows(rows: List[Dict[str, Any]], params: Dict[str, Any]) -> List[Dict[str, Any]]:
+    query = str(params.get("query", "")).strip().lower()
+    from_contains = str(params.get("from_contains") or params.get("sender_contains") or "").strip().lower()
+    subject_contains = str(params.get("subject_contains") or "").strip().lower()
+    account_contains = str(params.get("account_contains") or "").strip().lower()
+    mailbox_contains = str(params.get("mailbox_contains") or "").strip().lower()
+    if not any([query, from_contains, subject_contains, account_contains, mailbox_contains]):
+        return rows
+
+    filtered: List[Dict[str, Any]] = []
+    for row in rows:
+        sender = str(row.get("from", "")).lower()
+        subject = str(row.get("subject", "")).lower()
+        account = str(row.get("account", "")).lower()
+        mailbox = str(row.get("mailbox", "")).lower()
+        date_text = str(row.get("date", "")).lower()
+        blob = " ".join([sender, subject, account, mailbox, date_text]).strip()
+        if query and query not in blob:
+            continue
+        if from_contains and from_contains not in sender:
+            continue
+        if subject_contains and subject_contains not in subject:
+            continue
+        if account_contains and account_contains not in account:
+            continue
+        if mailbox_contains and mailbox_contains not in mailbox:
+            continue
+        filtered.append(row)
+    return filtered
+
+
+def _automation_list_recent_mail_app(limit: int) -> Dict[str, Any]:
+    max_rows = max(1, min(50, int(limit)))
+    script = f"""
+    tell application "Mail"
+        set outLines to {{}}
+        try
+            set msgList to messages of inbox
+            set totalCount to count of msgList
+            set startIdx to totalCount - {max_rows} + 1
+            if startIdx < 1 then set startIdx to 1
+            repeat with idx from totalCount to startIdx by -1
+                set m to item idx of msgList
+                set msgId to ""
+                set senderText to ""
+                set subj to ""
+                set dateText to ""
+                set accountName to ""
+                set mailboxName to "INBOX"
+                try
+                    set msgId to message id of m as text
+                end try
+                try
+                    set senderText to sender of m as text
+                end try
+                try
+                    set subj to subject of m as text
+                end try
+                try
+                    set dateText to date received of m as text
+                end try
+                try
+                    set mboxRef to mailbox of m
+                    set mailboxName to name of mboxRef as text
+                    try
+                        set accountName to name of account of mboxRef as text
+                    end try
+                end try
+                set end of outLines to (msgId & tab & senderText & tab & subj & tab & dateText & tab & accountName & tab & mailboxName)
+            end repeat
+        on error errMsg
+            return "__ERROR__" & errMsg
+        end try
+    end tell
+    set AppleScript's text item delimiters to linefeed
+    set outText to outLines as text
+    set AppleScript's text item delimiters to ""
+    return outText
+    """
+    done = subprocess.run(
+        ["osascript", "-e", script],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    if done.returncode != 0:
+        return {"success": False, "error": str(done.stderr or done.stdout or "Mail app unavailable").strip(), "error_code": "MAIL_UNAVAILABLE"}
+    output = str(done.stdout or "").strip()
+    if output.startswith("__ERROR__"):
+        return {"success": False, "error": output.replace("__ERROR__", "", 1).strip(), "error_code": "MAIL_UNAVAILABLE"}
+    rows: List[Dict[str, Any]] = []
+    if not output:
+        return {"success": True, "messages": rows, "count": 0, "source": "mail_app"}
+    for line in output.splitlines():
+        parts = str(line or "").split("\t")
+        if len(parts) < 6:
+            continue
+        rows.append(
+            {
+                "id": str(parts[0] or "").strip(),
+                "from": str(parts[1] or "").strip(),
+                "subject": str(parts[2] or "").strip(),
+                "date": str(parts[3] or "").strip(),
+                "account": str(parts[4] or "").strip(),
+                "mailbox": str(parts[5] or "").strip(),
+            }
+        )
+    return {"success": True, "messages": rows, "count": len(rows), "source": "mail_app"}
+
+
 def _automation_execute_mail(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    mail_cfg = _automation_mail_runtime_config()
+    intake = _automation_get_intake_store(redact_secret=False)
+    channels = intake.get("channels") if isinstance(intake.get("channels"), dict) else {}
+    partners = intake.get("partners") if isinstance(intake.get("partners"), dict) else {}
+    mail_mode = str(channels.get("mail_mode", "edge_gmail") or "edge_gmail").strip().lower()
+    target_gmail = str(partners.get("target_gmail", "") or "").strip()
     if action == "list_folders":
-        return {"success": True, "folders": [AUTOMATION_EMAIL_IMAP_FOLDER, "Sent", "Drafts", "Archive", "Spam"]}
-    if AUTOMATION_EMAIL_IMAP_HOST and AUTOMATION_EMAIL_IMAP_USERNAME and AUTOMATION_EMAIL_IMAP_PASSWORD:
+        return {"success": True, "folders": [str(mail_cfg.get("folder") or "INBOX"), "Sent", "Drafts", "Archive", "Spam"]}
+
+    if action in {"check_unread", "list_recent"} and mail_mode == "edge_gmail":
+        prompt_decision: Optional[Dict[str, Any]] = None
+        if _automation_prompt_on_stuck_enabled():
+            prompt_decision = _automation_request_due_diligence_context(
+                reason="mail_channel_edge_gmail",
+                source="automation_execute_mail",
+            )
+        return {
+            "success": False,
+            "error": "Mail automation is set to Edge Gmail. Use browser flow in Edge for mailbox access.",
+            "error_code": "MAIL_CHANNEL_BROWSER_REQUIRED",
+            "channel": "edge_gmail",
+            "target_gmail": target_gmail,
+            "missing_info": ["channels.mail_mode", "partners.target_gmail"],
+            "intervention_id": prompt_decision.get("id") if isinstance(prompt_decision, dict) else "",
+        }
+
+    if mail_cfg.get("host") and mail_cfg.get("username") and mail_cfg.get("password"):
         limit = max(1, min(30, int(params.get("limit", 10))))
         try:
-            mailbox = imaplib.IMAP4_SSL(AUTOMATION_EMAIL_IMAP_HOST, AUTOMATION_EMAIL_IMAP_PORT) if AUTOMATION_EMAIL_IMAP_SSL else imaplib.IMAP4(AUTOMATION_EMAIL_IMAP_HOST, AUTOMATION_EMAIL_IMAP_PORT)
-            mailbox.login(AUTOMATION_EMAIL_IMAP_USERNAME, AUTOMATION_EMAIL_IMAP_PASSWORD)
-            mailbox.select(AUTOMATION_EMAIL_IMAP_FOLDER)
+            host = str(mail_cfg.get("host") or "")
+            port = int(mail_cfg.get("port") or 993)
+            username = str(mail_cfg.get("username") or "")
+            password = str(mail_cfg.get("password") or "")
+            folder = str(mail_cfg.get("folder") or "INBOX")
+            ssl_enabled = bool(mail_cfg.get("ssl", True))
+            mailbox = imaplib.IMAP4_SSL(host, port) if ssl_enabled else imaplib.IMAP4(host, port)
+            mailbox.login(username, password)
+            mailbox.select(folder)
             if action == "check_unread":
                 status, data = mailbox.search(None, "UNSEEN")
                 mailbox.logout()
@@ -9152,10 +11629,13 @@ def _automation_execute_mail(action: str, params: Dict[str, Any]) -> Dict[str, A
                             "subject": _automation_decode_header(msg.get("Subject")),
                             "from": _automation_decode_header(msg.get("From")),
                             "date": _automation_decode_header(msg.get("Date")),
+                            "account": username,
+                            "mailbox": folder,
                         }
                     )
                 mailbox.logout()
-                return {"success": True, "messages": rows, "count": len(rows)}
+                rows = _automation_filter_mail_rows(rows, params)
+                return {"success": True, "messages": rows[:limit], "count": len(rows), "source": "imap"}
         except Exception as exc:
             return {"success": False, "error": str(exc), "error_code": "MAIL_BACKEND_FAILED"}
 
@@ -9175,7 +11655,24 @@ def _automation_execute_mail(action: str, params: Dict[str, Any]) -> Dict[str, A
             unread = 0
         return {"success": True, "unread_count": unread}
     if action == "list_recent":
-        return {"success": False, "error": "IMAP credentials missing for list_recent", "error_code": "MAIL_CREDENTIALS_MISSING"}
+        limit = max(1, min(30, int(params.get("limit", 10))))
+        local_probe = _automation_list_recent_mail_app(limit=max(limit, 20))
+        if not local_probe.get("success"):
+            return {
+                "success": False,
+                "error": "IMAP credentials missing for list_recent",
+                "error_code": "MAIL_CREDENTIALS_MISSING",
+                "missing_info": [
+                    "mail.imap_host",
+                    "mail.imap_username",
+                    "mail.imap_password",
+                ],
+                "hint": "Provide IMAP credentials in /api/automation/intake or configure local Mail app.",
+                "fallback_error": local_probe.get("error"),
+            }
+        rows = local_probe.get("messages") if isinstance(local_probe.get("messages"), list) else []
+        rows = _automation_filter_mail_rows(rows, params)
+        return {"success": True, "messages": rows[:limit], "count": len(rows), "source": "mail_app"}
     return {"success": False, "error": "Unsupported mail action", "error_code": "INVALID_ACTION"}
 
 
@@ -9405,6 +11902,12 @@ def _execute_automation_task(task: Dict[str, Any]) -> Dict[str, Any]:
 
     task["result"] = result if isinstance(result, dict) else {}
     task["status"] = "completed" if bool(task["result"].get("success")) else "failed"
+    if task["status"] == "failed":
+        prompt_decision = _automation_maybe_enqueue_stuck_prompt(task, task["result"])
+        if isinstance(prompt_decision, dict):
+            task["result"]["intervention_id"] = str(prompt_decision.get("id", ""))
+            task["result"]["intervention_kind"] = "human_input_request"
+            task["result"].setdefault("hint", "Please answer the popup intervention to continue the flow.")
     task["error"] = str(task["result"].get("error", "")) if task["status"] == "failed" else ""
     task["error_code"] = str(task["result"].get("error_code", "")) if task["status"] == "failed" else ""
     task["completed_at"] = datetime.now().isoformat()
@@ -9605,6 +12108,11 @@ def automation_execute():
     task_type = str(data.get("task_type", "")).strip().lower()
     action = str(data.get("action", "")).strip().lower()
     params = data.get("params") if isinstance(data.get("params"), dict) else {}
+    if task_type == "browser":
+        provider = str(data.get("provider", "") or data.get("browser_provider", "")).strip()
+        if provider:
+            params = dict(params)
+            params.setdefault("provider", provider)
     task_id = str(data.get("task_id", "")).strip()
     session_id = str(data.get("session_id", "default")).strip() or "default"
     owner_id = str(data.get("owner_id", "api")).strip() or "api"
@@ -9696,6 +12204,7 @@ def automation_execute():
             "result": result_task.get("result"),
             "error": result_task.get("error"),
             "error_code": result_task.get("error_code"),
+            "intervention_id": ((result_task.get("result") or {}).get("intervention_id") if isinstance(result_task.get("result"), dict) else ""),
             "duration_ms": result_task.get("duration_ms"),
             "session": _automation_public_session(session_id),
             "created_at": result_task.get("created_at"),
@@ -9713,6 +12222,7 @@ def automation_batch():
     session_id = str(data.get("session_id", "default")).strip() or "default"
     owner_id = str(data.get("owner_id", "api")).strip() or "api"
     lease_token = str(data.get("lease_token", "")).strip()
+    default_provider = str(data.get("provider", "") or data.get("browser_provider", "")).strip()
     lease = _automation_assert_session_lease(session_id, owner_id, lease_token)
     if not lease.get("allowed"):
         return jsonify({"success": False, "error": lease.get("error"), "error_code": lease.get("error_code")}), 409
@@ -9732,6 +12242,12 @@ def automation_batch():
             "owner_id": owner_id,
             "lease_token": str((lease.get("session") or {}).get("lease_token", "")),
         }
+        if body["task_type"] == "browser":
+            provider = str(row.get("provider", "") or row.get("browser_provider", "") or default_provider).strip()
+            if provider:
+                params_patch = dict(body["params"])
+                params_patch.setdefault("provider", provider)
+                body["params"] = params_patch
         gate = _automation_validate_task(body["task_type"], body["action"], body["params"])
         if not gate.get("ok"):
             results.append({"success": False, "task_id": body["task_id"] or "", "error": gate.get("error"), "error_code": gate.get("error_code")})
@@ -9781,6 +12297,7 @@ def automation_types():
 
 @app.route('/api/automation/capabilities')
 def automation_capabilities():
+    mail_cfg = _automation_mail_runtime_config()
     return jsonify(
         {
             "success": True,
@@ -9792,9 +12309,42 @@ def automation_capabilities():
                 "terminal_exec_enabled": bool(AUTOMATION_ENABLE_TERMINAL_EXEC),
                 "terminal_allowlist": sorted(AUTOMATION_TERMINAL_ALLOWED_BINS),
                 "safe_roots": [str(root) for root in AUTOMATION_SAFE_ROOTS],
+                "mail_credentials_configured": bool(mail_cfg.get("host") and mail_cfg.get("username") and mail_cfg.get("password")),
             },
         }
     )
+
+
+@app.route('/api/automation/intake', methods=['GET', 'POST'])
+def automation_intake():
+    if request.method == "GET":
+        return jsonify(
+            {
+                "success": True,
+                "intake": _automation_get_intake_store(redact_secret=True),
+                "recommended_fields": [
+                    "mail.imap_host",
+                    "mail.imap_username",
+                    "mail.imap_password",
+                    "channels.mail_mode",
+                    "channels.mail_browser",
+                    "channels.teams_mode",
+                    "channels.teams_app_name",
+                    "accounts.khiem_selected",
+                    "accounts.khiem_candidates",
+                    "partners.khiem_team_hint",
+                    "partners.ravin_contact_hint",
+                    "valuation.raise_usd",
+                    "valuation.equity_pct",
+                ],
+            }
+        )
+
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "error": "Payload must be object", "error_code": "INVALID_PAYLOAD"}), 400
+    updated = _automation_update_intake_store(data)
+    return jsonify({"success": True, "intake": updated})
 
 
 @app.route('/api/automation/history')
@@ -9844,7 +12394,7 @@ def automation_control():
                     hb_time = datetime.fromisoformat(str(last_hb)).timestamp()
                     if now - hb_time > AUTOMATION_SESSION_LEASE_TTL_SEC * 2:
                         stale_sessions.append({"session_id": sid, "last_heartbeat": last_hb})
-                except:
+                except (ValueError, TypeError, AttributeError):
                     pass
 
     # Calculate queue depth summary
@@ -11041,6 +13591,165 @@ def get_model_routing_status():
     return jsonify(build_model_routing_status(event_limit=80))
 
 
+@app.route('/api/model-routing/health', methods=['GET'])
+def model_routing_health():
+    """Get per-model health status and availability."""
+    try:
+        from src.core.llm_caller import get_available_models
+        models = get_available_models()
+    except ImportError:
+        models = {}
+
+    try:
+        from src.core.model_router import ModelRouter
+        router = ModelRouter()
+        budget = router.budget_tracker
+        budget_info = {
+            'daily_spent': getattr(budget, 'daily_spent', 0),
+            'daily_limit': getattr(budget, 'daily_limit', 0),
+            'remaining': getattr(budget, 'daily_limit', 0) - getattr(budget, 'daily_spent', 0),
+        }
+    except (ImportError, Exception):
+        budget_info = {}
+
+    from datetime import datetime
+    return jsonify({
+        'models': models,
+        'budget': budget_info,
+        'timestamp': datetime.now().isoformat(),
+    })
+
+
+@app.route('/api/skill-recommendation/<task_type>')
+def skill_recommendation(task_type):
+    """Get skill-based recommendation for a task type."""
+    try:
+        from src.brain.nexus_brain import get_brain
+        brain = get_brain()
+        if brain and hasattr(brain, 'skill_tracker'):
+            return jsonify(brain.skill_tracker.get_skill_recommendation(task_type))
+        return jsonify({'recommendation': 'execute', 'confidence': 0.0, 'reason': 'Brain not available'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/budget-projection')
+def budget_projection():
+    """Get budget spend projection for end of day."""
+    try:
+        from src.core.model_router import ModelRouter
+        router_inst = ModelRouter()
+        return jsonify(router_inst.get_budget_projection())
+    except (ImportError, AttributeError) as e:
+        return jsonify({'error': str(e), 'status': 'unavailable'})
+
+
+@app.route('/api/source-quality')
+def source_quality():
+    """Get ranked source quality scores."""
+    try:
+        from src.brain.omniscient_scout import get_scout
+        scout = get_scout()
+        return jsonify({'sources': scout.get_ranked_sources()})
+    except (ImportError, AttributeError) as e:
+        return jsonify({'error': str(e), 'status': 'unavailable'})
+
+
+@app.route('/api/system-overview')
+def system_overview():
+    """Comprehensive system overview - all subsystems in one call."""
+    from datetime import datetime
+    overview = {'timestamp': datetime.now().isoformat(), 'subsystems': {}}
+
+    try:
+        from src.core.llm_caller import get_available_models
+        models = get_available_models()
+        overview['subsystems']['llm'] = {
+            'available': [n for n, ok in models.items() if ok],
+            'unavailable': [n for n, ok in models.items() if not ok],
+        }
+    except ImportError:
+        overview['subsystems']['llm'] = {'status': 'unavailable'}
+
+    try:
+        from src.core.model_router import ModelRouter
+        router_inst = ModelRouter()
+        overview['subsystems']['budget'] = router_inst.get_budget_projection()
+    except Exception:
+        overview['subsystems']['budget'] = {'status': 'unavailable'}
+
+    try:
+        from src.brain.integration_hub import get_hub
+        hub = get_hub()
+        overview['subsystems']['hub'] = hub.get_status()
+    except Exception:
+        overview['subsystems']['hub'] = {'status': 'unavailable'}
+
+    return jsonify(overview)
+
+
+@app.route('/api/health')
+def health_check():
+    """Quick health check - returns system readiness status."""
+    from datetime import datetime
+    checks = {}
+
+    try:
+        from src.brain.nexus_brain import get_brain
+        brain = get_brain()
+        checks['brain'] = 'ok' if brain else 'unavailable'
+    except Exception:
+        checks['brain'] = 'error'
+
+    try:
+        from src.core.llm_caller import get_available_models
+        models = get_available_models()
+        active = sum(1 for ok in models.values() if ok)
+        checks['llm'] = 'ok' if active > 0 else 'degraded'
+        checks['llm_active_count'] = active
+    except ImportError:
+        checks['llm'] = 'unavailable'
+
+    all_ok = all(v in ('ok',) for k, v in checks.items() if not k.endswith('_count'))
+    return jsonify({
+        'status': 'healthy' if all_ok else 'degraded',
+        'timestamp': datetime.now().isoformat(),
+        'checks': checks,
+    })
+
+
+@app.route('/api/self-diagnostic')
+def self_diagnostic():
+    """Run comprehensive self-diagnostic across all subsystems."""
+    from datetime import datetime
+    diag = {'timestamp': datetime.now().isoformat(), 'issues': [], 'score': 100}
+
+    try:
+        from src.core.llm_caller import get_available_models
+        models = get_available_models()
+        active = sum(1 for ok in models.values() if ok)
+        if active == 0:
+            diag['issues'].append('No LLM models available')
+            diag['score'] -= 30
+    except ImportError:
+        diag['issues'].append('LLM caller not installed')
+        diag['score'] -= 25
+
+    try:
+        from src.core.model_router import ModelRouter
+        router_inst = ModelRouter()
+        proj = router_inst.get_budget_projection()
+        if proj.get('status') == 'over_budget':
+            diag['issues'].append('Over budget')
+            diag['score'] -= 20
+    except Exception:
+        pass
+
+    diag['score'] = max(0, diag['score'])
+    diag['verdict'] = 'excellent' if diag['score'] >= 90 else 'good' if diag['score'] >= 70 else 'needs_attention'
+    return jsonify(diag)
+
+
 @app.route('/api/model-routing/events')
 def get_model_routing_events():
     """Get recent model routing events."""
@@ -11412,6 +14121,83 @@ def force_approve_intervention(decision_id: str):
         detail={"reason": reason, "execution": execution or {}},
     )
     return _api_ok({"item": approved, "execution": execution})
+
+
+@app.route('/api/interventions/<decision_id>/respond', methods=['POST'])
+def respond_intervention(decision_id: str):
+    data = request.get_json(silent=True) or {}
+    actor = str(data.get("actor", "dashboard")).strip() or "dashboard"
+    remember = _to_bool(data.get("remember", True))
+    values = data.get("values") if isinstance(data.get("values"), dict) else {}
+    answer = str(data.get("answer", "") or "").strip()
+
+    existing = state.get_pending_decision(decision_id)
+    if not existing:
+        return _api_error("INTERVENTION_NOT_FOUND", "Intervention not found", status_code=404)
+    if str(existing.get("kind", "")).strip() != "human_input_request":
+        return _api_error("INTERVENTION_TYPE_MISMATCH", "Intervention does not accept free-form response", status_code=400)
+    if not values and answer:
+        # Single-field fallback when frontend only sends plain text.
+        details = existing.get("details") if isinstance(existing.get("details"), dict) else {}
+        fields = details.get("fields") if isinstance(details.get("fields"), list) else []
+        first_key = ""
+        if fields and isinstance(fields[0], dict):
+            first_key = str(fields[0].get("key", "")).strip()
+        values = {first_key or "answer": answer}
+    if not values:
+        return _api_error("MISSING_VALUES", "Missing values payload", status_code=400)
+
+    normalized_values: Dict[str, Any] = {}
+    for key, raw_value in values.items():
+        field_key = str(key or "").strip()
+        if not field_key:
+            continue
+        if isinstance(raw_value, list):
+            normalized_values[field_key] = [str(item or "").strip() for item in raw_value if str(item or "").strip()]
+        elif isinstance(raw_value, (str, int, float, bool)):
+            normalized_values[field_key] = raw_value
+        elif raw_value is None:
+            normalized_values[field_key] = ""
+        else:
+            normalized_values[field_key] = str(raw_value)
+    if not normalized_values:
+        return _api_error("MISSING_VALUES", "No usable fields in values payload", status_code=400)
+
+    intake_snapshot = _automation_get_intake_store(redact_secret=True)
+    applied_keys: List[str] = []
+    if remember:
+        intake_snapshot, applied_keys = _automation_apply_human_input_values(normalized_values)
+
+    response_payload = {
+        "values": normalized_values,
+        "remember": remember,
+        "applied_keys": applied_keys,
+        "timestamp": datetime.now().isoformat(),
+    }
+    resolved = state.respond_decision(decision_id=decision_id, response=response_payload, actor=actor)
+    if not resolved:
+        return _api_error("INTERVENTION_NOT_FOUND", "Intervention not found", status_code=404)
+
+    _append_intervention_history(
+        action="responded",
+        decision_id=str(decision_id),
+        success=True,
+        actor=actor,
+        detail={"remember": remember, "applied_keys": applied_keys},
+    )
+    state.add_agent_log(
+        "guardian",
+        f"🧠 Human input received for {decision_id} ({len(normalized_values)} fields).",
+        "success",
+    )
+    return _api_ok(
+        {
+            "item": resolved,
+            "remember": remember,
+            "applied_keys": applied_keys,
+            "intake": intake_snapshot,
+        }
+    )
 
 
 @app.route('/api/audit/timeline')
@@ -12595,6 +15381,8 @@ def chat_ask():
         "intent": intent,
         "executed": bool(result.get("executed")),
         "text": reply,
+        "result": result.get("result", {}),
+        "task_intelligence": (result.get("result", {}) or {}).get("task_intelligence"),
         "report": report,
         "feedback_id": feedback_id,
         "member_id": member_id or None,
@@ -12621,6 +15409,7 @@ def chat_ask():
         "reasoning": result.get("result", {}).get("reasoning"),
         "ai_summary": result.get("result", {}).get("ai_summary"),
         "feedback_recent": result.get("result", {}).get("feedback_recent"),
+        "task_intelligence": result.get("result", {}).get("task_intelligence"),
         "timestamp": datetime.now().isoformat(),
     })
 
@@ -13066,6 +15855,8 @@ try:
                 return jsonify({"success": False, "error": "Missing updates or task_ids", "error_code": "MISSING_UPDATES"}), 400
 
         atomic = bool(data.get("atomic", False))
+        strict_version = _to_bool(data.get("strict_version", False))
+        auto_force_lease = _to_bool(data.get("auto_force_lease", True))
         current_version = int(_hub.get_metrics().get("state_version", 0) or 0)
         applied = 0
         results: List[Dict[str, Any]] = []
@@ -13081,33 +15872,59 @@ try:
 
             has_status = "status" in row
             has_assignee = "assigned_to" in row
-            if has_status:
-                result = _hub.update_task_status_safe(
-                    task_id=task_id,
-                    new_status=row.get("status"),
-                    expected_version=current_version,
-                    owner_id=row.get("owner_id"),
-                    lease_token=row.get("lease_token"),
-                    force=bool(row.get("force", False)),
-                )
-                if result.get("success"):
-                    current_version = int(result.get("version", current_version) or current_version)
-            else:
-                result = {"success": True, "task_id": task_id, "version": current_version}
+            if not has_status and not has_assignee:
+                result = {"success": False, "error": "No update action provided", "error_code": "NO_ACTION"}
+                results.append({"task_id": task_id, **result})
+                if atomic:
+                    break
+                continue
 
-            if result.get("success") and has_assignee:
+            result = {"success": True, "task_id": task_id, "version": current_version}
+
+            if has_assignee:
                 assign_result = _hub.assign_task_safe(
                     task_id=task_id,
                     orion_id=row.get("assigned_to"),
-                    expected_version=current_version,
+                    expected_version=current_version if strict_version else None,
                 )
                 if not assign_result.get("success"):
                     result = assign_result
                 else:
                     result = assign_result
-            else:
-                if not has_status:
-                    result = {"success": False, "error": "No update action provided", "error_code": "NO_ACTION"}
+                    current_version = int(assign_result.get("version", current_version) or current_version)
+
+            if result.get("success") and has_status:
+                status_force = bool(row.get("force", False))
+                status_result = _hub.update_task_status_safe(
+                    task_id=task_id,
+                    new_status=row.get("status"),
+                    expected_version=current_version if strict_version else None,
+                    owner_id=row.get("owner_id"),
+                    lease_token=row.get("lease_token"),
+                    force=status_force,
+                )
+                if (
+                    not status_result.get("success")
+                    and str(status_result.get("error_code", "")) == "LEASE_CONFLICT"
+                    and auto_force_lease
+                    and not status_force
+                ):
+                    forced_result = _hub.update_task_status_safe(
+                        task_id=task_id,
+                        new_status=row.get("status"),
+                        expected_version=current_version if strict_version else None,
+                        owner_id=row.get("owner_id"),
+                        lease_token=row.get("lease_token"),
+                        force=True,
+                    )
+                    if forced_result.get("success"):
+                        forced_result = {**forced_result, "lease_override": True}
+                    status_result = forced_result
+                if not status_result.get("success"):
+                    result = status_result
+                else:
+                    result = status_result
+                    current_version = int(status_result.get("version", current_version) or current_version)
 
             if result.get("success"):
                 applied += 1
@@ -13126,6 +15943,8 @@ try:
                     "applied": applied,
                     "failed": max(0, len(updates) - applied),
                     "atomic": atomic,
+                    "strict_version": strict_version,
+                    "auto_force_lease": auto_force_lease,
                 },
                 "results": results,
                 "version": current_version,
@@ -13334,6 +16153,202 @@ try:
                     index[key] = item
         return index
 
+    def _hub_process_board(limit_transitions: int = 30) -> Dict[str, Any]:
+        now = datetime.now()
+        tasks = [item for item in _hub.list_tasks() if isinstance(item, dict)]
+        runtime_instances = [item for item in get_orion_instances_snapshot() if isinstance(item, dict)]
+        runtime_index = _hub_runtime_rows_by_assignee(runtime_instances)
+        control_snapshot = _control_plane_registry.snapshot()
+        status_counts: Dict[str, int] = {"backlog": 0, "todo": 0, "in_progress": 0, "review": 0, "done": 0, "blocked": 0}
+        process_rows: Dict[str, Dict[str, Any]] = {}
+        stale_tasks: List[Dict[str, Any]] = []
+        stale_threshold_sec = max(120, int(MONITOR_STUCK_THRESHOLD_SEC))
+
+        def ensure_process_row(assignee: str) -> Dict[str, Any]:
+            row = process_rows.get(assignee)
+            if isinstance(row, dict):
+                return row
+            row = {
+                "assignee": assignee,
+                "display_name": assignee,
+                "state": "idle",
+                "is_online": False,
+                "running": False,
+                "paused": False,
+                "pause_reason": "",
+                "iteration": None,
+                "last_progress_at": None,
+                "last_task_update": None,
+                "total_tasks": 0,
+                "lease_active_count": 0,
+                "lease_stale_count": 0,
+                "by_status": {"backlog": 0, "todo": 0, "in_progress": 0, "review": 0, "done": 0, "blocked": 0},
+                "tasks": [],
+                "current_task": "",
+                "current_task_id": "",
+            }
+            process_rows[assignee] = row
+            return row
+
+        for task in tasks:
+            assignee = _hub_normalize_assignee(task.get("assigned_to"))
+            raw_status = str(task.get("status") or "backlog").strip().lower() or "backlog"
+            status_norm = _hub_normalize_status(raw_status)
+            status_bucket = raw_status if raw_status in {"backlog", "todo", "in_progress", "review", "done", "blocked"} else status_norm
+            if status_bucket not in status_counts:
+                status_bucket = "todo"
+            status_counts[status_bucket] = int(status_counts.get(status_bucket, 0) or 0) + 1
+
+            if not assignee:
+                continue
+            row = ensure_process_row(assignee)
+            row["total_tasks"] = int(row.get("total_tasks", 0) or 0) + 1
+            by_status = row.get("by_status") if isinstance(row.get("by_status"), dict) else {}
+            by_status[status_bucket] = int(by_status.get(status_bucket, 0) or 0) + 1
+            row["by_status"] = by_status
+
+            lease = _hub_task_lease_info(task, now_dt=now)
+            if lease.get("active"):
+                row["lease_active_count"] = int(row.get("lease_active_count", 0) or 0) + 1
+            if lease.get("stale"):
+                row["lease_stale_count"] = int(row.get("lease_stale_count", 0) or 0) + 1
+
+            updated_at = str(task.get("updated_at") or "")
+            if updated_at and (not row.get("last_task_update") or str(updated_at) > str(row.get("last_task_update") or "")):
+                row["last_task_update"] = updated_at
+
+            task_title = str(task.get("title") or task.get("id") or "")
+            task_id = str(task.get("id") or "")
+            task_preview = {
+                "id": task_id,
+                "title": task_title,
+                "priority": _hub_normalize_priority(task.get("priority")),
+                "status": status_bucket,
+                "updated_at": updated_at,
+                "lease_active": bool(lease.get("active")),
+                "lease_stale": bool(lease.get("stale")),
+            }
+            row_tasks = row.get("tasks") if isinstance(row.get("tasks"), list) else []
+            row_tasks.append(task_preview)
+            row["tasks"] = row_tasks
+
+            if status_bucket == "in_progress":
+                updated_dt = _parse_iso_datetime(updated_at)
+                stale_by_age = bool(updated_dt and (now - updated_dt).total_seconds() >= stale_threshold_sec)
+                if stale_by_age or bool(lease.get("stale")):
+                    stale_tasks.append(
+                        {
+                            "task_id": task_id,
+                            "title": task_title,
+                            "assignee": assignee,
+                            "updated_at": updated_at or None,
+                            "stale_reason": "lease_stale" if lease.get("stale") else "no_recent_update",
+                        }
+                    )
+
+        for runtime in runtime_instances:
+            assignee = _hub_normalize_assignee(runtime.get("id")) or _hub_normalize_assignee(runtime.get("name"))
+            if not assignee:
+                continue
+            row = ensure_process_row(assignee)
+            row["display_name"] = str(runtime.get("name") or runtime.get("id") or assignee)
+            row["is_online"] = bool(runtime.get("online", False))
+            row["running"] = bool(runtime.get("running", False))
+            row["paused"] = bool(runtime.get("paused", False))
+            row["pause_reason"] = str(runtime.get("pause_reason") or "")
+            row["iteration"] = runtime.get("iteration")
+            row["last_progress_at"] = runtime.get("last_progress_at")
+            if row["paused"]:
+                row["state"] = "paused"
+            elif row["running"]:
+                row["state"] = "running"
+            elif row["is_online"]:
+                row["state"] = "idle"
+            else:
+                row["state"] = "offline"
+
+        priority_rank = {"p0": 0, "p1": 1, "p2": 2, "p3": 3}
+        for assignee, row in process_rows.items():
+            runtime = runtime_index.get(assignee) if isinstance(runtime_index.get(assignee), dict) else {}
+            if runtime and not row.get("display_name"):
+                row["display_name"] = str(runtime.get("name") or runtime.get("id") or assignee)
+            task_rows = row.get("tasks") if isinstance(row.get("tasks"), list) else []
+            task_rows.sort(
+                key=lambda item: (
+                    0 if str(item.get("status", "")) == "in_progress" else 1,
+                    priority_rank.get(str(item.get("priority", "p3")).lower(), 3),
+                    str(item.get("updated_at") or ""),
+                )
+            )
+            row["tasks"] = task_rows[:8]
+            if task_rows:
+                current = task_rows[0]
+                row["current_task"] = str(current.get("title") or "")
+                row["current_task_id"] = str(current.get("id") or "")
+            row["active_tasks"] = int((row.get("by_status") or {}).get("in_progress", 0) or 0)
+            row["blocked_tasks"] = int((row.get("by_status") or {}).get("blocked", 0) or 0)
+            row["done_tasks"] = int((row.get("by_status") or {}).get("done", 0) or 0)
+
+        tasks_by_id = {str(task.get("id") or ""): str(task.get("title") or "") for task in tasks}
+        transitions: List[Dict[str, Any]] = []
+        tracked_actions = {
+            "task_created",
+            "task_assigned",
+            "task_moved",
+            "task_claimed",
+            "task_released",
+            "task_released_force_expired",
+        }
+        for row in reversed(list(_hub.audit_log)):
+            if not isinstance(row, dict):
+                continue
+            action = str(row.get("action") or "").strip()
+            if action not in tracked_actions:
+                continue
+            details = row.get("details") if isinstance(row.get("details"), dict) else {}
+            task_id = str(details.get("task_id") or "")
+            task_title = str(details.get("title") or tasks_by_id.get(task_id, ""))
+            transitions.append(
+                {
+                    "timestamp": row.get("timestamp"),
+                    "action": action,
+                    "task_id": task_id,
+                    "task_title": task_title,
+                    "from": details.get("from"),
+                    "to": details.get("to"),
+                    "owner_id": details.get("owner_id"),
+                    "orion_id": details.get("orion_id"),
+                }
+            )
+            if len(transitions) >= max(5, int(limit_transitions)):
+                break
+
+        processes = sorted(
+            process_rows.values(),
+            key=lambda item: (
+                0 if bool(item.get("is_online")) else 1,
+                -int(item.get("active_tasks", 0) or 0),
+                -int(item.get("total_tasks", 0) or 0),
+                str(item.get("assignee") or ""),
+            ),
+        )
+
+        return {
+            "generated_at": now.isoformat(),
+            "summary": {
+                "total_tasks": len(tasks),
+                "status_breakdown": status_counts,
+                "total_processes": len(processes),
+                "online_processes": len([item for item in processes if item.get("is_online")]),
+                "stale_tasks": len(stale_tasks),
+                "control_plane_alive_workers": int(control_snapshot.get("alive_workers", 0) or 0),
+                "control_plane_registered_workers": int(control_snapshot.get("registered_workers", 0) or 0),
+            },
+            "processes": processes,
+            "transitions": transitions,
+            "stale_tasks": stale_tasks[:20],
+        }
+
     def _hub_bridge_terminals_by_owner() -> Dict[str, List[Dict[str, Any]]]:
         lock = globals().get("_BRIDGE_TERMINALS_LOCK")
         sessions_store = globals().get("_bridge_terminal_sessions")
@@ -13523,12 +16538,25 @@ try:
         current_task = next((item for item in latest_tasks if str(item.get("id") or "").strip() == task_key), task)
         current_status = _hub_normalize_status(current_task.get("status"))
         reopen_result = None
+        status_hint_result = None
         if force_reopen and current_status in {"done", "review"}:
             reopen_result = _hub.update_task_status_safe(task_id=task_key, new_status="todo", force=True)
             if not reopen_result.get("success"):
                 return jsonify(reopen_result), (409 if reopen_result.get("error_code") == "VERSION_CONFLICT" else 400)
             latest_tasks = _hub.list_tasks()
             current_task = next((item for item in latest_tasks if str(item.get("id") or "").strip() == task_key), current_task)
+            current_status = _hub_normalize_status(current_task.get("status"))
+
+        status_hint_raw = str(data.get("status_hint", "") or "").strip()
+        if status_hint_raw:
+            hinted_status = _hub_normalize_status(status_hint_raw)
+            if hinted_status and hinted_status != current_status:
+                status_hint_result = _hub.update_task_status_safe(task_id=task_key, new_status=hinted_status, force=True)
+                if not status_hint_result.get("success"):
+                    return jsonify(status_hint_result), (409 if status_hint_result.get("error_code") == "VERSION_CONFLICT" else 400)
+                latest_tasks = _hub.list_tasks()
+                current_task = next((item for item in latest_tasks if str(item.get("id") or "").strip() == task_key), current_task)
+                current_status = _hub_normalize_status(current_task.get("status"))
 
         command = str(data.get("command", "run_cycle") or "run_cycle").strip()
         target = str(data.get("target", "orion") or "orion").strip().lower() or "orion"
@@ -13536,6 +16564,8 @@ try:
         options = data.get("options") if isinstance(data.get("options"), dict) else {}
         options.setdefault("control_mode", "interrupt")
         options.setdefault("resume_after", True)
+        options.setdefault("async_dispatch", HUB_DISPATCH_ASYNC_DEFAULT)
+        options.setdefault("wait_timeout_sec", HUB_DISPATCH_WAIT_TIMEOUT_SEC)
         options.setdefault("reason", "hub_task_dispatch")
         options.setdefault("dispatch_task_id", task_key)
         options.setdefault("dispatch_task_title", str(current_task.get("title") or ""))
@@ -13554,6 +16584,22 @@ try:
             )
 
         accepted = bool(dispatch.get("success")) or bool(isinstance(guardian, dict) and guardian.get("success"))
+        status_after_dispatch = None
+        if accepted:
+            latest_after_dispatch = _hub.list_tasks()
+            task_after_dispatch = next((item for item in latest_after_dispatch if str(item.get("id") or "").strip() == task_key), current_task)
+            status_norm_after = _hub_normalize_status(task_after_dispatch.get("status"))
+            raw_status_after = str(task_after_dispatch.get("status") or "").strip().lower()
+            if status_norm_after == "todo" or raw_status_after == "backlog":
+                status_after_dispatch = _hub.update_task_status_safe(
+                    task_id=task_key,
+                    new_status="in_progress",
+                    force=True,
+                )
+                if status_after_dispatch.get("success"):
+                    latest_after_dispatch = _hub.list_tasks()
+                    task_after_dispatch = next((item for item in latest_after_dispatch if str(item.get("id") or "").strip() == task_key), task_after_dispatch)
+            current_task = task_after_dispatch
         level = "success" if accepted else "warning"
         state.add_agent_log(
             "guardian",
@@ -13569,6 +16615,8 @@ try:
                 "guardian_fallback": guardian,
                 "assignment": assignment_result,
                 "reopen": reopen_result,
+                "status_hint_update": status_hint_result,
+                "status_after_dispatch": status_after_dispatch,
                 "timestamp": datetime.now().isoformat(),
             }
         ), (200 if accepted else 502)
@@ -13589,62 +16637,56 @@ try:
     @app.route('/api/hub/next-action/autopilot/status')
     def get_hub_autopilot_status():
         """Get hub next-action autopilot status."""
-        with _hub_next_action_autopilot_lock:
-            return jsonify({
-                "success": True,
-                "enabled": HUB_NEXT_ACTION_AUTOPILOT_ENABLED,
-                "interval_sec": HUB_NEXT_ACTION_AUTOPILOT_INTERVAL_SEC,
-                "max_per_tick": HUB_NEXT_ACTION_AUTOPILOT_MAX_PER_TICK,
-                "allowed_types": list(HUB_NEXT_ACTION_AUTOPILOT_ALLOW_TYPES),
-                "running": _hub_next_action_autopilot_thread is not None and _hub_next_action_autopilot_thread.is_alive(),
-                "last_run": _hub_next_action_autopilot_last_run.isoformat() if _hub_next_action_autopilot_last_run else None,
-                "last_error": _hub_next_action_autopilot_last_error,
-                "timestamp": datetime.now().isoformat(),
-            })
+        return jsonify(_build_hub_autopilot_status_payload(include_legacy_aliases=True))
 
     @app.route('/api/hub/next-action/autopilot/control', methods=['POST'])
     def control_hub_autopilot():
         """Control hub next-action autopilot."""
         data = request.get_json(silent=True) or {}
-        action = data.get("action", "")
+        action = str(data.get("action", "")).strip().lower()
+        success, state_payload, message = _autopilot_apply_control(action, data)
+        if action == "trigger":
+            if not success:
+                return jsonify({"success": False, "error": message, "message": message, "state": state_payload}), 400
+            payload = {"success": True, "message": message, "state": state_payload}
+            if isinstance(state_payload, dict):
+                for key in ("executed", "blocked", "errors", "scanned", "success", "running", "last_error", "auto_enabled"):
+                    if key in state_payload:
+                        payload[key] = state_payload[key]
+            return jsonify(payload)
 
-        if action == "start":
-            _ensure_hub_autopilot_started()
-            return jsonify({"success": True, "message": "Autopilot started"})
-        elif action == "stop":
-            with _hub_next_action_autopilot_lock:
-                if _hub_next_action_autopilot_thread and _hub_next_action_autopilot_thread.is_alive():
-                    _hub_next_action_autopilot_stop_event.set()
-                    _hub_next_action_autopilot_thread.join(timeout=5)
-            return jsonify({"success": True, "message": "Autopilot stopped"})
-        elif action == "trigger":
-            # Run one cycle immediately
-            try:
-                actions = _hub_next_actions(limit=HUB_NEXT_ACTION_AUTOPILOT_MAX_PER_TICK)
-                executed = 0
-                for action in actions[:HUB_NEXT_ACTION_AUTOPILOT_MAX_PER_TICK]:
-                    result = _autopilot_execute_action(action)
-                    if result.get("success"):
-                        executed += 1
-                return jsonify({"success": True, "executed": executed, "total": len(actions)})
-            except Exception as e:
-                return jsonify({"success": False, "error": str(e)})
-        else:
-            return jsonify({"success": False, "error": "Unknown action"}), 400
+        if not success:
+            return jsonify({"success": False, "error": message, "state": state_payload}), 400
+
+        return jsonify({"success": True, "message": message, "state": state_payload})
 
     # ========== Autopilot: Auto-Execute Next Actions ==========
+    _AUTOPILOT_DRY_RUN_DEFAULT = _env_bool("AUTOPILOT_DRY_RUN_DEFAULT", True)
+    _AUTOPILOT_MAX_PRIORITY_DEFAULT = str(os.getenv("AUTOPILOT_MAX_PRIORITY", "p2") or "p2").strip().lower()
+    if _AUTOPILOT_MAX_PRIORITY_DEFAULT not in {"p0", "p1", "p2", "p3"}:
+        _AUTOPILOT_MAX_PRIORITY_DEFAULT = "p2"
+    _AUTOPILOT_ACTION_TIMEOUT_SEC = max(3.0, float(os.getenv("AUTOPILOT_ACTION_TIMEOUT_SEC", "20")))
+    _AUTOPILOT_TIMEOUT_CIRCUIT_THRESHOLD = max(1, int(os.getenv("AUTOPILOT_TIMEOUT_CIRCUIT_THRESHOLD", "3")))
+    _AUTOPILOT_TIMEOUT_CIRCUIT_COOLDOWN_SEC = max(10, int(os.getenv("AUTOPILOT_TIMEOUT_CIRCUIT_COOLDOWN_SEC", "90")))
+    _AUTOPILOT_ACTION_EXECUTOR_WORKERS = max(1, min(6, int(os.getenv("AUTOPILOT_ACTION_EXECUTOR_WORKERS", "2"))))
+    _AUTOPILOT_DISPATCH_ASYNC = _env_bool("AUTOPILOT_DISPATCH_ASYNC", True)
+
     _AUTOPILOT_STATE: Dict[str, Any] = {
-        "enabled": False,
-        "dry_run": True,
-        "active_executor": str(os.getenv("HUB_AUTOPILOT_ACTIVE_EXECUTOR", "policy_loop") or "policy_loop").strip().lower(),
-        "interval": 30,
-        "max_actions_per_cycle": 3,
+        "enabled": bool(HUB_NEXT_ACTION_AUTOPILOT_ENABLED),
+        "dry_run": bool(_AUTOPILOT_DRY_RUN_DEFAULT),
+        "active_executor": _normalize_autopilot_executor(
+            str(os.getenv("HUB_AUTOPILOT_ACTIVE_EXECUTOR", "policy_loop") or "policy_loop")
+        ),
+        "interval": max(5, int(HUB_NEXT_ACTION_AUTOPILOT_INTERVAL_SEC)),
+        "max_actions_per_cycle": max(1, min(10, int(HUB_NEXT_ACTION_AUTOPILOT_MAX_PER_TICK))),
+        "state": "running" if bool(HUB_NEXT_ACTION_AUTOPILOT_ENABLED) else "stopped",
         "policy": {
             "allow_dispatch": True,
             "allow_reassign": True,
             "allow_release_lease": True,
             "allow_inspect_terminal": False,
             "require_confidence": 0.8,
+            "max_priority": _AUTOPILOT_MAX_PRIORITY_DEFAULT,
             "blocked_actions": [],
         },
         "stats": {
@@ -13652,9 +16694,99 @@ try:
             "actions_executed": 0,
             "actions_blocked": 0,
             "errors": 0,
+            "timeouts": 0,
+            "consecutive_timeouts": 0,
+            "timeout_circuit_opens": 0,
             "last_cycle": None,
         },
     }
+    _autopilot_action_executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=_AUTOPILOT_ACTION_EXECUTOR_WORKERS,
+        thread_name_prefix="autopilot-action",
+    )
+    _autopilot_guard_lock = threading.RLock()
+    _autopilot_guard_state: Dict[str, Any] = {
+        "consecutive_timeouts": 0,
+        "open_until": None,
+        "last_timeout_at": None,
+        "last_timeout_action": "",
+    }
+
+    def _autopilot_guard_snapshot() -> Dict[str, Any]:
+        with _autopilot_guard_lock:
+            open_until = _autopilot_guard_state.get("open_until")
+            return {
+                "consecutive_timeouts": int(_autopilot_guard_state.get("consecutive_timeouts", 0) or 0),
+                "open_until": open_until.isoformat() if isinstance(open_until, datetime) else None,
+                "last_timeout_at": _autopilot_guard_state.get("last_timeout_at"),
+                "last_timeout_action": _autopilot_guard_state.get("last_timeout_action"),
+                "threshold": _AUTOPILOT_TIMEOUT_CIRCUIT_THRESHOLD,
+                "cooldown_sec": _AUTOPILOT_TIMEOUT_CIRCUIT_COOLDOWN_SEC,
+                "action_timeout_sec": _AUTOPILOT_ACTION_TIMEOUT_SEC,
+            }
+
+    def _autopilot_guard_block_reason() -> Optional[str]:
+        with _autopilot_guard_lock:
+            open_until = _autopilot_guard_state.get("open_until")
+            if isinstance(open_until, datetime):
+                now = datetime.now()
+                if now < open_until:
+                    return f"Timeout circuit open until {open_until.isoformat()}"
+                _autopilot_guard_state["open_until"] = None
+                _autopilot_guard_state["consecutive_timeouts"] = 0
+                _AUTOPILOT_STATE["stats"]["consecutive_timeouts"] = 0
+        return None
+
+    def _autopilot_guard_record_success() -> None:
+        with _autopilot_guard_lock:
+            _autopilot_guard_state["consecutive_timeouts"] = 0
+            _AUTOPILOT_STATE["stats"]["consecutive_timeouts"] = 0
+
+    def _autopilot_guard_record_timeout(action_type: str) -> None:
+        now = datetime.now()
+        opened = False
+        with _autopilot_guard_lock:
+            count = int(_autopilot_guard_state.get("consecutive_timeouts", 0) or 0) + 1
+            _autopilot_guard_state["consecutive_timeouts"] = count
+            _autopilot_guard_state["last_timeout_at"] = now.isoformat()
+            _autopilot_guard_state["last_timeout_action"] = str(action_type or "")
+            _AUTOPILOT_STATE["stats"]["consecutive_timeouts"] = count
+            _AUTOPILOT_STATE["stats"]["timeouts"] += 1
+            if count >= _AUTOPILOT_TIMEOUT_CIRCUIT_THRESHOLD:
+                _autopilot_guard_state["open_until"] = now + timedelta(seconds=_AUTOPILOT_TIMEOUT_CIRCUIT_COOLDOWN_SEC)
+                _AUTOPILOT_STATE["stats"]["timeout_circuit_opens"] += 1
+                opened = True
+        if opened:
+            logger.warning(
+                "🤖 Autopilot timeout circuit opened",
+                extra={
+                    "threshold": _AUTOPILOT_TIMEOUT_CIRCUIT_THRESHOLD,
+                    "cooldown_sec": _AUTOPILOT_TIMEOUT_CIRCUIT_COOLDOWN_SEC,
+                    "action_type": action_type,
+                },
+            )
+            state.add_agent_log(
+                "autopilot",
+                f"⛔ Timeout circuit opened ({_AUTOPILOT_TIMEOUT_CIRCUIT_COOLDOWN_SEC}s) after {_AUTOPILOT_TIMEOUT_CIRCUIT_THRESHOLD} timeouts.",
+                "warning",
+            )
+
+    def _autopilot_reconcile_runtimes(force_restart: bool = False) -> None:
+        """Align runtime threads with latest config flags."""
+        if "_AUTOPILOT_STATE" not in globals() or not isinstance(_AUTOPILOT_STATE, dict):
+            return
+
+        if not _autopilot_is_enabled():
+            _stop_hub_autopilot_loop()
+            _stop_policy_autopilot_loop()
+            if "state" in _AUTOPILOT_STATE:
+                _AUTOPILOT_STATE["state"] = "stopped"
+            return
+
+        target = _autopilot_active_executor()
+        _set_autopilot_executor(target, reason="reconcile", force_restart=force_restart)
+        if "state" in _AUTOPILOT_STATE:
+            _AUTOPILOT_STATE["state"] = "running"
 
     # Background autopilot loop config (NEW - integrates with _AUTOPILOT_STATE)
     _AUTOPILOT_BACKGROUND_ENABLED = _env_bool("AUTOPILOT_BACKGROUND_ENABLED", True)
@@ -13663,52 +16795,34 @@ try:
 
     def _autopilot_background_loop():
         """Background thread that runs autopilot cycles automatically."""
+        global _autopilot_background_last_run, _autopilot_background_last_error
         logger.info("🤖 Autopilot background loop started")
         while not _autopilot_background_stop_event.is_set():
             try:
-                active_executor = str(_AUTOPILOT_STATE.get("active_executor", "policy_loop")).strip().lower()
-                if active_executor != "policy_loop":
-                    _autopilot_background_stop_event.wait(_AUTOPILOT_BACKGROUND_INTERVAL_SEC)
+                active_executor = _autopilot_active_executor()
+                if not _autopilot_is_enabled() or active_executor != "policy_loop":
+                    _autopilot_background_stop_event.wait(_autopilot_configured_interval())
                     continue
-                if _AUTOPILOT_STATE["enabled"]:
-                    # Run one cycle
-                    max_actions = _AUTOPILOT_STATE["max_actions_per_cycle"]
-                    actions = _hub_next_actions(limit=max_actions * 2)
-
-                    executed = []
-                    blocked = []
-                    errors = []
-
-                    for action in actions[:max_actions]:
-                        should_exec, reason = _autopilot_should_execute(action)
-                        if not should_exec:
-                            blocked.append({"action": action, "reason": reason})
-                            _AUTOPILOT_STATE["stats"]["actions_blocked"] += 1
-                            continue
-
-                        if _AUTOPILOT_STATE["dry_run"]:
-                            executed.append({"action": action, "dry_run": True})
-                            _AUTOPILOT_STATE["stats"]["actions_executed"] += 1
-                        else:
-                            result = _autopilot_execute_action(action)
-                            if result.get("success"):
-                                executed.append({"action": action, "result": result})
-                                _AUTOPILOT_STATE["stats"]["actions_executed"] += 1
-                            else:
-                                errors.append({"action": action, "error": result.get("error")})
-                                _AUTOPILOT_STATE["stats"]["errors"] += 1
-
-                    _AUTOPILOT_STATE["stats"]["total_cycles"] += 1
-                    _AUTOPILOT_STATE["stats"]["last_cycle"] = datetime.now().isoformat()
-
-                    if executed:
-                        logger.info(f"🤖 Autopilot cycle: {len(executed)} executed, {len(blocked)} blocked, {len(errors)} errors")
-                else:
-                    logger.debug("🤖 Autopilot background: disabled, skipping cycle")
+                result = _autopilot_cycle_once(
+                    dry_run_override=None,
+                    use_max_actions=_autopilot_configured_max_actions(),
+                    context="policy_loop",
+                )
+                _autopilot_background_last_run = datetime.now()
+                _autopilot_background_last_error = result.get("error")
+                if result.get("executed"):
+                    logger.info(
+                        "🤖 Autopilot background cycle: {} executed, {} blocked, {} errors".format(
+                            len(result.get("executed", [])),
+                            len(result.get("blocked", [])),
+                            len(result.get("errors", [])),
+                        )
+                    )
             except Exception as e:
+                _autopilot_background_last_error = str(e)
                 logger.error(f"🤖 Autopilot background error: {e}")
 
-            _autopilot_background_stop_event.wait(_AUTOPILOT_BACKGROUND_INTERVAL_SEC)
+            _autopilot_background_stop_event.wait(_autopilot_configured_interval())
 
         logger.info("🤖 Autopilot background loop stopped")
 
@@ -13732,15 +16846,20 @@ try:
                 daemon=True,
             )
             _autopilot_background_thread.start()
-            # Auto-enable the autopilot state when background starts
-            _AUTOPILOT_STATE["enabled"] = True
-            _AUTOPILOT_STATE["dry_run"] = True  # Default to dry-run for safety
-            logger.info("🤖 Autopilot background started (dry-run mode)")
+            logger.info("🤖 Autopilot background loop thread started")
 
     def _autopilot_should_execute(action: Dict[str, Any]) -> Tuple[bool, str]:
         """Check if autopilot should execute this action based on policy."""
         policy = _AUTOPILOT_STATE["policy"]
-        action_type = action.get("action_type", "")
+        action_type = str(action.get("action_type", "") or "").strip()
+        allowed_types = set(HUB_NEXT_ACTION_AUTOPILOT_ALLOW_TYPES)
+
+        guard_reason = _autopilot_guard_block_reason()
+        if guard_reason:
+            return False, guard_reason
+
+        if allowed_types and action_type not in allowed_types:
+            return False, f"Action type {action_type} is not in allowed_types"
 
         # Check blocked actions
         if action_type in policy.get("blocked_actions", []):
@@ -13758,13 +16877,86 @@ try:
         if action_type == "inspect_terminal" and not policy.get("allow_inspect_terminal"):
             return False, "Inspect terminal not allowed by policy"
 
-        # Check priority (only execute p0/p1 in auto mode)
+        # Check priority threshold (configurable, default allows up to p2).
         priority = action.get("priority", "p2")
         priority_rank = {"p0": 0, "p1": 1, "p2": 2, "p3": 3}
-        if priority_rank.get(priority, 3) > 1:
-            return False, f"Priority {priority} too low for auto-execute"
+        max_priority = str(policy.get("max_priority", "p2")).strip().lower()
+        if max_priority not in priority_rank:
+            max_priority = "p2"
+        if priority_rank.get(priority, 3) > priority_rank.get(max_priority, 2):
+            return False, f"Priority {priority} too low for auto-execute (max={max_priority})"
 
         return True, "Allowed"
+
+    def _autopilot_cycle_once(
+        dry_run_override: Optional[bool] = None,
+        use_max_actions: Optional[int] = None,
+        context: str = "",
+    ) -> Dict[str, Any]:
+        """Run one autopilot cycle and return normalized execution summary."""
+        if "_AUTOPILOT_STATE" not in globals() or not isinstance(_AUTOPILOT_STATE, dict):
+            return {
+                "success": False,
+                "error": "Autopilot state unavailable",
+                "scanned": 0,
+                "executed": [],
+                "blocked": [],
+                "errors": [],
+                "context": context,
+            }
+
+        if not _AUTOPILOT_STATE.get("enabled", False):
+            return {
+                "success": False,
+                "error": "Autopilot disabled",
+                "scanned": 0,
+                "executed": [],
+                "blocked": [],
+                "errors": [],
+                "context": context,
+            }
+
+        dry_run = _AUTOPILOT_STATE.get("dry_run", True) if dry_run_override is None else bool(dry_run_override)
+        max_actions_raw = _AUTOPILOT_STATE.get("max_actions_per_cycle", HUB_NEXT_ACTION_AUTOPILOT_MAX_PER_TICK)
+        max_actions = max(1, min(10, int(use_max_actions if use_max_actions is not None else max_actions_raw)))
+        scanned = 0
+        executed = []
+        blocked = []
+        errors = []
+
+        actions = _hub_next_actions(limit=max_actions * 2)
+        for action in actions[:max_actions]:
+            scanned += 1
+            should_exec, reason = _autopilot_should_execute(action)
+            if not should_exec:
+                blocked.append({"action": action, "reason": reason})
+                _AUTOPILOT_STATE["stats"]["actions_blocked"] += 1
+                continue
+
+            if dry_run:
+                executed.append({"action": action, "dry_run": True, "executor_context": context})
+                _AUTOPILOT_STATE["stats"]["actions_executed"] += 1
+                continue
+
+            result = _autopilot_execute_action(action)
+            if result.get("success"):
+                executed.append({"action": action, "result": result, "executor_context": context})
+                _AUTOPILOT_STATE["stats"]["actions_executed"] += 1
+            else:
+                errors.append({"action": action, "error": result.get("error")})
+                _AUTOPILOT_STATE["stats"]["errors"] += 1
+
+        _AUTOPILOT_STATE["stats"]["total_cycles"] += 1
+        _AUTOPILOT_STATE["stats"]["last_cycle"] = datetime.now().isoformat()
+        return {
+            "success": True,
+            "context": context,
+            "scanned": scanned,
+            "dry_run": bool(dry_run),
+            "executed": executed,
+            "blocked": blocked,
+            "errors": errors,
+        }
 
     def _invoke_internal_post(path: str, view_func: Callable[..., Any], payload: Dict[str, Any]) -> Tuple[int, Any]:
         """Call Flask view function internally without network/request.host_url dependency."""
@@ -13786,144 +16978,208 @@ try:
 
     def _autopilot_execute_action(action: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a single action."""
-        action_type = action.get("action_type", "")
+        action_type = str(action.get("action_type", "") or "")
         task_id = action.get("task_id")
-        result = {"action": action_type, "task_id": task_id, "success": False, "error": None}
 
+        guard_reason = _autopilot_guard_block_reason()
+        if guard_reason:
+            return {
+                "action": action_type,
+                "task_id": task_id,
+                "success": False,
+                "error": guard_reason,
+                "error_code": "AUTOPILOT_TIMEOUT_CIRCUIT_OPEN",
+            }
+
+        def _run_sync() -> Dict[str, Any]:
+            result = {"action": action_type, "task_id": task_id, "success": False, "error": None}
+            try:
+                if action_type in ("dispatch_task", "assign_then_dispatch") and task_id:
+                    payload_raw = action.get("suggested_payload")
+                    payload = dict(payload_raw) if isinstance(payload_raw, dict) else {}
+                    if _AUTOPILOT_DISPATCH_ASYNC:
+                        options = payload.get("options") if isinstance(payload.get("options"), dict) else {}
+                        options = dict(options)
+                        options.setdefault("async_dispatch", True)
+                        options.setdefault("wait_timeout_sec", _AUTOPILOT_ACTION_TIMEOUT_SEC)
+                        options.setdefault("source", "autopilot")
+                        payload["options"] = options
+                    status_code, body = _invoke_internal_post(
+                        path=f"/api/hub/tasks/{task_id}/dispatch",
+                        view_func=lambda: dispatch_hub_task(task_id),
+                        payload=payload,
+                    )
+                    result["success"] = status_code < 400
+                    result["response"] = body
+                elif action_type == "reclaim_stale_lease" and task_id:
+                    payload_raw = action.get("suggested_payload")
+                    payload = dict(payload_raw) if isinstance(payload_raw, dict) else {"next_status": "todo"}
+                    status_code, body = _invoke_internal_post(
+                        path=f"/api/hub/tasks/{task_id}/release",
+                        view_func=lambda: release_hub_task_lease(task_id),
+                        payload=payload,
+                    )
+                    result["success"] = status_code < 400
+                    result["response"] = body
+                elif action_type == "reassign_or_bring_online" and task_id:
+                    payload_raw = action.get("suggested_payload")
+                    payload = dict(payload_raw) if isinstance(payload_raw, dict) else {}
+                    status_code, body = _invoke_internal_post(
+                        path="/api/hub/tasks/batch-update",
+                        view_func=batch_update_tasks,
+                        payload=payload,
+                    )
+                    result["success"] = status_code < 400
+                    result["response"] = body
+                else:
+                    result["error"] = f"Unknown action type: {action_type}"
+            except Exception as exc:
+                result["error"] = str(exc)
+            return result
+
+        future = _autopilot_action_executor.submit(_run_sync)
         try:
-            if action_type in ("dispatch_task", "assign_then_dispatch") and task_id:
-                payload = action.get("suggested_payload", {})
-                status_code, body = _invoke_internal_post(
-                    path=f"/api/hub/tasks/{task_id}/dispatch",
-                    view_func=lambda: dispatch_hub_task(task_id),
-                    payload=payload,
-                )
-                result["success"] = status_code < 400
-                result["response"] = body
-            elif action_type == "reclaim_stale_lease" and task_id:
-                payload = action.get("suggested_payload", {"next_status": "todo"})
-                status_code, body = _invoke_internal_post(
-                    path=f"/api/hub/tasks/{task_id}/release",
-                    view_func=lambda: release_hub_task_lease(task_id),
-                    payload=payload,
-                )
-                result["success"] = status_code < 400
-                result["response"] = body
-            elif action_type == "reassign_or_bring_online" and task_id:
-                payload = action.get("suggested_payload", {})
-                status_code, body = _invoke_internal_post(
-                    path="/api/hub/tasks/batch-update",
-                    view_func=batch_update_tasks,
-                    payload=payload,
-                )
-                result["success"] = status_code < 400
-                result["response"] = body
-            else:
-                result["error"] = f"Unknown action type: {action_type}"
-        except Exception as e:
-            result["error"] = str(e)
-
-        return result
+            result = future.result(timeout=_AUTOPILOT_ACTION_TIMEOUT_SEC)
+            _autopilot_guard_record_success()
+            return result
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            _autopilot_guard_record_timeout(action_type)
+            return {
+                "action": action_type,
+                "task_id": task_id,
+                "success": False,
+                "error": f"Autopilot action timeout after {_AUTOPILOT_ACTION_TIMEOUT_SEC:.1f}s",
+                "error_code": "AUTOPILOT_ACTION_TIMEOUT",
+            }
+        except Exception as exc:
+            return {
+                "action": action_type,
+                "task_id": task_id,
+                "success": False,
+                "error": str(exc),
+                "error_code": "AUTOPILOT_ACTION_EXECUTION_ERROR",
+            }
 
     @app.route('/api/hub/autopilot/status')
     def get_autopilot_status():
         """Get autopilot status."""
-        hub_running = _hub_next_action_autopilot_thread is not None and _hub_next_action_autopilot_thread.is_alive()
-        bg_running = _autopilot_background_thread is not None and _autopilot_background_thread.is_alive()
-        return jsonify({
-            "success": True,
-            "enabled": _AUTOPILOT_STATE["enabled"],
-            "dry_run": _AUTOPILOT_STATE["dry_run"],
-            "active_executor": _AUTOPILOT_STATE.get("active_executor", "policy_loop"),
-            "executor_conflict": bool(hub_running and bg_running),
-            "interval": _AUTOPILOT_STATE["interval"],
-            "policy": _AUTOPILOT_STATE["policy"],
-            "stats": _AUTOPILOT_STATE["stats"],
-            "timestamp": datetime.now().isoformat(),
-        })
+        return jsonify(_build_hub_autopilot_status_payload(include_legacy_aliases=True))
 
     @app.route('/api/hub/autopilot/config', methods=['POST'])
     def configure_autopilot():
         """Configure autopilot settings."""
         data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({"success": False, "error": "Invalid payload"}), 400
 
+        state_modified = False
+        errors: List[str] = []
         if "enabled" in data:
-            _AUTOPILOT_STATE["enabled"] = bool(data["enabled"])
+            _autopilot_set_enabled(_autopilot_parse_bool(data.get("enabled"), default=_autopilot_is_enabled()))
+            state_modified = True
         if "dry_run" in data:
-            _AUTOPILOT_STATE["dry_run"] = bool(data["dry_run"])
-        if "active_executor" in data:
-            active_executor = str(data.get("active_executor", "policy_loop")).strip().lower()
-            if active_executor in {"policy_loop", "hub_loop"}:
-                _AUTOPILOT_STATE["active_executor"] = active_executor
-        if "interval" in data:
-            _AUTOPILOT_STATE["interval"] = max(10, int(data["interval"]))
-        if "max_actions_per_cycle" in data:
-            _AUTOPILOT_STATE["max_actions_per_cycle"] = max(1, min(10, int(data["max_actions_per_cycle"])))
-        if "policy" in data and isinstance(data["policy"], dict):
-            _AUTOPILOT_STATE["policy"].update(data["policy"])
+            _AUTOPILOT_STATE["dry_run"] = _autopilot_parse_bool(
+                data.get("dry_run"),
+                default=bool(_AUTOPILOT_STATE.get("dry_run", True)),
+            )
+            state_modified = True
+
+        active_executor = data.get("active_executor", data.get("executor"))
+        if isinstance(active_executor, str) and active_executor.strip().lower() in {"policy_loop", "hub_loop"}:
+            _AUTOPILOT_STATE["active_executor"] = _normalize_autopilot_executor(active_executor)
+            state_modified = True
+
+        interval_raw = data.get("interval", data.get("interval_sec"))
+        if interval_raw is not None:
+            try:
+                _AUTOPILOT_STATE["interval"] = max(5, int(interval_raw))
+                state_modified = True
+            except (TypeError, ValueError):
+                return jsonify({"success": False, "error": "interval must be an integer"}), 400
+
+        max_actions_raw = data.get("max_actions_per_cycle", data.get("max_per_tick"))
+        if max_actions_raw is not None:
+            try:
+                _AUTOPILOT_STATE["max_actions_per_cycle"] = max(1, min(10, int(max_actions_raw)))
+                state_modified = True
+            except (TypeError, ValueError):
+                return jsonify({"success": False, "error": "max_actions_per_cycle must be an integer"}), 400
+
+        if "policy" in data:
+            policy_patch, policy_errors = _autopilot_policy_patch(data.get("policy"))
+            if policy_errors:
+                errors.extend(policy_errors)
+            if policy_patch:
+                _AUTOPILOT_STATE["policy"].update(policy_patch)
+                state_modified = True
+
+        if errors:
+            return jsonify({"success": False, "error": "; ".join(errors)}), 400
+
+        if state_modified:
+            force_restart = _autopilot_parse_bool(data.get("force_restart"), default=True)
+            _autopilot_reconcile_runtimes(force_restart=force_restart)
 
         return jsonify({
             "success": True,
-            "state": _AUTOPILOT_STATE,
+            "state": _build_hub_autopilot_status_payload(include_legacy_aliases=True),
             "timestamp": datetime.now().isoformat(),
         })
 
     @app.route('/api/hub/autopilot/run', methods=['POST'])
     def run_autopilot_cycle():
         """Run one autopilot cycle."""
-        if not _AUTOPILOT_STATE["enabled"]:
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            data = {}
+        auto_enable = _autopilot_parse_bool(data.get("auto_enable"), default=True)
+        if not _AUTOPILOT_STATE.get("enabled", False):
+            if auto_enable:
+                _autopilot_set_enabled(True)
+                _autopilot_reconcile_runtimes(force_restart=False)
+            else:
+                return jsonify({
+                    "success": False,
+                    "error": "Autopilot is not enabled",
+                    "timestamp": datetime.now().isoformat(),
+                }), 400
+
+        max_actions, max_actions_error = _autopilot_parse_max_actions(data.get("max_actions_per_cycle", data.get("max_per_tick")))
+        if max_actions_error:
             return jsonify({
                 "success": False,
-                "error": "Autopilot is not enabled",
+                "error": max_actions_error,
                 "timestamp": datetime.now().isoformat(),
             }), 400
-
-        max_actions = _AUTOPILOT_STATE["max_actions_per_cycle"]
-        actions = _hub_next_actions(limit=max_actions * 2)
-
-        executed = []
-        blocked = []
-        errors = []
-
-        for action in actions[:max_actions]:
-            should_exec, reason = _autopilot_should_execute(action)
-            if not should_exec:
-                blocked.append({"action": action, "reason": reason})
-                _AUTOPILOT_STATE["stats"]["actions_blocked"] += 1
-                continue
-
-            if _AUTOPILOT_STATE["dry_run"]:
-                executed.append({"action": action, "dry_run": True})
-                _AUTOPILOT_STATE["stats"]["actions_executed"] += 1
-            else:
-                result = _autopilot_execute_action(action)
-                if result.get("success"):
-                    executed.append({"action": action, "result": result})
-                    _AUTOPILOT_STATE["stats"]["actions_executed"] += 1
-                else:
-                    errors.append({"action": action, "error": result.get("error")})
-                    _AUTOPILOT_STATE["stats"]["errors"] += 1
-
-        _AUTOPILOT_STATE["stats"]["total_cycles"] += 1
-        _AUTOPILOT_STATE["stats"]["last_cycle"] = datetime.now().isoformat()
+        dry_run_override = None
+        if "dry_run" in data:
+            dry_run_override = _autopilot_parse_bool(data.get("dry_run"), default=bool(_AUTOPILOT_STATE.get("dry_run", True)))
+        result = _autopilot_cycle_once(
+            dry_run_override=dry_run_override,
+            use_max_actions=max_actions if max_actions is not None else _autopilot_configured_max_actions(),
+            context="manual_api_run",
+        )
+        state_payload = _build_hub_autopilot_status_payload(include_legacy_aliases=True)
 
         return jsonify({
-            "success": True,
-            "executed": executed,
-            "blocked": blocked,
-            "errors": errors,
+            "success": True if result.get("success", False) is not False else False,
+            "scanned": result.get("scanned", 0),
+            "executed": result.get("executed", []),
+            "blocked": result.get("blocked", []),
+            "errors": result.get("errors", []),
+            "state": state_payload,
             "stats": _AUTOPILOT_STATE["stats"],
+            "snapshot": _autopilot_runtime_snapshot(),
             "timestamp": datetime.now().isoformat(),
         })
 
     @app.route('/api/hub/autopilot/preview', methods=['GET'])
     def preview_autopilot_actions():
         """Preview which actions would be executed."""
-        max_actions = _AUTOPILOT_STATE["max_actions_per_cycle"]
-        actions = _hub_next_actions(limit=max_actions * 2)
-
         preview = []
-        for action in actions[:max_actions]:
+        max_actions = _autopilot_configured_max_actions()
+        for action in _hub_next_actions(limit=max_actions * 2)[:max_actions]:
             should_exec, reason = _autopilot_should_execute(action)
             preview.append({
                 "action": action,
@@ -13935,6 +17191,8 @@ try:
             "success": True,
             "preview": preview,
             "policy": _AUTOPILOT_STATE["policy"],
+            "interval": _autopilot_configured_interval(),
+            "max_actions_per_cycle": max_actions,
             "timestamp": datetime.now().isoformat(),
         })
 
@@ -14224,6 +17482,116 @@ try:
                 "next_actions_preview": _hub_next_actions(limit=5),
             }
         )
+
+    @app.route('/api/hub/process-board')
+    def get_hub_process_board():
+        limit_processes = _int_in_range(request.args.get("limit", 8), default=8, min_value=1, max_value=30)
+        limit_transitions = _int_in_range(request.args.get("transitions", 20), default=20, min_value=5, max_value=120)
+        board = _hub_process_board(limit_transitions=limit_transitions)
+        processes = board.get("processes") if isinstance(board.get("processes"), list) else []
+        board["processes"] = processes[:limit_processes]
+        summary = board.get("summary") if isinstance(board.get("summary"), dict) else {}
+        summary["visible_processes"] = len(board["processes"])
+        board["summary"] = summary
+        return jsonify({"success": True, "board": board})
+
+    def _build_hub_strategic_brief(limit_tasks: int = 8) -> Dict[str, Any]:
+        tasks = [task for task in _hub.list_tasks() if isinstance(task, dict)]
+        runtime_instances = [item for item in get_orion_instances_snapshot() if isinstance(item, dict)]
+        control_snapshot = _control_plane_registry.snapshot()
+        status_counts: Dict[str, int] = {"todo": 0, "in_progress": 0, "done": 0, "blocked": 0}
+        priority_counts: Dict[str, int] = {"p0": 0, "p1": 0, "p2": 0, "p3": 0}
+        unassigned: List[Dict[str, Any]] = []
+        ranked_tasks: List[Dict[str, Any]] = []
+        priority_rank = {"p0": 0, "p1": 1, "p2": 2, "p3": 3}
+
+        for task in tasks:
+            status_norm = _hub_normalize_status(task.get("status"))
+            priority_norm = _hub_normalize_priority(task.get("priority"))
+            status_counts[status_norm if status_norm in status_counts else "todo"] = status_counts.get(status_norm if status_norm in status_counts else "todo", 0) + 1
+            priority_counts[priority_norm if priority_norm in priority_counts else "p3"] = priority_counts.get(priority_norm if priority_norm in priority_counts else "p3", 0) + 1
+            assignee = _hub_normalize_assignee(task.get("assigned_to"))
+            row = {
+                "id": str(task.get("id") or ""),
+                "title": str(task.get("title") or ""),
+                "status": status_norm,
+                "priority": priority_norm,
+                "assignee": assignee,
+                "updated_at": str(task.get("updated_at") or ""),
+            }
+            if not assignee:
+                unassigned.append(row)
+            ranked_tasks.append(row)
+
+        ranked_tasks.sort(
+            key=lambda item: (
+                priority_rank.get(item.get("priority", "p3"), 3),
+                0 if item.get("status") in {"blocked", "in_progress"} else 1,
+                str(item.get("updated_at") or ""),
+            )
+        )
+        top_tasks = ranked_tasks[: max(1, min(20, int(limit_tasks)))]
+
+        online_orions = [item for item in runtime_instances if bool(item.get("online", False))]
+        paused_orions = [item for item in runtime_instances if bool(item.get("paused", False))]
+        worker_alive = int(control_snapshot.get("alive_workers", 0) or 0)
+        worker_registered = int(control_snapshot.get("registered_workers", 0) or 0)
+        next_actions = _hub_next_actions(limit=6)
+
+        thought_lines = [
+            f"Current load: {status_counts.get('in_progress', 0)} in progress, {status_counts.get('blocked', 0)} blocked, {status_counts.get('todo', 0)} queued.",
+            f"Capacity: {len(online_orions)}/{len(runtime_instances)} Orion online, {len(paused_orions)} paused, control-plane alive {worker_alive}/{worker_registered}.",
+            f"Priority pressure: P0={priority_counts.get('p0', 0)}, P1={priority_counts.get('p1', 0)}.",
+            f"Coordination risk: {len(unassigned)} unassigned task(s), {len(next_actions)} recommended next action(s).",
+        ]
+
+        strategy: List[str] = []
+        if status_counts.get("blocked", 0) > 0:
+            strategy.append("Stabilize first: clear blocked tasks before starting new scope.")
+        if len(unassigned) > 0:
+            strategy.append("Assign unowned high-priority tasks to online Orion before dispatch.")
+        if status_counts.get("in_progress", 0) < max(1, len(online_orions)):
+            strategy.append("Increase parallelism: dispatch ready todo tasks to idle Orion capacity.")
+        strategy.append("Keep human-in-loop only for missing inputs, execute the rest automatically.")
+
+        assignee_pool = [str(item.get("id") or item.get("name") or "").strip() for item in online_orions]
+        assignee_pool = [item for item in assignee_pool if item]
+        allocation: List[Dict[str, Any]] = []
+        for idx, task in enumerate(top_tasks[: min(len(top_tasks), max(1, len(assignee_pool) or 1) * 2)]):
+            target = task.get("assignee") or (assignee_pool[idx % len(assignee_pool)] if assignee_pool else LOCAL_INSTANCE_ID)
+            allocation.append(
+                {
+                    "task_id": task.get("id"),
+                    "title": task.get("title"),
+                    "priority": task.get("priority"),
+                    "status": task.get("status"),
+                    "target_orion": target,
+                    "why": "priority-first balancing",
+                }
+            )
+
+        return {
+            "generated_at": datetime.now().isoformat(),
+            "system_overview": {
+                "total_tasks": len(tasks),
+                "status_breakdown": status_counts,
+                "priority_breakdown": priority_counts,
+                "unassigned_count": len(unassigned),
+                "online_orions": len(online_orions),
+                "total_orions": len(runtime_instances),
+            },
+            "thought_lines": thought_lines,
+            "strategy": strategy,
+            "top_tasks": top_tasks,
+            "allocation_plan": allocation,
+            "next_actions": next_actions,
+        }
+
+    @app.route('/api/hub/strategic-brief')
+    def get_hub_strategic_brief():
+        limit = _int_in_range(request.args.get("limit", 8), default=8, min_value=1, max_value=30)
+        brief = _build_hub_strategic_brief(limit_tasks=limit)
+        return jsonify({"success": True, "brief": brief})
 
     @app.route('/api/hub/register-orion', methods=['POST'])
     def register_orion_instance():
@@ -15004,7 +18372,7 @@ def sync_contacts_from_jackos():
     memory_contacts_path = Path(__file__).parent.parent / "memory" / "synced_contacts.json"
     try:
         memory_contacts_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(memory_contacts_path, 'w') as f:
+        with open(memory_contacts_path, 'w', encoding='utf-8') as f:
             json.dump({
                 "source": source,
                 "contacts": contacts,
@@ -15249,18 +18617,26 @@ def run_dashboard(host: str = "localhost", port: int = 5001):
         _ensure_hub_autopilot_started()
     else:
         _ensure_autopilot_background_started()
-    _ensure_openclaw_self_heal_started()
-    if OPENCLAW_SELF_HEAL_BOOTSTRAP:
-        try:
-            bootstrap = _openclaw_self_heal_once()
-            logger.info("OpenClaw self-heal bootstrap", extra={"detail": bootstrap})
-            print(f"🧩 OpenClaw self-heal bootstrap: {'OK' if bootstrap.get('success') else 'FAILED'}")
-            if not bootstrap.get("success"):
-                err = bootstrap.get("error") or "see openclaw metrics"
-                print(f"🧩 OpenClaw self-heal detail: {err}")
-        except Exception as exc:
-            logger.warning(f"OpenClaw self-heal bootstrap failed: {exc}")
-            print(f"🧩 OpenClaw self-heal bootstrap failed: {exc}")
+    if OPENCLAW_EXTENSION_AUTOMATION_ENABLED and OPENCLAW_SELF_HEAL_ENABLED:
+        _ensure_openclaw_self_heal_started()
+    if OPENCLAW_EXTENSION_AUTOMATION_ENABLED and OPENCLAW_SELF_HEAL_ENABLED and OPENCLAW_SELF_HEAL_BOOTSTRAP:
+        def _bootstrap_worker() -> None:
+            try:
+                bootstrap = _openclaw_self_heal_once()
+                logger.info("OpenClaw self-heal bootstrap", extra={"detail": bootstrap})
+                print(f"🧩 OpenClaw self-heal bootstrap: {'OK' if bootstrap.get('success') else 'FAILED'}")
+                if not bootstrap.get("success"):
+                    err = bootstrap.get("error") or "see openclaw metrics"
+                    print(f"🧩 OpenClaw self-heal detail: {err}")
+            except Exception as exc:
+                logger.warning(f"OpenClaw self-heal bootstrap failed: {exc}")
+                print(f"🧩 OpenClaw self-heal bootstrap failed: {exc}")
+
+        threading.Thread(
+            target=_bootstrap_worker,
+            name="openclaw-self-heal-bootstrap",
+            daemon=True,
+        ).start()
     _ensure_progress_snapshot_started()
     _ensure_runtime_heartbeat_started()
     print(

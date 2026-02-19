@@ -51,14 +51,26 @@ import subprocess
 import shutil
 import hashlib
 import re
+import shlex
 import traceback
+import ast
 from datetime import datetime
-from typing import Dict, List, Optional, Any, Tuple, Callable
+from typing import Dict, List, Optional, Any, Tuple, Callable, Set
 from pathlib import Path
 from dataclasses import dataclass, field
 from enum import Enum
 import asyncio
 import threading
+
+from core.nexus_logger import get_logger
+
+logger = get_logger(__name__)
+
+try:
+    from core.llm_caller import call_llm
+    _LLM_AVAILABLE = True
+except ImportError:
+    _LLM_AVAILABLE = False
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 DATA_DIR = PROJECT_ROOT / "data" / "brain"
@@ -85,6 +97,10 @@ class ActionResult:
     started_at: str
     completed_at: str
     duration_ms: float
+    objective_success: bool = False
+    failure_code: Optional[str] = None
+    policy_blocked: bool = False
+    verification: Dict[str, Any] = field(default_factory=dict)
 
 
 class ActionExecutor:
@@ -100,9 +116,16 @@ class ActionExecutor:
         self.history_file = DATA_DIR / "action_history.jsonl"
         self.history: List[ActionResult] = []
 
-        # Timeout settings
-        self.default_timeout = 60  # seconds
-        self.max_timeout = 300
+        # Timeout settings (configurable via env vars)
+        self.default_timeout = int(os.getenv("NEXUS_ACTION_TIMEOUT", "60"))
+        self.max_timeout = int(os.getenv("NEXUS_ACTION_MAX_TIMEOUT", "300"))
+
+        # Policy
+        self.execution_mode = os.getenv("NEXUS_EXECUTION_MODE", "FULL_AUTO").upper()
+        self.allowed_roots = [PROJECT_ROOT / "workspace", PROJECT_ROOT / "data", PROJECT_ROOT / "src"]
+        self.mutating_actions = {"write_file", "edit_file", "delete_file", "create_directory", "run_script"}
+        self.sensitive_prefixes = ["/etc", "/private/etc", "/bin", "/sbin", "/System", "/usr"]
+        self.dangerous_shell_tokens = {"rm -rf /", "shutdown", "reboot", "mkfs", ":(){:|:&};:"}
 
         # Register all action handlers
         self.handlers: Dict[str, Callable] = {
@@ -147,19 +170,20 @@ class ActionExecutor:
     def _load_history(self):
         """Load action history"""
         if self.history_file.exists():
-            with open(self.history_file, 'r') as f:
+            with open(self.history_file, 'r', encoding='utf-8') as f:
                 for line in f:
                     try:
                         data = json.loads(line)
+                        status = data.get("status", ActionStatus.FAILED.value)
+                        data["status"] = ActionStatus(status)
                         result = ActionResult(**data)
-                        result.status = ActionStatus(result.status.value)
                         self.history.append(result)
-                    except:
-                        pass
+                    except Exception:
+                        continue
 
     def _save_result(self, result: ActionResult):
         """Save action result"""
-        with open(self.history_file, 'a') as f:
+        with open(self.history_file, 'a', encoding='utf-8') as f:
             data = {
                 "action_id": result.action_id,
                 "action_type": result.action_type,
@@ -169,7 +193,11 @@ class ActionExecutor:
                 "data": result.data,
                 "started_at": result.started_at,
                 "completed_at": result.completed_at,
-                "duration_ms": result.duration_ms
+                "duration_ms": result.duration_ms,
+                "objective_success": result.objective_success,
+                "failure_code": result.failure_code,
+                "policy_blocked": result.policy_blocked,
+                "verification": result.verification,
             }
             f.write(json.dumps(data) + "\n")
 
@@ -177,12 +205,59 @@ class ActionExecutor:
         """Generate unique action ID"""
         return f"action_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{hashlib.md5(str(time.time()).encode()).hexdigest()[:6]}"
 
+    def _resolve_path(self, input_path: str) -> Path:
+        path = Path(input_path)
+        if not path.is_absolute():
+            path = PROJECT_ROOT / input_path
+        return path.resolve()
+
+    def _enforce_path_policy(self, path: Path, action_type: str):
+        in_allowed_roots = any(str(path).startswith(str(root.resolve())) for root in self.allowed_roots)
+        path_str = str(path)
+        sensitive = any(path_str.startswith(prefix) for prefix in self.sensitive_prefixes)
+
+        # Always deny sensitive system paths.
+        if sensitive and not path_str.startswith(str(PROJECT_ROOT.resolve())):
+            raise PermissionError(f"Policy blocked sensitive path for {action_type}: {path}")
+
+        # SAFE mode enforces all actions in allowed roots.
+        if self.execution_mode == "SAFE" and not in_allowed_roots:
+            raise PermissionError(f"Policy blocked {action_type} outside allowed roots: {path}")
+
+        # In FULL_AUTO/BALANCED, mutating actions are still constrained.
+        if action_type in self.mutating_actions and not in_allowed_roots:
+            raise PermissionError(f"Policy blocked mutating action outside allowed roots: {path}")
+
+    def _enforce_shell_policy(self, command: str):
+        lower = command.lower()
+        if any(token in lower for token in self.dangerous_shell_tokens):
+            raise PermissionError("Policy blocked dangerous shell command")
+
+    def _validate_shell_command_input(self, command: str):
+        if any(ch in command for ch in ("\x00", "\n", "\r")):
+            raise PermissionError("Policy blocked shell command containing control characters")
+
+        lower = command.lower()
+
+        if re.search(r"(?:^|\s)(sudo|su)\b", lower):
+            raise PermissionError("Policy blocked privileged shell command")
+
+        if re.search(r"\b(curl|wget)\b[^\n]*\|\s*(bash|sh|zsh)\b", lower):
+            raise PermissionError("Policy blocked pipe-to-shell command pattern")
+
+        sensitive_prefixes = tuple(prefix.lower() for prefix in self.sensitive_prefixes)
+        if any(prefix in lower for prefix in sensitive_prefixes) and (">" in command or re.search(r"\btee\b", lower)):
+            raise PermissionError("Policy blocked shell command writing to sensitive system paths")
+
     # ==================== MAIN EXECUTION ====================
 
-    def execute(self, action_type: str, params: Dict, timeout: int = None) -> ActionResult:
+    def execute(self, action_type: str, params: Dict, timeout: int = None, max_retries: int = None) -> ActionResult:
         """
-        Execute an action with real effects
+        Execute an action with real effects.
+        Supports automatic retry with exponential backoff for transient failures.
         """
+        if max_retries is None:
+            max_retries = int(os.getenv("NEXUS_ACTION_MAX_RETRIES", "0"))
         action_id = self._generate_action_id()
         started_at = datetime.now().isoformat()
 
@@ -198,13 +273,23 @@ class ActionExecutor:
             duration_ms=0
         )
 
-        # Check if action exists
+        # Check if action exists (with fuzzy fallback)
         if action_type not in self.handlers:
-            result.status = ActionStatus.FAILED
-            result.error = f"Unknown action type: {action_type}"
-            result.completed_at = datetime.now().isoformat()
-            self._save_result(result)
-            return result
+            # Try common aliases: dash ↔ underscore, camelCase → snake_case
+            normalized = action_type.replace("-", "_").lower()
+            if normalized in self.handlers:
+                action_type = normalized
+            else:
+                # Check partial match
+                similar = next((k for k in self.handlers if normalized in k or k in normalized), None)
+                if similar:
+                    action_type = similar
+                else:
+                    result.status = ActionStatus.FAILED
+                    result.error = f"Unknown action type: {action_type}. Available: {', '.join(sorted(self.handlers.keys()))}"
+                    result.completed_at = datetime.now().isoformat()
+                    self._save_result(result)
+                    return result
 
         # Execute
         result.status = ActionStatus.RUNNING
@@ -218,29 +303,75 @@ class ActionExecutor:
 
             result.output = output
             result.data = data
-            result.error = error
+            result.error = str(error) if error else None
             result.status = ActionStatus.SUCCESS if not error else ActionStatus.FAILED
+            result.objective_success = result.status == ActionStatus.SUCCESS
+            result.verification = {"has_output": bool(output)}
+            if error:
+                if isinstance(error, PermissionError):
+                    result.policy_blocked = True
+                    result.failure_code = "policy_blocked"
+                else:
+                    result.failure_code = "handler_error"
 
         except subprocess.TimeoutExpired:
             result.status = ActionStatus.TIMEOUT
             result.error = f"Action timed out after {timeout}s"
+            result.objective_success = False
+            result.failure_code = "timeout"
 
         except Exception as e:
             result.status = ActionStatus.FAILED
             result.error = f"{type(e).__name__}: {str(e)}"
             result.output = traceback.format_exc()
+            result.objective_success = False
+            if isinstance(e, PermissionError):
+                result.policy_blocked = True
+                result.failure_code = "policy_blocked"
+            else:
+                result.failure_code = "exception"
 
         result.completed_at = datetime.now().isoformat()
         start_time = datetime.fromisoformat(started_at)
         end_time = datetime.fromisoformat(result.completed_at)
         result.duration_ms = (end_time - start_time).total_seconds() * 1000
 
+        # Smart retry for transient failures (timeouts, network errors)
+        _RETRYABLE = {"timeout", "handler_error"}
+        if (
+            result.status != ActionStatus.SUCCESS
+            and max_retries > 0
+            and result.failure_code in _RETRYABLE
+            and not result.policy_blocked
+        ):
+            wait = min(2 ** (3 - max_retries), 30)  # exponential backoff: 1, 2, 4, ...
+            time.sleep(wait)
+            return self.execute(action_type, params, timeout=timeout, max_retries=max_retries - 1)
+
+        # LLM post-execution analysis for failures
+        if _LLM_AVAILABLE and result.status == ActionStatus.FAILED and result.error:
+            try:
+                analysis = call_llm(
+                    prompt=(
+                        f"Action '{action_type}' failed with error: {result.error[:300]}. "
+                        f"Params: {json.dumps(params, default=str)[:200]}. "
+                        "Suggest a brief fix in 1-2 sentences."
+                    ),
+                    task_type="code_review",
+                    max_tokens=100,
+                    temperature=0.2,
+                )
+                if isinstance(analysis, str) and analysis.strip():
+                    result.verification["llm_fix_suggestion"] = analysis.strip()[:300]
+            except Exception:
+                pass
+
         self._save_result(result)
         self.history.append(result)
 
         return result
 
-    def _run_with_timeout(self, handler: Callable, params: Dict, timeout: int) -> Tuple[str, Dict, Optional[str]]:
+    def _run_with_timeout(self, handler: Callable, params: Dict, timeout: int) -> Tuple[str, Dict, Optional[Any]]:
         """Run handler with timeout"""
         result = {"output": "", "data": {}, "error": None}
 
@@ -250,7 +381,7 @@ class ActionExecutor:
                 result["output"] = output
                 result["data"] = data
             except Exception as e:
-                result["error"] = str(e)
+                result["error"] = e
 
         thread = threading.Thread(target=run)
         thread.start()
@@ -270,9 +401,8 @@ class ActionExecutor:
             raise ValueError("path parameter required")
 
         # Resolve path
-        path = Path(file_path)
-        if not path.is_absolute():
-            path = PROJECT_ROOT / file_path
+        path = self._resolve_path(file_path)
+        self._enforce_path_policy(path, "read_file")
 
         if not path.exists():
             raise FileNotFoundError(f"File not found: {path}")
@@ -290,9 +420,8 @@ class ActionExecutor:
         if not file_path:
             raise ValueError("path parameter required")
 
-        path = Path(file_path)
-        if not path.is_absolute():
-            path = PROJECT_ROOT / file_path
+        path = self._resolve_path(file_path)
+        self._enforce_path_policy(path, "write_file")
 
         # Create parent directories
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -311,9 +440,8 @@ class ActionExecutor:
         if not file_path or old_string is None:
             raise ValueError("path and old parameters required")
 
-        path = Path(file_path)
-        if not path.is_absolute():
-            path = PROJECT_ROOT / file_path
+        path = self._resolve_path(file_path)
+        self._enforce_path_policy(path, "edit_file")
 
         with open(path, 'r', encoding='utf-8') as f:
             content = f.read()
@@ -332,9 +460,8 @@ class ActionExecutor:
         """Delete file or directory"""
         file_path = params.get("path")
 
-        path = Path(file_path)
-        if not path.is_absolute():
-            path = PROJECT_ROOT / file_path
+        path = self._resolve_path(file_path)
+        self._enforce_path_policy(path, "delete_file")
 
         if path.is_file():
             path.unlink()
@@ -350,9 +477,8 @@ class ActionExecutor:
         dir_path = params.get("path", ".")
         pattern = params.get("pattern", "*")
 
-        path = Path(dir_path)
-        if not path.is_absolute():
-            path = PROJECT_ROOT / dir_path
+        path = self._resolve_path(dir_path)
+        self._enforce_path_policy(path, "list_directory")
 
         if not path.exists():
             raise FileNotFoundError(f"Directory not found: {path}")
@@ -367,9 +493,8 @@ class ActionExecutor:
         """Create directory"""
         dir_path = params.get("path")
 
-        path = Path(dir_path)
-        if not path.is_absolute():
-            path = PROJECT_ROOT / dir_path
+        path = self._resolve_path(dir_path)
+        self._enforce_path_policy(path, "create_directory")
 
         path.mkdir(parents=True, exist_ok=True)
 
@@ -377,48 +502,105 @@ class ActionExecutor:
 
     # ==================== CODE EXECUTION ====================
 
+    @staticmethod
+    def _extract_python_defined_names(code: str) -> List[str]:
+        try:
+            module = ast.parse(code)
+        except Exception:
+            return []
+
+        def names_from_target(target: ast.AST) -> List[str]:
+            if isinstance(target, ast.Name):
+                return [target.id]
+            if isinstance(target, (ast.Tuple, ast.List)):
+                names: List[str] = []
+                for elt in target.elts:
+                    names.extend(names_from_target(elt))
+                return names
+            return []
+
+        names: Set[str] = set()
+
+        for node in module.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.add(node.name)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                for alias in node.names:
+                    names.add(alias.asname or alias.name.split(".")[0])
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    names.update(names_from_target(target))
+            elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+                names.update(names_from_target(node.target))
+            elif isinstance(node, (ast.For, ast.AsyncFor)):
+                names.update(names_from_target(node.target))
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                for item in node.items:
+                    if item.optional_vars is not None:
+                        names.update(names_from_target(item.optional_vars))
+            elif isinstance(node, ast.Try):
+                for handler in node.handlers:
+                    if handler.name:
+                        names.add(handler.name)
+
+        return sorted(names)
+
     def _action_run_python(self, params: Dict) -> Tuple[str, Dict]:
         """Execute Python code"""
         code = params.get("code")
         file_path = params.get("file")
 
         if file_path:
-            path = Path(file_path)
-            if not path.is_absolute():
-                path = PROJECT_ROOT / file_path
-            with open(path, 'r') as f:
+            path = self._resolve_path(file_path)
+            self._enforce_path_policy(path, "run_python")
+            with open(path, 'r', encoding='utf-8') as f:
                 code = f.read()
 
         if not code:
             raise ValueError("code or file parameter required")
 
-        # Execute in restricted environment
-        local_vars = {}
-        global_vars = {"__builtins__": __builtins__}
-
+        variables = self._extract_python_defined_names(code)
         try:
-            exec(code, global_vars, local_vars)
-            output = str(local_vars.get("result", "Executed successfully"))
+            result = subprocess.run(
+                [sys.executable, '-c', code],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=str(WORKSPACE_DIR),
+            )
         except Exception as e:
-            output = ""
             raise RuntimeError(f"Execution error: {e}")
 
-        return output, {"variables": list(local_vars.keys())}
+        if result.stderr:
+            raise RuntimeError(f"Execution error: {result.stderr.strip()}")
+        if result.returncode != 0:
+            raise RuntimeError(f"Execution error: Process exited with code {result.returncode}")
+
+        return result.stdout, {"variables": variables}
 
     def _action_run_shell(self, params: Dict) -> Tuple[str, Dict]:
         """Execute shell command"""
         command = params.get("command")
-        cwd = params.get("cwd", str(PROJECT_ROOT))
+        cwd = params.get("cwd", str(PROJECT_ROOT / "workspace"))
 
         if not command:
             raise ValueError("command parameter required")
+        self._enforce_shell_policy(command)
+        self._validate_shell_command_input(command)
+        cwd_path = self._resolve_path(cwd)
+        self._enforce_path_policy(cwd_path, "run_shell")
+
+        # Use argument list instead of shell=True for safety
+        try:
+            cmd_args = shlex.split(command)
+        except ValueError:
+            raise ValueError(f"Malformed command string: {command!r}")
 
         result = subprocess.run(
-            command,
-            shell=True,
+            cmd_args,
             capture_output=True,
             text=True,
-            cwd=cwd,
+            cwd=str(cwd_path),
             timeout=self.default_timeout
         )
 
@@ -433,9 +615,8 @@ class ActionExecutor:
         script_path = params.get("path")
         args = params.get("args", [])
 
-        path = Path(script_path)
-        if not path.is_absolute():
-            path = PROJECT_ROOT / script_path
+        path = self._resolve_path(script_path)
+        self._enforce_path_policy(path, "run_script")
 
         if not path.exists():
             raise FileNotFoundError(f"Script not found: {path}")
@@ -471,13 +652,13 @@ class ActionExecutor:
         if not url:
             raise ValueError("url or file parameter required")
 
-        # Use system open command
+        # Use system open command (no shell=True - use os.startfile on Windows)
         if sys.platform == "darwin":
             subprocess.run(["open", url])
         elif sys.platform == "linux":
             subprocess.run(["xdg-open", url])
         else:
-            subprocess.run(["start", url], shell=True)
+            os.startfile(url)  # Windows-safe, no shell injection
 
         return f"Opened browser: {url}", {"url": url}
 
@@ -566,18 +747,52 @@ class ActionExecutor:
         return content[:5000], {"url": url, "status": 200}
 
     def _action_web_search(self, params: Dict) -> Tuple[str, Dict]:
-        """Web search (simulated - would use real API in production)"""
+        """Web search with real fetch + graceful unavailable fallback."""
         query = params.get("query")
 
         if not query:
             raise ValueError("query parameter required")
+        import urllib.request
+        import urllib.parse
 
-        # Simulated results
-        results = [
-            {"title": f"Result for: {query}", "url": f"https://example.com/search?q={query}"}
-        ]
+        search_url = "https://duckduckgo.com/html/?q=" + urllib.parse.quote_plus(query)
+        req = urllib.request.Request(
+            search_url,
+            headers={"User-Agent": "NexusExecutor/1.0 (+https://nexus.local)"},
+        )
 
-        return f"Search results for: {query}", {"query": query, "results": results}
+        try:
+            with urllib.request.urlopen(req, timeout=20) as response:
+                body = response.read().decode("utf-8", errors="ignore")
+
+            matches = re.findall(
+                r'<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
+                body,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            results = []
+            for href, raw_title in matches[:10]:
+                title = re.sub(r"<[^>]+>", "", raw_title)
+                title = re.sub(r"\s+", " ", title).strip()
+                if not title:
+                    continue
+                results.append({"title": title[:240], "url": href})
+
+            if not results:
+                return (
+                    f"No results parsed for: {query}",
+                    {"query": query, "results": [], "status": "unavailable"},
+                )
+
+            return (
+                f"Search results for: {query} ({len(results)} items)",
+                {"query": query, "results": results, "status": "ok"},
+            )
+        except Exception as e:
+            return (
+                f"Search unavailable for: {query}",
+                {"query": query, "results": [], "status": "unavailable", "error": str(e)},
+            )
 
     # ==================== SYSTEM OPERATIONS ====================
 
@@ -589,14 +804,18 @@ class ActionExecutor:
         if not package:
             raise ValueError("package parameter required")
 
+        # Validate package name (alphanumeric, hyphens, dots, brackets)
+        if not re.match(r'^[a-zA-Z0-9._\-\[\],>=<! ]+$', package):
+            raise ValueError(f"Invalid package name: {package!r}")
+
         if manager == "pip":
-            cmd = f"pip install {package}"
+            cmd_args = ["pip", "install"] + shlex.split(package)
         elif manager == "npm":
-            cmd = f"npm install {package}"
+            cmd_args = ["npm", "install"] + shlex.split(package)
         else:
             raise ValueError(f"Unknown package manager: {manager}")
 
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        result = subprocess.run(cmd_args, capture_output=True, text=True)
 
         return result.stdout, {"package": package, "manager": manager, "success": result.returncode == 0}
 
@@ -606,11 +825,11 @@ class ActionExecutor:
         framework = params.get("framework", "pytest")
 
         if framework == "pytest":
-            cmd = f"python -m pytest {test_path} -v"
+            cmd_args = ["python3", "-m", "pytest", test_path, "-v"]
         else:
-            cmd = f"python -m unittest discover {test_path}"
+            cmd_args = ["python3", "-m", "unittest", "discover", test_path]
 
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=str(PROJECT_ROOT))
+        result = subprocess.run(cmd_args, capture_output=True, text=True, cwd=str(PROJECT_ROOT))
 
         return result.stdout, {"return_code": result.returncode, "stderr": result.stderr}
 
@@ -655,8 +874,8 @@ class ActionExecutor:
             from .integration_hub import learn
             result = learn(content, source)
             return f"Learned: {content[:100]}", {"result": result}
-        except:
-            return f"Would learn: {content[:100]}", {"content": content}
+        except Exception as e:
+            return f"Would learn: {content[:100]}", {"content": content, "error": str(e)}
 
     def _action_query_knowledge(self, params: Dict) -> Tuple[str, Dict]:
         """Query NEXUS knowledge"""
@@ -669,8 +888,8 @@ class ActionExecutor:
             from .integration_hub import query_knowledge
             result = query_knowledge(query)
             return f"Query results for: {query}", {"result": result}
-        except:
-            return f"Would query: {query}", {"query": query}
+        except Exception as e:
+            return f"Would query: {query}", {"query": query, "error": str(e)}
 
     def _action_create_task(self, params: Dict) -> Tuple[str, Dict]:
         """Create a new task"""
@@ -684,7 +903,7 @@ class ActionExecutor:
         tasks_file = DATA_DIR / "tasks.json"
         tasks = []
         if tasks_file.exists():
-            with open(tasks_file, 'r') as f:
+            with open(tasks_file, 'r', encoding='utf-8') as f:
                 tasks = json.load(f)
 
         new_task = {
@@ -696,7 +915,7 @@ class ActionExecutor:
         }
         tasks.append(new_task)
 
-        with open(tasks_file, 'w') as f:
+        with open(tasks_file, 'w', encoding='utf-8') as f:
             json.dump(tasks, f, indent=2)
 
         return f"Created task: {task}", {"task": new_task}
@@ -715,7 +934,7 @@ class ActionExecutor:
         if not path.exists():
             raise FileNotFoundError(f"File not found: {path}")
 
-        with open(path, 'r') as f:
+        with open(path, 'r', encoding='utf-8') as f:
             content = f.read()
 
         # Basic analysis

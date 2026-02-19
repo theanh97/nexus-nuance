@@ -31,6 +31,16 @@ from dataclasses import dataclass, field
 from enum import Enum
 import random
 
+from core.nexus_logger import get_logger
+
+logger = get_logger(__name__)
+
+try:
+    from core.llm_caller import call_llm
+    _LLM_AVAILABLE = True
+except ImportError:
+    _LLM_AVAILABLE = False
+
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 DATA_DIR = PROJECT_ROOT / "data" / "brain"
 
@@ -118,7 +128,7 @@ class ReActAgent:
     def _load(self):
         """Load history"""
         if self.history_file.exists():
-            with open(self.history_file, 'r') as f:
+            with open(self.history_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 self.thoughts = [Thought(**t) for t in data.get("thoughts", [])]
                 self.actions = [Action(**a) for a in data.get("actions", [])]
@@ -127,7 +137,7 @@ class ReActAgent:
 
     def _save(self):
         """Save history"""
-        with open(self.history_file, 'w') as f:
+        with open(self.history_file, 'w', encoding='utf-8') as f:
             json.dump({
                 "thoughts": [vars(t) for t in self.thoughts[-100:]],
                 "actions": [vars(a) for a in self.actions[-100:]],
@@ -144,7 +154,8 @@ class ReActAgent:
             try:
                 results = self.brain.search(query)
                 return f"Found {len(results)} results for: {query}"
-            except:
+            except Exception as e:
+                logger.warning(f"_tool_search failed for query={query!r}: {e}")
                 pass
         return f"Searched for: {query}"
 
@@ -178,7 +189,8 @@ class ReActAgent:
                     title=f"Self-learned: {content[:50]}",
                     content=content
                 )
-            except:
+            except Exception as e:
+                logger.warning(f"_tool_learn failed for source={source!r}: {e}")
                 pass
         return f"Learned: {content[:100]}"
 
@@ -203,6 +215,20 @@ class ReActAgent:
 
     def _generate_reasoning(self, context: str) -> str:
         """Generate reasoning for the thought"""
+        if _LLM_AVAILABLE:
+            try:
+                llm_reasoning = call_llm(
+                    prompt=f"Task: {context}\n\nAnalyze this task. What kind of action is needed? Respond in 1-2 sentences.",
+                    task_type="planning",
+                    max_tokens=200,
+                    temperature=0.3,
+                )
+                if isinstance(llm_reasoning, str) and llm_reasoning.strip():
+                    return llm_reasoning.strip()
+            except Exception as e:
+                logger.warning(f"_generate_reasoning LLM call failed: {e}")
+                pass
+
         context_lower = context.lower()
 
         # Determine what kind of action is needed
@@ -294,6 +320,49 @@ class ReActAgent:
 
     def _evaluate_quality(self, work: str) -> float:
         """Evaluate the quality of work done"""
+        if _LLM_AVAILABLE:
+            try:
+                llm_score_text = call_llm(
+                    prompt=(
+                        "Evaluate the quality of the work described below. "
+                        "Return only a single number between 0 and 1 (inclusive).\n\n"
+                        f"Work:\n{work}"
+                    ),
+                    task_type="code_review",
+                    max_tokens=50,
+                    temperature=0.1,
+                )
+
+                score_text = (llm_score_text or "").strip()
+                parsed_score: Optional[float] = None
+
+                try:
+                    parsed_score = float(score_text)
+                except (TypeError, ValueError):
+                    for raw_token in score_text.replace("\n", " ").replace("\t", " ").split():
+                        token = raw_token.strip().strip(" ,;:()[]{}<>\"'`")
+                        if not token:
+                            continue
+                        if "/" in token:
+                            token = token.split("/", 1)[0].strip()
+                        if token.endswith("%"):
+                            try:
+                                parsed_score = float(token[:-1]) / 100.0
+                                break
+                            except ValueError:
+                                continue
+                        try:
+                            parsed_score = float(token)
+                            break
+                        except ValueError:
+                            continue
+
+                if parsed_score is not None:
+                    return min(1.0, max(0.0, parsed_score))
+            except Exception as e:
+                logger.warning(f"_evaluate_quality LLM call failed: {e}")
+                pass
+
         score = 0.5  # Base score
 
         # Positive indicators
@@ -308,6 +377,56 @@ class ReActAgent:
 
     def _suggest_improvements(self, work: str, quality: float) -> List[str]:
         """Suggest improvements based on reflection"""
+        if _LLM_AVAILABLE:
+            try:
+                llm_improvements_text = call_llm(
+                    prompt=(
+                        "Suggest concrete improvements for the work described below, given its quality score. "
+                        "Return ONLY a JSON array of strings.\n\n"
+                        f"Work:\n{work}\n\n"
+                        f"Quality score (0-1): {quality}"
+                    ),
+                    task_type="code_review",
+                    max_tokens=300,
+                    temperature=0.3,
+                )
+
+                improvements_text = (llm_improvements_text or "").strip()
+                if improvements_text.startswith("```"):
+                    fence_lines = improvements_text.splitlines()
+                    if (
+                        len(fence_lines) >= 3
+                        and fence_lines[0].startswith("```")
+                        and fence_lines[-1].startswith("```")
+                    ):
+                        improvements_text = "\n".join(fence_lines[1:-1]).strip()
+                parsed_improvements: List[str] = []
+
+                try:
+                    parsed = json.loads(improvements_text)
+                    if isinstance(parsed, list):
+                        parsed_improvements = [
+                            str(item).strip() for item in parsed if str(item).strip()
+                        ]
+                except json.JSONDecodeError:
+                    for line in improvements_text.splitlines():
+                        cleaned = line.strip()
+                        if not cleaned:
+                            continue
+                        if cleaned.startswith("```"):
+                            continue
+                        cleaned = cleaned.lstrip("-*•").strip()
+                        if len(cleaned) >= 2 and cleaned[0].isdigit() and cleaned[1] in {".", ")"}:
+                            cleaned = cleaned[2:].strip()
+                        if cleaned:
+                            parsed_improvements.append(cleaned)
+
+                if parsed_improvements:
+                    return parsed_improvements
+            except Exception as e:
+                logger.warning(f"_suggest_improvements LLM call failed: {e}")
+                pass
+
         improvements = []
 
         if quality < 0.7:

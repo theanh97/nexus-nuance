@@ -29,7 +29,7 @@ class JudgmentEngine:
                 project_root = Path(__file__).parent.parent.parent
                 self.base_path = project_root / "data" / "memory"
                 self.base_path.mkdir(parents=True, exist_ok=True)
-            except:
+            except (OSError, NameError, TypeError):
                 self.base_path = Path.cwd() / "data" / "memory"
 
         self.decisions_file = self.base_path / "judgments.json"

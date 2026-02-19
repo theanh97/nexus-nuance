@@ -39,6 +39,12 @@ from dataclasses import dataclass, field
 from collections import defaultdict, Counter
 import random
 
+try:
+    from core.llm_caller import call_llm
+    _LLM_AVAILABLE = True
+except ImportError:
+    _LLM_AVAILABLE = False
+
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 DATA_DIR = PROJECT_ROOT / "data" / "brain"
 VECTOR_DIR = DATA_DIR / "vectors"
@@ -103,7 +109,7 @@ class KnowledgeDigestionEngine:
     def _load(self):
         """Load existing data"""
         if self.chunks_file.exists():
-            with open(self.chunks_file, 'r') as f:
+            with open(self.chunks_file, 'r', encoding='utf-8') as f:
                 for line in f:
                     try:
                         data = json.loads(line)
@@ -111,28 +117,28 @@ class KnowledgeDigestionEngine:
                         self.chunks[chunk.id] = chunk
                         for kw in chunk.keywords:
                             self.keyword_index[kw].add(chunk.id)
-                    except:
+                    except (json.JSONDecodeError, TypeError, KeyError):
                         pass
 
         if self.graph_file.exists():
-            with open(self.graph_file, 'r') as f:
+            with open(self.graph_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 self.graph.nodes = data.get("nodes", {})
                 self.graph.edges = [tuple(e) for e in data.get("edges", [])]
 
     def _save(self):
         """Save data"""
-        with open(self.chunks_file, 'w') as f:
+        with open(self.chunks_file, 'w', encoding='utf-8') as f:
             for chunk in self.chunks.values():
                 f.write(json.dumps(vars(chunk), default=str) + "\n")
 
-        with open(self.graph_file, 'w') as f:
+        with open(self.graph_file, 'w', encoding='utf-8') as f:
             json.dump({
                 "nodes": self.graph.nodes,
                 "edges": self.graph.edges
             }, f, indent=2)
 
-        with open(self.stats_file, 'w') as f:
+        with open(self.stats_file, 'w', encoding='utf-8') as f:
             json.dump(self.stats, f, indent=2)
 
     # ==================== INGESTION ====================
@@ -220,15 +226,27 @@ class KnowledgeDigestionEngine:
         return min(1.0, max(0.0, score))
 
     def _create_summary(self, content: str) -> str:
-        """Create compressed summary"""
-        # Extract first sentence + key phrases
+        """Create compressed summary using LLM or heuristic fallback."""
+        if _LLM_AVAILABLE:
+            try:
+                result = call_llm(
+                    prompt=f'Summarize this knowledge content in 1-2 concise sentences, preserving key facts:\n{content[:1000]}',
+                    task_type='general',
+                    max_tokens=150,
+                    temperature=0.2,
+                )
+                if isinstance(result, str) and result.strip():
+                    summary = result.strip()
+                    return summary[:500] if len(summary) > 500 else summary
+            except Exception:
+                pass
+
+        # Fallback: extract first 2 sentences
         sentences = content.split('. ')
         if len(sentences) >= 2:
             summary = sentences[0] + '. ' + sentences[1]
         else:
             summary = content
-
-        # Limit size
         return summary[:500] if len(summary) > 500 else summary
 
     def _update_graph(self, chunk: KnowledgeChunk):

@@ -1,6 +1,6 @@
 # Feedback Track Log
 
-Updated: 2026-02-16
+Updated: 2026-02-18
 
 ## Trạng thái hiện tại
 
@@ -68,6 +68,16 @@ Updated: 2026-02-16
 - Feedback: không muốn phải dùng UI OpenClaw để điều khiển; cần điều khiển trực tiếp qua gateway/CLI.
 - Enforced by: tích hợp OpenClaw headless control (CLI/gateway).
 - Verify: có endpoint/command chạy OpenClaw automation không cần mở UI.
+
+14. `plan_first_execution` | `high` | `in-progress`
+- Feedback: trước khi code phải lập kế hoạch sâu và chi tiết (cách giải, phối hợp, tài nguyên, rủi ro, validation), không nhảy thẳng vào viết code.
+- Enforced by: bắt buộc qua `plan-first gate` trong mỗi vòng xử lý task lớn (problem framing -> solution plan -> execution design -> risk/rollback -> validation plan) rồi mới implement.
+- Verify: log mỗi task có section kế hoạch trước section thay đổi code; giảm lỗi “fix nóng” gây regression.
+
+15. `no_prompt_autonomy` | `high` | `in-progress`
+- Feedback: hệ thống phải full-auto, không hỏi lại user liên tục; không đòi user nhập tay nhiều bước.
+- Enforced by: bật guardrail `AUTONOMY_NO_HUMAN_PROMPTS` mặc định + auto-resolve intervention/human-input bằng intake/default.
+- Verify: queue pending_decisions giảm về 0 trong luồng thường; `human_input_request` chuyển thành `responded/auto_resolved` mà không cần thao tác tay.
 
 ## Nguồn dữ liệu chuẩn
 

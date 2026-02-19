@@ -179,7 +179,7 @@ class AutoDevLoop:
                     path = Path("app-output") / file_info["path"]
                     path.parent.mkdir(parents=True, exist_ok=True)
 
-                    with open(path, "w") as f:
+                    with open(path, "w", encoding="utf-8") as f:
                         f.write(file_info["content"])
 
                     print(f"      Created: {path}")
@@ -187,7 +187,7 @@ class AutoDevLoop:
                 # Save as single HTML file
                 path = Path("app-output/index.html")
                 path.parent.mkdir(parents=True, exist_ok=True)
-                with open(path, "w") as f:
+                with open(path, "w", encoding="utf-8") as f:
                     f.write(code_response)
                 print(f"      Created: {path}")
 
@@ -195,7 +195,7 @@ class AutoDevLoop:
             # Save raw response
             path = Path("app-output/index.html")
             path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 f.write(code_response)
             print(f"      Created: {path}")
 
@@ -204,7 +204,7 @@ class AutoDevLoop:
         path = Path("logs/history.json")
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(self.history, f, indent=2, default=str)
 
     def should_continue(self) -> bool:

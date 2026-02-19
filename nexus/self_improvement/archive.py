@@ -64,7 +64,7 @@ class ArchiveAnalyzer:
         """Load archive from file."""
         if self.archive_file.exists():
             try:
-                with open(self.archive_file, 'r') as f:
+                with open(self.archive_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 self.archive = [ArchiveEntry(**e) for e in data.get("entries", [])]
             except Exception as e:
@@ -79,7 +79,7 @@ class ArchiveAnalyzer:
                 "statistics": self._calculate_statistics(),
                 "entries": [asdict(e) for e in self.archive]
             }
-            with open(self.archive_file, 'w') as f:
+            with open(self.archive_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
 
     def record_improvement(

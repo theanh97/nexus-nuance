@@ -88,7 +88,7 @@ def load_implemented_features():
     """Load list of already implemented features"""
     f = Path("data/ui_improvements.json")
     if f.exists():
-        with open(f) as fp:
+        with open(f, encoding='utf-8') as fp:
             data = json.load(fp)
             return data.get("implemented", [])
     return []
@@ -98,7 +98,7 @@ def save_improvement(feature, code_snippet):
     f = Path("data/ui_improvements.json")
     data = {"implemented": [], "pending": [], "history": []}
     if f.exists():
-        with open(f) as fp:
+        with open(f, encoding='utf-8') as fp:
             data = json.load(fp)
 
     data["implemented"].append(feature)
@@ -108,7 +108,7 @@ def save_improvement(feature, code_snippet):
         "status": "implemented"
     })
 
-    with open(f, 'w') as fp:
+    with open(f, 'w', encoding='utf-8') as fp:
         json.dump(data, fp, indent=2)
 
     return data["history"]

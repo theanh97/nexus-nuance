@@ -142,7 +142,7 @@ class TerminalTelemetryBridge:
 
         if vscode_terminal_file.exists():
             try:
-                with open(vscode_terminal_file) as f:
+                with open(vscode_terminal_file, encoding='utf-8') as f:
                     data = json.load(f)
                     return data.get("terminals", [])
             except Exception:

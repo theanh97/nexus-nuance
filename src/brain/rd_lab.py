@@ -47,6 +47,12 @@ from dataclasses import dataclass, field
 from collections import defaultdict
 import re
 
+try:
+    from core.llm_caller import call_llm
+    _LLM_AVAILABLE = True
+except ImportError:
+    _LLM_AVAILABLE = False
+
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 DATA_DIR = PROJECT_ROOT / "data" / "brain"
 RND_DIR = DATA_DIR / "rnd"
@@ -180,33 +186,33 @@ class RDDepartment:
     def _load(self):
         """Load existing research data"""
         if self.projects_file.exists():
-            with open(self.projects_file, 'r') as f:
+            with open(self.projects_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 self.projects = [ResearchProject(**p) for p in data.get("projects", [])]
 
         if self.trends_file.exists():
-            with open(self.trends_file, 'r') as f:
+            with open(self.trends_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 self.trends = [TechTrend(**t) for t in data.get("trends", [])]
 
         if self.innovations_file.exists():
-            with open(self.innovations_file, 'r') as f:
+            with open(self.innovations_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 self.innovations = [Innovation(**i) for i in data.get("innovations", [])]
 
     def _save(self):
         """Save research data"""
-        with open(self.projects_file, 'w') as f:
+        with open(self.projects_file, 'w', encoding='utf-8') as f:
             json.dump({
                 "projects": [vars(p) for p in self.projects]
             }, f, indent=2, default=str)
 
-        with open(self.trends_file, 'w') as f:
+        with open(self.trends_file, 'w', encoding='utf-8') as f:
             json.dump({
                 "trends": [vars(t) for t in self.trends]
             }, f, indent=2, default=str)
 
-        with open(self.innovations_file, 'w') as f:
+        with open(self.innovations_file, 'w', encoding='utf-8') as f:
             json.dump({
                 "innovations": [vars(i) for i in self.innovations]
             }, f, indent=2, default=str)
@@ -215,7 +221,7 @@ class RDDepartment:
         """Log research activity"""
         timestamp = datetime.now().isoformat()
         line = f"[{timestamp}] [{level}] {message}\n"
-        with open(self.research_log, 'a') as f:
+        with open(self.research_log, 'a', encoding='utf-8') as f:
             f.write(line)
         print(f"[R&D] [{level}] {message}")
 
@@ -246,6 +252,56 @@ class RDDepartment:
                 self.trends.append(trend)
                 discovered.append(trend)
                 self._log(f"Discovered trend: {topic} ({trend.potential_impact} impact)")
+
+        # LLM-powered trend discovery
+        if _LLM_AVAILABLE and len(discovered) < 3:
+            try:
+                existing = [t.name for t in self.trends[-20:]]
+                areas_str = ", ".join(list(self.research_areas.keys())[:5])
+                llm_result = call_llm(
+                    prompt=(
+                        f"Suggest 2 emerging technology trends in these areas: {areas_str}. "
+                        f"Already known: {existing[:10]}. Return JSON array of objects with: "
+                        "name, category, description (short), potential_impact "
+                        "(revolutionary/high/medium), maturity (emerging/early/developing). "
+                        "Only new trends not in the known list."
+                    ),
+                    task_type="planning",
+                    max_tokens=400,
+                    temperature=0.5,
+                )
+                if isinstance(llm_result, str):
+                    text = llm_result.strip()
+                    if text.startswith("```"):
+                        lines = text.splitlines()
+                        if len(lines) >= 3:
+                            text = "\n".join(lines[1:-1]).strip()
+                    try:
+                        parsed = json.loads(text)
+                        if isinstance(parsed, list):
+                            for item in parsed:
+                                if not isinstance(item, dict):
+                                    continue
+                                name = item.get("name", "")
+                                if not name or any(t.name == name for t in self.trends):
+                                    continue
+                                trend = TechTrend(
+                                    name=name,
+                                    category=item.get("category", "ai_ml"),
+                                    description=item.get("description", f"LLM-discovered: {name}"),
+                                    potential_impact=item.get("potential_impact", "medium"),
+                                    maturity=item.get("maturity", "emerging"),
+                                    relevance_to_nexus=0.8,
+                                    sources=["llm_discovery"],
+                                    discovered_at=datetime.now().isoformat(),
+                                )
+                                self.trends.append(trend)
+                                discovered.append(trend)
+                                self._log(f"LLM discovered trend: {name}")
+                    except json.JSONDecodeError:
+                        pass
+            except Exception:
+                pass
 
         self._save()
         return discovered

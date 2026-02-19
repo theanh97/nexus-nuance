@@ -34,15 +34,17 @@ def log(message: str):
     line = f"[{timestamp}] {message}"
     print(line)
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(LOG_FILE, 'a') as f:
+    with open(LOG_FILE, 'a', encoding='utf-8') as f:
         f.write(line + "\n")
 
 
 def write_pid():
-    """Write PID file"""
+    """Write PID file atomically (write to .tmp then os.replace)"""
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(PID_FILE, 'w') as f:
+    tmp_path = PID_FILE.with_suffix('.tmp')
+    with open(tmp_path, 'w', encoding='utf-8') as f:
         f.write(str(os.getpid()))
+    os.replace(str(tmp_path), str(PID_FILE))
 
 
 def remove_pid():
@@ -57,13 +59,13 @@ def is_running() -> bool:
         return False
 
     try:
-        with open(PID_FILE, 'r') as f:
+        with open(PID_FILE, 'r', encoding='utf-8') as f:
             pid = int(f.read().strip())
 
         # Check if process exists
         os.kill(pid, 0)
         return True
-    except:
+    except (OSError, ValueError, ProcessLookupError):
         remove_pid()
         return False
 
@@ -76,7 +78,7 @@ def run_daemon():
     log("=" * 60)
     log("NEXUS BRAIN DAEMON STARTED")
     log("=" * 60)
-    log()
+    log("")
     log("AUTONOMOUS CYCLES:")
     log("  - News scan: Every 5 minutes")
     log("  - GitHub scan: Every 15 minutes")
@@ -84,7 +86,7 @@ def run_daemon():
     log("  - Deep learning: Every 6 hours")
     log("  - Daily report: Every 24 hours")
     log("  - AUTO-EVOLUTION: Every 1 hour (discovers new sources)")
-    log()
+    log("")
 
     # Get discovery stats
     discovery_stats = get_discovery_stats()
@@ -106,16 +108,35 @@ def run_daemon():
     signal.signal(signal.SIGINT, shutdown)
 
     # Main loop - heartbeat
+    heartbeat_sec = int(os.getenv("NEXUS_HEARTBEAT_INTERVAL", "60"))
     try:
         counter = 0
         while True:
-            time.sleep(60)
+            time.sleep(heartbeat_sec)
             counter += 1
 
-            # Heartbeat every 5 minutes
+            # Heartbeat every 5 cycles (wrapped so one failure can't crash daemon)
             if counter % 5 == 0:
-                stats = brain_stats()
-                log(f"Heartbeat - Knowledge: {stats['memory']['total_knowledge']}, Skills: {len(stats['skills'])}")
+                try:
+                    stats = brain_stats()
+                    knowledge = stats.get("memory", {}).get("total_knowledge", 0)
+                    skills = len(stats.get("skills", {}))
+                    msg = f"Heartbeat - Knowledge: {knowledge}, Skills: {skills}"
+
+                    # Add budget info if available
+                    try:
+                        from core.model_router import ModelRouter
+                        proj = ModelRouter().get_budget_projection()
+                        msg += f", Budget: ${proj.get('total_spent', 0):.4f}/{proj.get('daily_budget', 0)} ({proj.get('status', '?')})"
+                    except Exception:
+                        pass
+
+                    log(msg)
+                except Exception as exc:
+                    try:
+                        log(f"Heartbeat error (non-fatal): {exc}")
+                    except Exception:
+                        pass
 
     except KeyboardInterrupt:
         shutdown(None, None)
@@ -146,8 +167,8 @@ def start_daemon():
     os.chdir('/')
 
     # Redirect std
-    sys.stdin = open('/dev/null', 'r')
-    sys.stdout = open(LOG_FILE, 'a')
+    sys.stdin = open('/dev/null', 'r', encoding='utf-8')
+    sys.stdout = open(LOG_FILE, 'a', encoding='utf-8')
     sys.stderr = sys.stdout
 
     run_daemon()
@@ -159,7 +180,7 @@ def stop_daemon():
         print("Daemon not running!")
         return
 
-    with open(PID_FILE, 'r') as f:
+    with open(PID_FILE, 'r', encoding='utf-8') as f:
         pid = int(f.read().strip())
 
     try:
@@ -173,7 +194,7 @@ def stop_daemon():
 def show_status():
     """Show daemon status"""
     if is_running():
-        with open(PID_FILE, 'r') as f:
+        with open(PID_FILE, 'r', encoding='utf-8') as f:
             pid = int(f.read().strip())
         print(f"Daemon RUNNING (PID: {pid})")
         print()
@@ -184,7 +205,7 @@ def show_status():
 
 def show_stats():
     """Show brain stats"""
-    from brain.nexus_brain import get_brain, brain_stats
+    from brain.nexus_brain import brain_stats
 
     try:
         stats = brain_stats()

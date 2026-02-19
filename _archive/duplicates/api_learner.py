@@ -91,7 +91,7 @@ class APIKnowledgeFetcher:
         """Load API sources configuration."""
         if self.config_path.exists():
             try:
-                with open(self.config_path, 'r') as f:
+                with open(self.config_path, 'r', encoding='utf-8') as f:
                     config = json.load(f)
 
                 # Load sources

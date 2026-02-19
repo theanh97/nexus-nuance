@@ -80,7 +80,7 @@ class ImprovementDiscovery:
         """Load previously discovered improvements."""
         if self.discovery_file.exists():
             try:
-                with open(self.discovery_file, 'r') as f:
+                with open(self.discovery_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 self.discovered = [
                     ImprovementOpportunity(**item)
@@ -98,7 +98,7 @@ class ImprovementDiscovery:
                 "total_discovered": len(self.discovered),
                 "improvements": [asdict(imp) for imp in self.discovered]
             }
-            with open(self.discovery_file, 'w') as f:
+            with open(self.discovery_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
 
     def discover_all(self) -> List[ImprovementOpportunity]:
@@ -134,7 +134,7 @@ class ImprovementDiscovery:
 
         for file_path in python_files[:50]:  # Limit to first 50 files
             try:
-                with open(file_path, 'r') as f:
+                with open(file_path, 'r', encoding='utf-8') as f:
                     content = f.read()
 
                 # Check for long functions
@@ -200,7 +200,7 @@ class ImprovementDiscovery:
 
         for file_path in python_files[:30]:
             try:
-                with open(file_path, 'r') as f:
+                with open(file_path, 'r', encoding='utf-8') as f:
                     content = f.read()
                     lines = content.split('\n')
 
@@ -235,7 +235,7 @@ class ImprovementDiscovery:
 
         for log_file in log_files[:5]:
             try:
-                with open(log_file, 'r') as f:
+                with open(log_file, 'r', encoding='utf-8') as f:
                     content = f.read()
 
                 # Find error patterns
@@ -269,7 +269,7 @@ class ImprovementDiscovery:
         learning_state_file = self.project_root / "data" / "state" / "learning_state.json"
         if learning_state_file.exists():
             try:
-                with open(learning_state_file, 'r') as f:
+                with open(learning_state_file, 'r', encoding='utf-8') as f:
                     state = json.load(f)
 
                 # Check for learning streaks without application
@@ -309,7 +309,7 @@ class ImprovementDiscovery:
 
         for file_path in python_files[:30]:
             try:
-                with open(file_path, 'r') as f:
+                with open(file_path, 'r', encoding='utf-8') as f:
                     lines = f.readlines()
 
                 for i, line in enumerate(lines):

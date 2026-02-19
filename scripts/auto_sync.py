@@ -185,7 +185,7 @@ class AutoSync:
             web = get_web_learner()
             discoveries = web.get_discoveries(limit=20)
             learnings.extend([{"source": "web", "item": d} for d in discoveries])
-        except:
+        except (ImportError, AttributeError, TypeError):
             pass
 
         # From user feedback
@@ -193,7 +193,7 @@ class AutoSync:
             fm = get_feedback_manager()
             feedback = fm.get_recent_feedback(limit=20)
             learnings.extend([{"source": "feedback", "item": f} for f in feedback])
-        except:
+        except (ImportError, AttributeError, TypeError):
             pass
 
         return learnings

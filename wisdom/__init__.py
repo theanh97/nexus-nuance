@@ -111,7 +111,7 @@ class WisdomHub:
         # Load patterns
         if self.patterns_file.exists():
             try:
-                with open(self.patterns_file, 'r') as f:
+                with open(self.patterns_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 self.patterns = {k: Pattern(**v) for k, v in data.get("patterns", {}).items()}
             except Exception as e:
@@ -120,7 +120,7 @@ class WisdomHub:
         # Load insights
         if self.insights_file.exists():
             try:
-                with open(self.insights_file, 'r') as f:
+                with open(self.insights_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 self.insights = [Insight(**i) for i in data.get("insights", [])]
             except Exception as e:
@@ -129,7 +129,7 @@ class WisdomHub:
         # Load lessons
         if self.lessons_file.exists():
             try:
-                with open(self.lessons_file, 'r') as f:
+                with open(self.lessons_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 self.lessons = [Lesson(**l) for l in data.get("lessons", [])]
             except Exception as e:
@@ -144,7 +144,7 @@ class WisdomHub:
                 "total_patterns": len(self.patterns),
                 "patterns": {k: asdict(v) for k, v in self.patterns.items()}
             }
-            with open(self.patterns_file, 'w') as f:
+            with open(self.patterns_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
 
             # Save insights
@@ -153,7 +153,7 @@ class WisdomHub:
                 "total_insights": len(self.insights),
                 "insights": [asdict(i) for i in self.insights]
             }
-            with open(self.insights_file, 'w') as f:
+            with open(self.insights_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
 
             # Save lessons
@@ -162,7 +162,7 @@ class WisdomHub:
                 "total_lessons": len(self.lessons),
                 "lessons": [asdict(l) for l in self.lessons]
             }
-            with open(self.lessons_file, 'w') as f:
+            with open(self.lessons_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
 
     # ==================== PATTERN MANAGEMENT ====================

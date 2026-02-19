@@ -42,6 +42,9 @@ from .learning_policy import (
 )
 from .memory_governor import get_memory_governor
 from .migrate_proposals_v1_to_v2 import migrate_once as migrate_proposals_v1_to_v2
+from core.nexus_logger import get_logger
+
+logger = get_logger(__name__)
 
 # NEW: Import working API-based learning modules
 try:
@@ -102,7 +105,7 @@ class LearningLoop:
                 project_root = Path(__file__).parent.parent.parent
                 self.base_path = project_root / "data" / "state"
                 self.base_path.mkdir(parents=True, exist_ok=True)
-            except:
+            except (OSError, TypeError, NameError, ValueError):
                 self.base_path = Path.cwd() / "data" / "state"
 
         self.memory = get_memory()
@@ -178,6 +181,14 @@ class LearningLoop:
         self.enable_windowed_self_check = os.getenv("ENABLE_WINDOWED_SELF_CHECK", "true").strip().lower() == "true"
         self.enable_synthetic_opportunities = os.getenv("ENABLE_SYNTHETIC_OPPORTUNITIES", "true").strip().lower() == "true"
         self.synthetic_opportunity_threshold = int(os.getenv("SYNTHETIC_OPPORTUNITY_THRESHOLD", "3"))
+        self.enable_stagnation_force_scan = os.getenv("ENABLE_STAGNATION_FORCE_SCAN", "true").strip().lower() == "true"
+        self.stagnation_force_scan_streak = int(
+            os.getenv("STAGNATION_FORCE_SCAN_STREAK", str(max(10, self.self_check_warn_streak * 2)))
+        )
+        self.stagnation_force_scan_min_interval_sec = int(
+            os.getenv("STAGNATION_FORCE_SCAN_MIN_INTERVAL_SECONDS", "900")
+        )
+        self.last_stagnation_force_scan_at: Optional[str] = None
         self.verification_retry_interval_sec = int(os.getenv("VERIFICATION_RETRY_INTERVAL_SECONDS", "300"))
         self.verification_retry_max_attempts = int(os.getenv("VERIFICATION_RETRY_MAX_ATTEMPTS", "3"))
         self.enable_cafe_calibration = os.getenv("ENABLE_CAFE_CALIBRATION", "true").strip().lower() == "true"
@@ -215,6 +226,16 @@ class LearningLoop:
         self.daily_cadence_min_switch_seconds = int(os.getenv("DAILY_CADENCE_MIN_SWITCH_SECONDS", "900"))
         self.daily_cadence_last_adjusted_at: Optional[str] = None
         self.daily_cadence_last_reason: str = "baseline"
+        self.daily_strategy_adjust_cooldown_sec = int(
+            os.getenv("DAILY_STRATEGY_ADJUST_COOLDOWN_SECONDS", "1800")
+        )
+        self.daily_strategy_history_limit = int(os.getenv("DAILY_STRATEGY_HISTORY_LIMIT", "21"))
+        self.daily_strategy_min_samples_for_adjustment = int(
+            os.getenv("DAILY_STRATEGY_MIN_SAMPLES_FOR_ADJUSTMENT", "6")
+        )
+        self.daily_strategy_last_adjusted_at: Optional[str] = None
+        self.daily_strategy: Dict[str, Any] = {}
+        self.daily_strategy_history: List[Dict[str, Any]] = []
         self.rollback_lock_loss_streak_threshold = int(os.getenv("ROLLBACK_LOCK_LOSS_STREAK_THRESHOLD", "2"))
         self.rollback_lock_cooldown_seconds = int(os.getenv("ROLLBACK_LOCK_COOLDOWN_SECONDS", "3600"))
         self.verification_loss_streak = 0
@@ -250,9 +271,15 @@ class LearningLoop:
     def _load_state(self):
         """Load previous learning state."""
         state_path = self.base_path / "learning_state.json"
+        backup_path = Path(str(state_path) + ".bak")
+        candidate_paths = []
         if state_path.exists():
+            candidate_paths.append(state_path)
+        if backup_path.exists():
+            candidate_paths.append(backup_path)
+        for candidate_path in candidate_paths:
             try:
-                with open(state_path, 'r', encoding='utf-8') as f:
+                with open(candidate_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 loaded_stats = data.get("stats", {})
                 if isinstance(loaded_stats, dict):
@@ -285,7 +312,9 @@ class LearningLoop:
                 self.anomaly_policy_penalty_applied = bool(data.get("anomaly_policy_penalty_applied", False))
                 self.anomaly_last_reason = str(data.get("anomaly_last_reason", self.anomaly_last_reason))
                 self.daily_cadence_last_adjusted_at = data.get("daily_cadence_last_adjusted_at")
-                self.daily_cadence_last_reason = str(data.get("daily_cadence_last_reason", self.daily_cadence_last_reason))
+                self.daily_cadence_last_reason = str(
+                    data.get("daily_cadence_last_reason", self.daily_cadence_last_reason)
+                )
                 self.verification_loss_streak = int(data.get("verification_loss_streak", 0))
                 self.rollback_lock_until = data.get("rollback_lock_until")
                 self.anomaly_recovery_wins_streak = int(data.get("anomaly_recovery_wins_streak", 0))
@@ -293,46 +322,71 @@ class LearningLoop:
                 if loaded_focus in self.FOCUS_AREAS:
                     self.current_focus_area = loaded_focus
                 self.last_cafe_calibration = data.get("last_cafe_calibration")
+                self.last_stagnation_force_scan_at = data.get("last_stagnation_force_scan_at")
+                loaded_daily_strategy = data.get("daily_strategy", {})
+                if isinstance(loaded_daily_strategy, dict):
+                    self.daily_strategy = loaded_daily_strategy
+                loaded_strategy_history = data.get("daily_strategy_history", [])
+                if isinstance(loaded_strategy_history, list):
+                    self.daily_strategy_history = [
+                        row for row in loaded_strategy_history if isinstance(row, dict)
+                    ][-max(1, self.daily_strategy_history_limit):]
+                self.daily_strategy_last_adjusted_at = data.get("daily_strategy_last_adjusted_at")
+
+                # After a successful load, refresh a backup.
+                try:
+                    with open(backup_path, "w", encoding="utf-8") as f:
+                        json.dump(data, f, indent=2)
+                except (OSError, TypeError, ValueError):
+                    pass
+                break
             except Exception:
-                # Start fresh on corrupted state.
-                pass
+                # Start fresh on corrupted state (or try backup if available).
+                continue
 
     def _save_state(self):
         """Save current learning state."""
         state_path = self.base_path / "learning_state.json"
-        with open(state_path, 'w', encoding='utf-8') as f:
-            json.dump({
-                "iteration": self.iteration,
-                "stats": self.stats,
-                "last_scan": self.last_scan.isoformat() if isinstance(self.last_scan, datetime) else self.last_scan,
-                "last_analysis": self.last_analysis,
-                "last_cleanup": self.last_cleanup,
-                "last_advanced_review": self.last_advanced_review,
-                "last_daily_self_learning": self.last_daily_self_learning,
-                "applied_proposals": sorted(list(self.applied_proposals))[-500:],
-                "no_improvement_streak": self.no_improvement_streak,
-                "no_learning_streak": self.no_learning_streak,
-                "window_learning_opportunities": self.window_learning_opportunities,
-                "window_improvement_opportunities": self.window_improvement_opportunities,
-                "no_opportunity_iterations": self.no_opportunity_iterations,
-                "normal_mode_cooldown_until": self.normal_mode_cooldown_until,
-                "normal_mode_execution_history": self.normal_mode_execution_history[-200:],
-                "normal_mode_successes": self.normal_mode_successes,
-                "normal_mode_losses": self.normal_mode_losses,
-                "normal_mode_last_reason": self.normal_mode_last_reason,
-                "anomaly_autopause_until": self.anomaly_autopause_until,
-                "anomaly_autopause_started_at": self.anomaly_autopause_started_at,
-                "anomaly_policy_penalty_applied": self.anomaly_policy_penalty_applied,
-                "anomaly_last_reason": self.anomaly_last_reason,
-                "daily_cadence_last_adjusted_at": self.daily_cadence_last_adjusted_at,
-                "daily_cadence_last_reason": self.daily_cadence_last_reason,
-                "verification_loss_streak": self.verification_loss_streak,
-                "rollback_lock_until": self.rollback_lock_until,
-                "anomaly_recovery_wins_streak": self.anomaly_recovery_wins_streak,
-                "current_focus_area": self.current_focus_area,
-                "last_cafe_calibration": self.last_cafe_calibration,
-                "last_updated": datetime.now().isoformat()
-            }, f, indent=2)
+        tmp_path = Path(str(state_path) + ".tmp")
+        payload = {
+            "iteration": self.iteration,
+            "stats": self.stats,
+            "last_scan": self.last_scan.isoformat() if isinstance(self.last_scan, datetime) else self.last_scan,
+            "last_analysis": self.last_analysis,
+            "last_cleanup": self.last_cleanup,
+            "last_advanced_review": self.last_advanced_review,
+            "last_daily_self_learning": self.last_daily_self_learning,
+            "applied_proposals": sorted(list(self.applied_proposals))[-500:],
+            "no_improvement_streak": self.no_improvement_streak,
+            "no_learning_streak": self.no_learning_streak,
+            "window_learning_opportunities": self.window_learning_opportunities,
+            "window_improvement_opportunities": self.window_improvement_opportunities,
+            "no_opportunity_iterations": self.no_opportunity_iterations,
+            "normal_mode_cooldown_until": self.normal_mode_cooldown_until,
+            "normal_mode_execution_history": self.normal_mode_execution_history[-200:],
+            "normal_mode_successes": self.normal_mode_successes,
+            "normal_mode_losses": self.normal_mode_losses,
+            "normal_mode_last_reason": self.normal_mode_last_reason,
+            "anomaly_autopause_until": self.anomaly_autopause_until,
+            "anomaly_autopause_started_at": self.anomaly_autopause_started_at,
+            "anomaly_policy_penalty_applied": self.anomaly_policy_penalty_applied,
+            "anomaly_last_reason": self.anomaly_last_reason,
+            "daily_cadence_last_adjusted_at": self.daily_cadence_last_adjusted_at,
+            "daily_cadence_last_reason": self.daily_cadence_last_reason,
+            "verification_loss_streak": self.verification_loss_streak,
+            "rollback_lock_until": self.rollback_lock_until,
+            "anomaly_recovery_wins_streak": self.anomaly_recovery_wins_streak,
+            "current_focus_area": self.current_focus_area,
+            "last_cafe_calibration": self.last_cafe_calibration,
+            "last_stagnation_force_scan_at": self.last_stagnation_force_scan_at,
+            "daily_strategy": self.daily_strategy if isinstance(self.daily_strategy, dict) else {},
+            "daily_strategy_history": self.daily_strategy_history[-max(1, self.daily_strategy_history_limit):],
+            "daily_strategy_last_adjusted_at": self.daily_strategy_last_adjusted_at,
+            "last_updated": datetime.now().isoformat(),
+        }
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        os.replace(tmp_path, state_path)
 
     # ==================== LEARNING ACTIONS ====================
 
@@ -692,6 +746,412 @@ class LearningLoop:
             return datetime.fromisoformat(str(value))
         except (ValueError, TypeError):
             return None
+
+    def _today_key(self, ts: Optional[datetime] = None) -> str:
+        return (ts or datetime.now()).strftime("%Y-%m-%d")
+
+    def _iteration_learning_signal(self, results: Dict) -> Dict[str, Any]:
+        scan = results.get("scan", {}) if isinstance(results.get("scan"), dict) else {}
+        improvements = results.get("improvements", {}) if isinstance(results.get("improvements"), dict) else {}
+        advanced = results.get("advanced_review", {}) if isinstance(results.get("advanced_review"), dict) else {}
+        v2 = results.get("v2_pipeline", {}) if isinstance(results.get("v2_pipeline"), dict) else {}
+
+        learned_now = int(scan.get("filtered_count", 0)) > 0 or int(advanced.get("reviewed_items", 0)) > 0
+        improved_now = (
+            int(improvements.get("applied", 0)) > 0
+            or int(v2.get("wins", 0)) > 0
+            or (int(v2.get("verified", 0)) > 0 and int(v2.get("losses", 0)) == 0)
+        )
+        learning_window_open = "scan" in results or "advanced_review" in results
+        improvement_window_open = (
+            int(improvements.get("total_seen", 0)) > 0
+            or int(v2.get("created", 0)) > 0
+            or int(v2.get("approved", 0)) > 0
+        )
+
+        return {
+            "learned_now": learned_now,
+            "improved_now": improved_now,
+            "learning_window_open": learning_window_open,
+            "improvement_window_open": improvement_window_open,
+            "scan_filtered_count": int(scan.get("filtered_count", 0) or 0),
+            "applied_improvements": int(improvements.get("applied", 0) or 0),
+            "v2_created": int(v2.get("created", 0) or 0),
+            "v2_verified": int(v2.get("verified", 0) or 0),
+            "v2_wins": int(v2.get("wins", 0) or 0),
+            "v2_losses": int(v2.get("losses", 0) or 0),
+            "v2_inconclusive": int(v2.get("inconclusive", 0) or 0),
+        }
+
+    def _build_daily_strategy_objective(self, results: Dict, reason: str = "bootstrap") -> Dict[str, Any]:
+        now = datetime.now()
+        day_key = self._today_key(now)
+        health = results.get("health", {}) if isinstance(results.get("health"), dict) else {}
+        signal = self._iteration_learning_signal(results)
+        open_issues = int(health.get("open_issues", 0) or 0)
+        try:
+            health_score = float(health.get("health_score", 80.0) or 80.0)
+        except (TypeError, ValueError):
+            health_score = 80.0
+
+        focus_area = "quality"
+        objective_id = "compound_verified_quality"
+        objective_title = "Compound reliable learning gains"
+        objective_reason = "System is stable; prioritize verified outcomes and sustained learning velocity."
+        priority_actions = [
+            "Maintain stable cadence with low-risk experiments.",
+            "Convert top pending proposals into verified outcomes.",
+            "Keep evidence quality high to reduce inconclusive verdicts.",
+        ]
+
+        if open_issues > 0:
+            focus_area = "reliability"
+            objective_id = "stabilize_runtime"
+            objective_title = "Stabilize runtime before aggressive optimization"
+            objective_reason = f"Detected {open_issues} open issue(s); reliability currently limits automation throughput."
+            priority_actions = [
+                "Resolve health-check issues before expanding scope.",
+                "Keep execution in safe mode for risky proposals.",
+                "Reduce new change velocity until open issues return to zero.",
+            ]
+        elif self.no_learning_streak >= self.self_check_warn_streak:
+            focus_area = "learning"
+            objective_id = "recover_learning_velocity"
+            objective_title = "Recover daily learning velocity"
+            objective_reason = (
+                f"Learning streak warning active ({self.no_learning_streak}); discovery and retention need acceleration."
+            )
+            priority_actions = [
+                "Increase scan breadth and source diversity for weak-signal recovery.",
+                "Lower discovery friction in controlled ranges to avoid empty scans.",
+                "Capture and retain new high-signal lessons continuously.",
+            ]
+        elif self.no_improvement_streak >= self.self_check_warn_streak:
+            focus_area = "execution"
+            objective_id = "restore_improvement_conversion"
+            objective_title = "Restore research-to-improvement conversion"
+            objective_reason = (
+                f"Improvement streak warning active ({self.no_improvement_streak}); execution funnel needs tuning."
+            )
+            priority_actions = [
+                "Reduce safe approval friction for high-confidence proposals.",
+                "Prioritize small, verifiable experiments for faster feedback loops.",
+                "Track losses quickly and apply rollback guardrails early.",
+            ]
+        elif signal.get("v2_losses", 0) > signal.get("v2_wins", 0):
+            focus_area = "quality"
+            objective_id = "reduce_verification_losses"
+            objective_title = "Reduce verification losses and noisy outcomes"
+            objective_reason = "Recent outcomes trend negative; optimize precision before speed."
+            priority_actions = [
+                "Increase proposal quality threshold until win/loss trend recovers.",
+                "Run narrower experiments with stronger expected impact.",
+                "Prioritize root-cause learning from loss evidence.",
+            ]
+
+        min_learning_iterations = max(3, int(self.daily_strategy_min_samples_for_adjustment * 0.6))
+        min_improvement_iterations = max(2, int(self.daily_strategy_min_samples_for_adjustment * 0.35))
+        min_verified_wins = 1 if self.enable_experiment_executor else 0
+        max_error_events = 2 if open_issues == 0 else max(2, open_issues + 1)
+        min_health_score = max(75.0, min(95.0, health_score + (5.0 if open_issues > 0 else 0.0)))
+        max_open_issues = 0 if open_issues <= 1 else max(0, open_issues - 1)
+
+        return {
+            "date": day_key,
+            "objective_id": objective_id,
+            "objective_title": objective_title,
+            "objective_reason": objective_reason,
+            "focus_area": focus_area,
+            "priority_actions": priority_actions[:5],
+            "targets": {
+                "min_health_score": round(min_health_score, 2),
+                "max_open_issues": int(max_open_issues),
+                "min_learning_iterations": int(min_learning_iterations),
+                "min_improvement_iterations": int(min_improvement_iterations),
+                "min_verified_wins": int(min_verified_wins),
+                "max_error_events": int(max_error_events),
+            },
+            "progress": {
+                "iterations": 0,
+                "learning_iterations": 0,
+                "improvement_iterations": 0,
+                "applied_improvements": 0,
+                "v2_created": 0,
+                "v2_verified": 0,
+                "v2_wins": 0,
+                "v2_losses": 0,
+                "v2_inconclusive": 0,
+                "error_events": 0,
+                "latest_health_score": round(health_score, 2),
+                "latest_open_issues": int(open_issues),
+            },
+            "status": "active",
+            "replan_reason": reason,
+            "created_at": now.isoformat(),
+            "updated_at": now.isoformat(),
+            "adaptations": [],
+        }
+
+    def _evaluate_daily_strategy_targets(self, strategy: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        row = strategy if isinstance(strategy, dict) else {}
+        targets = row.get("targets", {}) if isinstance(row.get("targets"), dict) else {}
+        progress = row.get("progress", {}) if isinstance(row.get("progress"), dict) else {}
+
+        def _to_float(value: Any, default: float = 0.0) -> float:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
+        def _to_int(value: Any, default: int = 0) -> int:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
+
+        checks = {
+            "min_health_score": (
+                _to_float(progress.get("latest_health_score", 0.0), 0.0),
+                _to_float(targets.get("min_health_score", 0.0), 0.0),
+                "min",
+            ),
+            "max_open_issues": (
+                _to_float(progress.get("latest_open_issues", 0.0), 0.0),
+                _to_float(targets.get("max_open_issues", 0.0), 0.0),
+                "max",
+            ),
+            "min_learning_iterations": (
+                _to_float(progress.get("learning_iterations", 0.0), 0.0),
+                _to_float(targets.get("min_learning_iterations", 0.0), 0.0),
+                "min",
+            ),
+            "min_improvement_iterations": (
+                _to_float(progress.get("improvement_iterations", 0.0), 0.0),
+                _to_float(targets.get("min_improvement_iterations", 0.0), 0.0),
+                "min",
+            ),
+            "min_verified_wins": (
+                _to_float(progress.get("v2_wins", 0.0), 0.0),
+                _to_float(targets.get("min_verified_wins", 0.0), 0.0),
+                "min",
+            ),
+            "max_error_events": (
+                _to_float(progress.get("error_events", 0.0), 0.0),
+                _to_float(targets.get("max_error_events", 0.0), 0.0),
+                "max",
+            ),
+        }
+
+        target_status: Dict[str, Any] = {}
+        met = 0
+        total = 0
+        for name, (actual, target, mode) in checks.items():
+            if name not in targets:
+                continue
+            total += 1
+            is_met = actual >= target if mode == "min" else actual <= target
+            if is_met:
+                met += 1
+            target_status[name] = {
+                "target": round(target, 4),
+                "actual": round(actual, 4),
+                "met": bool(is_met),
+                "mode": mode,
+            }
+
+        completion_ratio = round(float(met) / float(total), 4) if total > 0 else 0.0
+        iterations = _to_int(progress.get("iterations", 0), 0)
+        status = "on_track" if completion_ratio >= 0.66 else "watch"
+        if completion_ratio < 0.4 and iterations >= max(3, self.daily_strategy_min_samples_for_adjustment):
+            status = "off_track"
+        if completion_ratio >= 0.85 and iterations >= max(3, self.daily_strategy_min_samples_for_adjustment):
+            status = "ahead"
+
+        return {
+            "met_targets": met,
+            "total_targets": total,
+            "completion_ratio": completion_ratio,
+            "target_status": target_status,
+            "status": status,
+        }
+
+    def _archive_daily_strategy(self, reason: str) -> None:
+        if not isinstance(self.daily_strategy, dict) or not self.daily_strategy:
+            return
+        evaluation = self._evaluate_daily_strategy_targets(self.daily_strategy)
+        snapshot = {
+            "archived_at": datetime.now().isoformat(),
+            "reason": str(reason or "rollover"),
+            "strategy": self.daily_strategy,
+            "evaluation": evaluation,
+        }
+        self.daily_strategy_history.append(snapshot)
+        self.daily_strategy_history = self.daily_strategy_history[-max(1, self.daily_strategy_history_limit):]
+
+    def _ensure_daily_strategy(self, results: Dict) -> Dict[str, Any]:
+        now = datetime.now()
+        today_key = self._today_key(now)
+        strategy = self.daily_strategy if isinstance(self.daily_strategy, dict) else {}
+        strategy_date = str(strategy.get("date", "")).strip()
+
+        if strategy and strategy_date and strategy_date != today_key:
+            self._archive_daily_strategy(reason="new_day_rollover")
+            strategy = {}
+
+        if not strategy:
+            strategy = self._build_daily_strategy_objective(results, reason="initialize" if self.iteration <= 1 else "new_day")
+            self.current_focus_area = str(strategy.get("focus_area", self.current_focus_area))
+
+        strategy["date"] = today_key
+        strategy["updated_at"] = now.isoformat()
+        self.daily_strategy = strategy
+        return strategy
+
+    def _maybe_adapt_daily_strategy(self, results: Dict, strategy: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not isinstance(strategy, dict):
+            return None
+        now = datetime.now()
+        last_adjusted_dt = self._parse_time(self.daily_strategy_last_adjusted_at)
+        if (
+            last_adjusted_dt
+            and (now - last_adjusted_dt).total_seconds() < max(60, self.daily_strategy_adjust_cooldown_sec)
+        ):
+            return None
+
+        if int(strategy.get("progress", {}).get("iterations", 0) or 0) < max(
+            3, self.daily_strategy_min_samples_for_adjustment
+        ):
+            return None
+
+        health = results.get("health", {}) if isinstance(results.get("health"), dict) else {}
+        try:
+            health_score = float(health.get("health_score", 100.0) or 100.0)
+        except (TypeError, ValueError):
+            health_score = 100.0
+        open_issues = int(health.get("open_issues", 0) or 0)
+
+        adaptation: Optional[Dict[str, Any]] = None
+        if open_issues > 0 or health_score < 70.0:
+            new_threshold = round(min(9.5, float(self.auto_approve_threshold) + 0.15), 2)
+            if new_threshold > float(self.auto_approve_threshold):
+                old = self.auto_approve_threshold
+                self.auto_approve_threshold = new_threshold
+                adaptation = {
+                    "timestamp": now.isoformat(),
+                    "type": "tighten_auto_approve",
+                    "reason": f"health_guard:{health_score:.2f}/{open_issues}",
+                    "changes": [{"field": "auto_approve_threshold", "from": old, "to": new_threshold}],
+                }
+        elif self.no_improvement_streak >= self.self_check_warn_streak:
+            new_threshold = round(max(7.0, float(self.auto_approve_threshold) - 0.15), 2)
+            if new_threshold < float(self.auto_approve_threshold):
+                old = self.auto_approve_threshold
+                self.auto_approve_threshold = new_threshold
+                adaptation = {
+                    "timestamp": now.isoformat(),
+                    "type": "accelerate_conversion",
+                    "reason": f"no_improvement_streak:{self.no_improvement_streak}",
+                    "changes": [{"field": "auto_approve_threshold", "from": old, "to": new_threshold}],
+                }
+        elif self.no_learning_streak >= self.self_check_warn_streak:
+            new_interval = int(max(self.daily_self_learning_min_interval, self.daily_self_learning_interval * 0.9))
+            if new_interval < int(self.daily_self_learning_interval):
+                old = int(self.daily_self_learning_interval)
+                self.daily_self_learning_interval = new_interval
+                adaptation = {
+                    "timestamp": now.isoformat(),
+                    "type": "accelerate_daily_learning",
+                    "reason": f"no_learning_streak:{self.no_learning_streak}",
+                    "changes": [{"field": "daily_self_learning_interval", "from": old, "to": new_interval}],
+                }
+
+        if not adaptation:
+            return None
+
+        self.proposal_engine_v2.auto_approve_threshold = float(self.auto_approve_threshold)
+        self.daily_strategy_last_adjusted_at = now.isoformat()
+        adaptations = strategy.get("adaptations", []) if isinstance(strategy.get("adaptations"), list) else []
+        adaptations.append(adaptation)
+        strategy["adaptations"] = adaptations[-20:]
+        strategy["updated_at"] = now.isoformat()
+        return adaptation
+
+    def _update_daily_strategy(self, results: Dict) -> Dict[str, Any]:
+        strategy = self._ensure_daily_strategy(results)
+        progress = strategy.get("progress", {}) if isinstance(strategy.get("progress"), dict) else {}
+        signal = self._iteration_learning_signal(results)
+
+        progress["iterations"] = int(progress.get("iterations", 0) or 0) + 1
+        if signal.get("learned_now", False):
+            progress["learning_iterations"] = int(progress.get("learning_iterations", 0) or 0) + 1
+        if signal.get("improved_now", False):
+            progress["improvement_iterations"] = int(progress.get("improvement_iterations", 0) or 0) + 1
+        progress["applied_improvements"] = int(progress.get("applied_improvements", 0) or 0) + int(
+            signal.get("applied_improvements", 0) or 0
+        )
+        progress["v2_created"] = int(progress.get("v2_created", 0) or 0) + int(signal.get("v2_created", 0) or 0)
+        progress["v2_verified"] = int(progress.get("v2_verified", 0) or 0) + int(signal.get("v2_verified", 0) or 0)
+        progress["v2_wins"] = int(progress.get("v2_wins", 0) or 0) + int(signal.get("v2_wins", 0) or 0)
+        progress["v2_losses"] = int(progress.get("v2_losses", 0) or 0) + int(signal.get("v2_losses", 0) or 0)
+        progress["v2_inconclusive"] = int(progress.get("v2_inconclusive", 0) or 0) + int(
+            signal.get("v2_inconclusive", 0) or 0
+        )
+        progress["error_events"] = int(progress.get("error_events", 0) or 0) + len(results.get("errors", []))
+
+        health = results.get("health", {}) if isinstance(results.get("health"), dict) else {}
+        try:
+            progress["latest_health_score"] = round(float(health.get("health_score", 0.0) or 0.0), 2)
+        except (TypeError, ValueError):
+            progress["latest_health_score"] = 0.0
+        progress["latest_open_issues"] = int(health.get("open_issues", 0) or 0)
+        progress["last_iteration"] = self.iteration
+        progress["last_updated"] = datetime.now().isoformat()
+        strategy["progress"] = progress
+        strategy["updated_at"] = datetime.now().isoformat()
+
+        adaptation = self._maybe_adapt_daily_strategy(results, strategy)
+        evaluation = self._evaluate_daily_strategy_targets(strategy)
+        strategy["status"] = str(evaluation.get("status", "watch"))
+        self.daily_strategy = strategy
+        self.current_focus_area = str(strategy.get("focus_area", self.current_focus_area))
+
+        snapshot = self._daily_strategy_snapshot(strategy=strategy, evaluation=evaluation)
+        snapshot["adapted"] = bool(adaptation)
+        snapshot["latest_adaptation"] = adaptation if adaptation else {}
+        return snapshot
+
+    def _daily_strategy_snapshot(
+        self,
+        strategy: Optional[Dict[str, Any]] = None,
+        evaluation: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        row = strategy if isinstance(strategy, dict) else (
+            self.daily_strategy if isinstance(self.daily_strategy, dict) else {}
+        )
+        if not row:
+            return {}
+        scored = evaluation if isinstance(evaluation, dict) else self._evaluate_daily_strategy_targets(row)
+        adaptations = row.get("adaptations", []) if isinstance(row.get("adaptations"), list) else []
+        return {
+            "date": row.get("date"),
+            "objective_id": row.get("objective_id"),
+            "objective_title": row.get("objective_title"),
+            "objective_reason": row.get("objective_reason"),
+            "focus_area": row.get("focus_area"),
+            "status": row.get("status"),
+            "priority_actions": row.get("priority_actions", [])[:5],
+            "targets": row.get("targets", {}),
+            "progress": row.get("progress", {}),
+            "completion_ratio": scored.get("completion_ratio", 0.0),
+            "met_targets": scored.get("met_targets", 0),
+            "total_targets": scored.get("total_targets", 0),
+            "target_status": scored.get("target_status", {}),
+            "history_count": len(self.daily_strategy_history),
+            "adaptations_today": len(adaptations),
+            "last_adjusted_at": self.daily_strategy_last_adjusted_at,
+            "latest_adaptation": adaptations[-1] if adaptations else {},
+            "updated_at": row.get("updated_at"),
+        }
 
     def _prune_normal_mode_history(self, now: Optional[datetime] = None) -> List[datetime]:
         now = now or datetime.now()
@@ -1151,6 +1611,26 @@ class LearningLoop:
             "open_issues": open_issues,
         }
 
+    def _should_force_stagnation_scan(self) -> bool:
+        """Trigger a recovery scan when learning stagnation persists beyond a hard threshold."""
+        if not self.enable_stagnation_force_scan:
+            return False
+
+        threshold = max(1, int(self.stagnation_force_scan_streak))
+        if self.no_learning_streak < threshold and self.no_opportunity_iterations < max(2, threshold // 2):
+            return False
+
+        now = datetime.now()
+        cooldown_seconds = max(60, int(self.stagnation_force_scan_min_interval_sec))
+        last_scan_time = self._parse_time(self.last_scan)
+        if last_scan_time and (now - last_scan_time).total_seconds() < cooldown_seconds:
+            return False
+        last_forced = self._parse_time(self.last_stagnation_force_scan_at)
+        if last_forced and (now - last_forced).total_seconds() < cooldown_seconds:
+            return False
+
+        return True
+
     def _should_run_daily_self_learning(self) -> bool:
         """Determine whether the daily autonomous self-learning cycle should run."""
         if not self.enable_daily_self_learning:
@@ -1323,6 +1803,7 @@ class LearningLoop:
             warnings.append(f"Learning stagnation streak is high ({self.no_learning_streak}).")
         if self.no_improvement_streak >= self.self_check_warn_streak:
             warnings.append(f"Improvement stagnation streak is high ({self.no_improvement_streak}).")
+        daily_strategy = self._daily_strategy_snapshot()
 
         summary = {
             "timestamp": now.isoformat(),
@@ -1350,6 +1831,7 @@ class LearningLoop:
             "next_actions": next_actions,
             "warnings": warnings[:5],
             "portfolio_rotation": focus_rotation,
+            "daily_strategy": daily_strategy,
         }
 
         self.last_daily_self_learning = now.isoformat()
@@ -1677,24 +2159,11 @@ class LearningLoop:
 
     def _run_iteration_self_check(self, results: Dict) -> Dict:
         """Run mandatory self-check for blind spots and stagnation."""
-        scan = results.get("scan", {}) if isinstance(results.get("scan"), dict) else {}
-        improvements = results.get("improvements", {}) if isinstance(results.get("improvements"), dict) else {}
-        advanced = results.get("advanced_review", {}) if isinstance(results.get("advanced_review"), dict) else {}
-
-        learned_now = int(scan.get("filtered_count", 0)) > 0 or int(advanced.get("reviewed_items", 0)) > 0
-        v2 = results.get("v2_pipeline", {}) if isinstance(results.get("v2_pipeline"), dict) else {}
-        improved_now = (
-            int(improvements.get("applied", 0)) > 0
-            or int(v2.get("wins", 0)) > 0
-            or (int(v2.get("verified", 0)) > 0 and int(v2.get("losses", 0)) == 0)
-        )
-
-        learning_window_open = "scan" in results or "advanced_review" in results
-        improvement_window_open = (
-            int(improvements.get("total_seen", 0)) > 0
-            or int((results.get("v2_pipeline") or {}).get("created", 0)) > 0
-            or int((results.get("v2_pipeline") or {}).get("approved", 0)) > 0
-        )
+        signal = self._iteration_learning_signal(results)
+        learned_now = bool(signal.get("learned_now", False))
+        improved_now = bool(signal.get("improved_now", False))
+        learning_window_open = bool(signal.get("learning_window_open", False))
+        improvement_window_open = bool(signal.get("improvement_window_open", False))
         synthetic_window = False
         if not learning_window_open and not improvement_window_open:
             self.no_opportunity_iterations += 1
@@ -2139,6 +2608,7 @@ class LearningLoop:
 
         # 2. Knowledge scan (hourly)
         should_scan = False
+        force_scan_reason = ""
         if self.last_scan is None:
             should_scan = True
         else:
@@ -2152,6 +2622,14 @@ class LearningLoop:
             except (ValueError, TypeError):
                 should_scan = True  # Scan if timestamp is invalid
 
+        if self._should_force_stagnation_scan():
+            should_scan = True
+            force_scan_reason = (
+                f"stagnation_force_scan:no_learning={self.no_learning_streak},"
+                f"no_opportunity={self.no_opportunity_iterations}"
+            )
+            self.last_stagnation_force_scan_at = datetime.now().isoformat()
+
         if should_scan:
             scan_guard, scan_owner = self._acquire_operation_lock(
                 operation_name="knowledge_scan_operation",
@@ -2162,19 +2640,26 @@ class LearningLoop:
                     "skipped_due_to_lock": True,
                     "lock_path": self.scan_operation_lock_path,
                     "lock_owner": scan_owner if isinstance(scan_owner, dict) else {},
+                    "forced_reason": force_scan_reason,
                 }
                 results["actions"].append("knowledge_scan_skipped_locked")
                 self._append_rnd_note(
                     note_type="operation_lock_busy",
                     severity="warning",
                     message="Skipped knowledge scan because another process holds the scan lock.",
-                    context={"operation": "knowledge_scan", "lock_owner": scan_owner},
+                    context={
+                        "operation": "knowledge_scan",
+                        "lock_owner": scan_owner,
+                        "forced_reason": force_scan_reason,
+                    },
                 )
             else:
                 try:
                     scan_results = self.scan_for_knowledge()
+                    if force_scan_reason:
+                        scan_results["forced_reason"] = force_scan_reason
                     results["scan"] = scan_results
-                    results["actions"].append("knowledge_scan")
+                    results["actions"].append("knowledge_scan_forced" if force_scan_reason else "knowledge_scan")
                 except Exception as e:
                     track_error(
                         "SYSTEM",
@@ -2405,7 +2890,33 @@ class LearningLoop:
                     context=self_check,
                 )
 
-        # 8. Daily autonomous self-learning cycle.
+        # 8. Daily strategy update (objective + scorecard + adaptive tuning).
+        try:
+            daily_strategy = self._update_daily_strategy(results)
+            results["daily_strategy"] = daily_strategy
+            results["actions"].append("daily_strategy")
+            if daily_strategy.get("adapted", False):
+                results["actions"].append("daily_strategy_adapt")
+                self._append_rnd_note(
+                    note_type="daily_strategy_adapted",
+                    severity="info",
+                    message=(
+                        f"Daily strategy adapted: {daily_strategy.get('objective_title', 'unknown')} "
+                        f"(completion={daily_strategy.get('completion_ratio', 0)})"
+                    ),
+                    context=daily_strategy.get("latest_adaptation", {}),
+                )
+        except Exception as e:
+            track_error(
+                "SYSTEM",
+                "daily_strategy_error",
+                str(e),
+                context={"iteration": self.iteration},
+                recoverable=True,
+            )
+            results["errors"].append({"step": "daily_strategy", "error": str(e)})
+
+        # 9. Daily autonomous self-learning cycle.
         if self._should_run_daily_self_learning():
             daily_guard, daily_owner = self._acquire_operation_lock(
                 operation_name="daily_self_learning_operation",
@@ -2454,7 +2965,7 @@ class LearningLoop:
                 finally:
                     daily_guard.release()
 
-        # 9. Save state (after self-check + daily cycle so streaks and daily run are persisted).
+        # 10. Save state (after self-check + daily cycle so streaks and daily run are persisted).
         try:
             self._save_state()
             results["actions"].append("save_state")
@@ -2475,6 +2986,7 @@ class LearningLoop:
                 "actions": results["actions"],
                 "applied_improvements": improvement_summary.get("applied", 0),
                 "v2_executed": int((results.get("v2_pipeline") or {}).get("executed", 0)),
+                "daily_strategy_completion": float((results.get("daily_strategy") or {}).get("completion_ratio", 0.0)),
                 "errors": len(results["errors"]),
             },
             success=len(results["errors"]) == 0,
@@ -2495,32 +3007,32 @@ class LearningLoop:
         """
         self.running = True
 
-        print(f"🔄 Learning Loop Started")
-        print(f"   Interval: {interval_seconds}s")
-        print(f"   Max iterations: {max_iterations or 'infinite'}")
-        print("-" * 50)
+        logger.info("Learning Loop Started")
+        logger.info("Interval: %ss", interval_seconds)
+        logger.info("Max iterations: %s", max_iterations or "infinite")
+        logger.info("-" * 50)
         start_iteration = self.iteration
 
         try:
             while self.running:
                 if max_iterations and (self.iteration - start_iteration) >= max_iterations:
-                    print(f"✅ Reached max iterations ({max_iterations})")
+                    logger.info("Reached max iterations (%s)", max_iterations)
                     break
 
                 # Run iteration
                 results = self.run_iteration()
 
-                # Print status
-                print(f"\n📊 Iteration {results['iteration']}")
-                print(f"   Health: {results['health']['health_score']}/100")
-                print(f"   Actions: {', '.join(results['actions'])}")
-                print(f"   Duration: {results['duration_seconds']:.2f}s")
+                # Log status
+                logger.info("Iteration %s", results['iteration'])
+                logger.info("Health: %s/100", results['health']['health_score'])
+                logger.info("Actions: %s", ', '.join(results['actions']))
+                logger.info("Duration: %.2fs", results['duration_seconds'])
 
                 # Wait for next iteration
                 time.sleep(interval_seconds)
 
         except KeyboardInterrupt:
-            print("\n⏹️ Learning Loop Stopped by user")
+            logger.info("Learning Loop Stopped by user")
         finally:
             self.stop()
 
@@ -2546,17 +3058,17 @@ class LearningLoop:
         """
         self.running = True
 
-        print("🔄 Learning Loop Started (resilient mode)")
-        print(f"   Interval: {interval_seconds}s")
-        print(f"   Max iterations: {max_iterations or 'infinite'}")
-        print(
-            "   Crash recovery: "
-            f"base={max(1, int(restart_delay_seconds))}s "
-            f"cap={max(1, int(restart_delay_max_seconds))}s "
-            f"jitter={max(0.0, float(restart_jitter_seconds)):.2f}s "
-            f"max_restarts={max_restarts if max_restarts is not None else 'infinite'}"
+        logger.info("Learning Loop Started (resilient mode)")
+        logger.info("Interval: %ss", interval_seconds)
+        logger.info("Max iterations: %s", max_iterations or "infinite")
+        logger.info(
+            "Crash recovery: base=%ss cap=%ss jitter=%.2fs max_restarts=%s",
+            max(1, int(restart_delay_seconds)),
+            max(1, int(restart_delay_max_seconds)),
+            max(0.0, float(restart_jitter_seconds)),
+            max_restarts if max_restarts is not None else "infinite",
         )
-        print("-" * 50)
+        logger.info("-" * 50)
         start_iteration = self.iteration
         restart_count = 0
         base_delay = max(1, int(restart_delay_seconds))
@@ -2566,15 +3078,15 @@ class LearningLoop:
         try:
             while self.running:
                 if max_iterations and (self.iteration - start_iteration) >= max_iterations:
-                    print(f"✅ Reached max iterations ({max_iterations})")
+                    logger.info("Reached max iterations (%s)", max_iterations)
                     break
                 try:
                     results = self.run_iteration()
                     restart_count = 0
-                    print(f"\n📊 Iteration {results['iteration']}")
-                    print(f"   Health: {results['health']['health_score']}/100")
-                    print(f"   Actions: {', '.join(results['actions'])}")
-                    print(f"   Duration: {results['duration_seconds']:.2f}s")
+                    logger.info("Iteration %s", results['iteration'])
+                    logger.info("Health: %s/100", results['health']['health_score'])
+                    logger.info("Actions: %s", ', '.join(results['actions']))
+                    logger.info("Duration: %.2fs", results['duration_seconds'])
                     time.sleep(interval_seconds)
                 except KeyboardInterrupt:
                     raise
@@ -2588,16 +3100,20 @@ class LearningLoop:
                         recoverable=True,
                     )
                     if max_restarts is not None and restart_count > max(0, int(max_restarts)):
-                        print(
-                            f"\n🛑 Resilient runner stopped: exceeded max restarts "
-                            f"({restart_count-1}/{max_restarts})"
+                        logger.error(
+                            "Resilient runner stopped: exceeded max restarts (%s/%s)",
+                            restart_count - 1,
+                            max_restarts,
                         )
                         break
                     backoff = min(delay_cap, base_delay * (2 ** max(0, restart_count - 1)))
                     backoff += random.uniform(0.0, jitter) if jitter > 0.0 else 0.0
-                    print(
-                        f"\n⚠️ Iteration crashed ({type(e).__name__}: {e}). "
-                        f"Restarting in {backoff:.1f}s (attempt {restart_count})."
+                    logger.warning(
+                        "Iteration crashed (%s: %s). Restarting in %.1fs (attempt %s).",
+                        type(e).__name__,
+                        e,
+                        backoff,
+                        restart_count,
                     )
                     try:
                         self._save_state()
@@ -2605,7 +3121,7 @@ class LearningLoop:
                         pass
                     time.sleep(backoff)
         except KeyboardInterrupt:
-            print("\n⏹️ Learning Loop Stopped by user")
+            logger.info("Learning Loop Stopped by user")
         finally:
             self.stop()
 
@@ -2619,19 +3135,20 @@ class LearningLoop:
         # Save final state
         self._save_state()
 
-        print(f"\n📈 Final Stats:")
-        print(f"   Total iterations: {self.stats['total_iterations']}")
-        print(f"   Knowledge items learned: {self.stats['knowledge_items_learned']}")
-        print(f"   Issues detected: {self.stats['issues_detected']}")
-        print(f"   Issues resolved: {self.stats['issues_resolved']}")
-        print(f"   Patterns discovered: {self.stats['patterns_discovered']}")
-        print(f"   Lessons learned: {self.stats['lessons_learned']}")
+        logger.info("Final Stats:")
+        logger.info("Total iterations: %s", self.stats['total_iterations'])
+        logger.info("Knowledge items learned: %s", self.stats['knowledge_items_learned'])
+        logger.info("Issues detected: %s", self.stats['issues_detected'])
+        logger.info("Issues resolved: %s", self.stats['issues_resolved'])
+        logger.info("Patterns discovered: %s", self.stats['patterns_discovered'])
+        logger.info("Lessons learned: %s", self.stats['lessons_learned'])
 
     # ==================== REPORTING ====================
 
     def get_state(self) -> Dict[str, Any]:
         """Return a lightweight runtime snapshot for orchestration callers."""
         execution_guardrail = self._execution_guardrail_snapshot()
+        daily_strategy = self._daily_strategy_snapshot()
         return {
             "iteration": self.iteration,
             "running": self.running,
@@ -2640,6 +3157,13 @@ class LearningLoop:
             "no_learning_streak": self.no_learning_streak,
             "no_improvement_streak": self.no_improvement_streak,
             "stats": dict(self.stats),
+            "daily_strategy": daily_strategy,
+            "stagnation_scan": {
+                "enabled": self.enable_stagnation_force_scan,
+                "streak_threshold": self.stagnation_force_scan_streak,
+                "min_interval_seconds": self.stagnation_force_scan_min_interval_sec,
+                "last_forced_scan_at": self.last_stagnation_force_scan_at,
+            },
             "execution_guardrail": execution_guardrail,
             "v2_guardrail": {
                 "enabled": self.anomaly_guard_enabled,
@@ -2688,7 +3212,16 @@ class LearningLoop:
             "no_learning_streak": self.no_learning_streak,
             "no_improvement_streak": self.no_improvement_streak,
             "warn_streak_threshold": self.self_check_warn_streak,
+            "learning_window_open": self.window_learning_opportunities > 0,
+            "improvement_window_open": self.window_improvement_opportunities > 0,
         }
+        daily_strategy_snapshot = self._daily_strategy_snapshot()
+        if not daily_strategy_snapshot:
+            self.daily_strategy = self._build_daily_strategy_objective(
+                {"health": health_report},
+                reason="status_bootstrap",
+            )
+            daily_strategy_snapshot = self._daily_strategy_snapshot()
         latest_rotation = {}
         if daily_self_learning_recent:
             latest_summary = daily_self_learning_recent[0].get("summary", {})
@@ -2979,6 +3512,19 @@ class LearningLoop:
                 "count_today": len(daily_self_learning_all),
                 "recent": daily_self_learning_recent,
                 "path": str(self._daily_self_learning_path()),
+                "strategy_objective": daily_strategy_snapshot.get("objective_title", ""),
+                "strategy_completion_ratio": daily_strategy_snapshot.get("completion_ratio", 0.0),
+                "stagnation_force_scan_enabled": self.enable_stagnation_force_scan,
+                "stagnation_force_scan_streak": self.stagnation_force_scan_streak,
+                "stagnation_force_scan_min_interval_seconds": self.stagnation_force_scan_min_interval_sec,
+                "last_stagnation_force_scan_at": self.last_stagnation_force_scan_at,
+            },
+            "daily_strategy": daily_strategy_snapshot,
+            "stagnation_scan": {
+                "enabled": self.enable_stagnation_force_scan,
+                "streak_threshold": self.stagnation_force_scan_streak,
+                "min_interval_seconds": self.stagnation_force_scan_min_interval_sec,
+                "last_forced_scan_at": self.last_stagnation_force_scan_at,
             },
             "self_check": self_check_summary,
             "proposal_funnel": proposal_funnel,
@@ -3028,6 +3574,8 @@ class LearningLoop:
                 "current_focus_area": self.current_focus_area,
                 "rotation_warn_streak": self.focus_rotation_warn_streak,
                 "latest_portfolio_rotation": latest_rotation if isinstance(latest_rotation, dict) else {},
+                "daily_objective_title": daily_strategy_snapshot.get("objective_title", ""),
+                "daily_completion_ratio": daily_strategy_snapshot.get("completion_ratio", 0.0),
             },
             "windows": {
                 "learning_opportunities": self.window_learning_opportunities,
@@ -3071,6 +3619,8 @@ class LearningLoop:
             f"- Runs Today: {report.get('daily_self_learning', {}).get('count_today', 0)}",
             f"- Last Run: {report.get('daily_self_learning', {}).get('last_run', 'N/A')}",
             f"- Current Focus Area: {report.get('strategy', {}).get('current_focus_area', 'N/A')}",
+            f"- Daily Objective: {report.get('daily_strategy', {}).get('objective_title', 'N/A')}",
+            f"- Objective Progress: {report.get('daily_strategy', {}).get('completion_ratio', 0)}",
             "",
             "## 🧪 Proposal Funnel",
             f"- Created: {report.get('proposal_funnel', {}).get('created', 0)}",

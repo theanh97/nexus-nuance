@@ -259,6 +259,40 @@ MODELS: Dict[str, ModelConfig] = {
         quality_tier=3,
         speed_tier=2,
     ),
+    "codex-api": ModelConfig(
+        name=os.getenv("CODAXER_MODEL", "gpt-5.1-codex-max"),
+        api_source="codaxer",
+        api_key_env="CODAXER_API_KEY",
+        api_base=os.getenv("CODAXER_BASE_URL", "https://api.codaxer.com/v1"),
+        cost_per_1k_tokens=0.015,
+        best_for=[
+            TaskType.CODE_GENERATION,
+            TaskType.CODE_REVIEW,
+            TaskType.REFACTORING,
+            TaskType.PLANNING,
+            TaskType.DECISION_MAKING,
+            TaskType.TEST_GENERATION,
+        ],
+        max_complexity=TaskComplexity.COMPLEX,
+        quality_tier=3,
+        speed_tier=2,
+    ),
+    "minimax-text": ModelConfig(
+        name=os.getenv("MINIMAX_TEXT_MODEL", "MiniMax-Text-01"),
+        api_source="anthropic",
+        api_key_env="MINIMAX_API_KEY",
+        api_base=os.getenv("MINIMAX_ANTHROPIC_BASE_URL", "https://api.minimax.io/anthropic"),
+        cost_per_1k_tokens=0.004,
+        best_for=[
+            TaskType.TEST_GENERATION,
+            TaskType.TEST_EXECUTION,
+            TaskType.MONITORING,
+            TaskType.CODE_REVIEW,
+        ],
+        max_complexity=TaskComplexity.MEDIUM,
+        quality_tier=2,
+        speed_tier=3,
+    ),
     # Subscription profiles (routing-aware, not direct API callable in this runtime)
     "codex-5.3-x2-subscription": ModelConfig(
         name=os.getenv("CODEX_SUBSCRIPTION_MODEL", "codex-5.3-x2"),
@@ -343,6 +377,7 @@ class ModelRouter:
                 or os.getenv("CLAUDE_CODE_API_KEY")
             ),
         }
+        self.api_keys["codaxer"] = os.getenv("CODAXER_API_KEY") or os.getenv("CLAUDE_CODE_API_KEY")
         codex_cli = os.getenv("CODEX_CLI_CMD", "codex")
         claude_cli = os.getenv("CLAUDE_CLI_CMD", "claude")
         gemini_cli = os.getenv("GEMINI_CLI_CMD", "gemini")
@@ -403,14 +438,74 @@ class ModelRouter:
             "models": self.usage_state.get("models", {}),
         }
 
+    def get_budget_projection(self) -> Dict[str, Any]:
+        """Project budget usage for the rest of the day based on current spend rate."""
+        from datetime import datetime, timedelta
+
+        now = datetime.now()
+        # Hours elapsed since midnight
+        hours_elapsed = now.hour + now.minute / 60.0
+        hours_remaining = max(0.01, 24.0 - hours_elapsed)
+
+        total_cost = float(self.usage_state.get('total_cost_usd', 0.0))
+        budget = DAILY_BUDGET_USD
+
+        # Calculate hourly spend rate
+        hourly_rate = total_cost / max(0.01, hours_elapsed) if hours_elapsed > 0.1 else 0.0
+        projected_eod = total_cost + (hourly_rate * hours_remaining)
+
+        # Budget status
+        if projected_eod <= budget * 0.7:
+            status = 'healthy'
+        elif projected_eod <= budget:
+            status = 'caution'
+        else:
+            status = 'over_budget'
+
+        # Per-model breakdown
+        model_usage = self.usage_state.get('models', {})
+        model_rates = {}
+        for model_name, info in model_usage.items():
+            model_cost = float(info.get('cost_usd', 0.0)) if isinstance(info, dict) else 0.0
+            model_rates[model_name] = {
+                'spent': round(model_cost, 6),
+                'hourly_rate': round(model_cost / max(0.01, hours_elapsed), 6) if hours_elapsed > 0.1 else 0.0,
+                'projected_eod': round(model_cost + (model_cost / max(0.01, hours_elapsed) * hours_remaining), 6) if hours_elapsed > 0.1 else 0.0,
+            }
+
+        return {
+            'total_spent': round(total_cost, 6),
+            'hourly_rate': round(hourly_rate, 6),
+            'projected_eod': round(projected_eod, 6),
+            'daily_budget': budget,
+            'remaining_budget': round(max(0, budget - total_cost), 6),
+            'status': status,
+            'hours_elapsed': round(hours_elapsed, 2),
+            'hours_remaining': round(hours_remaining, 2),
+            'model_breakdown': model_rates,
+        }
+
     def _budget_soft_limited(self, estimated_tokens: int) -> bool:
         budget = DAILY_BUDGET_USD
         if budget <= 0:
             return False
 
-        current = float(self.usage_state.get("total_cost_usd", 0.0))
+        current = float(self.usage_state.get('total_cost_usd', 0.0))
         estimate = (max(0, estimated_tokens) / 1000.0) * 0.02
-        return (current + estimate) >= (budget * SOFT_BUDGET_RATIO)
+
+        # Check immediate limit
+        if (current + estimate) >= (budget * SOFT_BUDGET_RATIO):
+            return True
+
+        # Check projected overspend - throttle if on pace to exceed budget
+        try:
+            projection = self.get_budget_projection()
+            if projection['status'] == 'over_budget' and (current + estimate) >= (budget * 0.5):
+                return True
+        except Exception:
+            pass
+
+        return False
 
     def _supports_complexity(self, model: ModelConfig, complexity: Optional[TaskComplexity]) -> bool:
         if complexity is None:
@@ -456,6 +551,7 @@ class ModelRouter:
             if complexity == TaskComplexity.SIMPLE:
                 return [
                     "codex-5.3-mini-subscription",
+                    "minimax-text",
                     "glm-4-flash",
                     "glm-4.7",
                     "minimax-m2.5",
@@ -464,6 +560,7 @@ class ModelRouter:
                 ]
             return [
                 "codex-5.3-mini-subscription",
+                "minimax-text",
                 "glm-4.7",
                 "minimax-m2.5",
                 "glm-4-flash",
@@ -484,6 +581,7 @@ class ModelRouter:
         if importance == "critical" or task_type in _CRITICAL_TASKS or complexity == TaskComplexity.COMPLEX:
             return [
                 "codex-5.3-x2-subscription",
+                "codex-api",
                 "claude-code-subscription",
                 "glm-5",
                 "minimax-m2.5",
@@ -514,7 +612,9 @@ class ModelRouter:
         return [
             "glm-4.7",
             "codex-5.3-mini-subscription",
+            "minimax-text",
             "minimax-m2.5",
+            "codex-api",
             "glm-5",
             "gemini-2.0-flash",
             "glm-4-flash",

@@ -63,7 +63,7 @@ class BenchmarkRunner:
         results_file = self.results_dir / "results.json"
         if results_file.exists():
             try:
-                with open(results_file, 'r') as f:
+                with open(results_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 self.results = [BenchmarkResult(**r) for r in data.get("results", [])]
             except Exception as e:
@@ -78,7 +78,7 @@ class BenchmarkRunner:
                 "total_results": len(self.results),
                 "results": [asdict(r) for r in self.results[-100:]]  # Keep last 100
             }
-            with open(results_file, 'w') as f:
+            with open(results_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
 
     def run_all_benchmarks(self) -> List[BenchmarkResult]:
@@ -169,7 +169,7 @@ class BenchmarkRunner:
             # Check learning stats
             state_file = self.project_root / "data" / "state" / "learning_state.json"
             if state_file.exists():
-                with open(state_file, 'r') as f:
+                with open(state_file, 'r', encoding='utf-8') as f:
                     state = json.load(f)
 
                 stats = state.get("stats", {})
@@ -265,7 +265,7 @@ class BenchmarkRunner:
 
                 for kf in knowledge_files[:10]:
                     try:
-                        with open(kf, 'r') as f:
+                        with open(kf, 'r', encoding='utf-8') as f:
                             data = json.load(f)
                         items = data if isinstance(data, list) else [data]
                         total_items += len(items)

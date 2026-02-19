@@ -1,0 +1,830 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NEXUS - Dashboard Tổng Quan Hệ Thống</title>
+<style>
+  :root {
+    --bg: #0a0e17;
+    --card: #111827;
+    --border: #1e293b;
+    --accent: #3b82f6;
+    --accent2: #8b5cf6;
+    --accent3: #10b981;
+    --accent4: #f59e0b;
+    --accent5: #ef4444;
+    --text: #e2e8f0;
+    --text2: #94a3b8;
+    --glow: rgba(59,130,246,0.15);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    overflow-x: hidden;
+  }
+  /* Header */
+  .header {
+    background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 2rem 3rem;
+    position: relative;
+    overflow: hidden;
+  }
+  .header::before {
+    content: '';
+    position: absolute;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: radial-gradient(circle at 30% 50%, rgba(59,130,246,0.08) 0%, transparent 50%),
+                radial-gradient(circle at 70% 50%, rgba(139,92,246,0.06) 0%, transparent 50%);
+    animation: pulse 8s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 1; }
+  }
+  .header-content { position: relative; z-index: 1; display: flex; align-items: center; justify-content: space-between; }
+  .logo { display: flex; align-items: center; gap: 1rem; }
+  .logo-icon {
+    width: 56px; height: 56px; border-radius: 16px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 28px; font-weight: 900; color: white;
+    box-shadow: 0 0 30px rgba(59,130,246,0.3);
+  }
+  .logo h1 { font-size: 2rem; font-weight: 800; background: linear-gradient(to right, #60a5fa, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .logo p { color: var(--text2); font-size: 0.9rem; }
+  .status-badge {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.5rem 1.2rem; border-radius: 999px;
+    background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.3);
+    color: #34d399; font-weight: 600; font-size: 0.85rem;
+  }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #34d399; animation: blink 2s infinite; }
+  @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+  /* Stats bar */
+  .stats-bar {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+    padding: 1.5rem 3rem;
+    background: rgba(17,24,39,0.6);
+    border-bottom: 1px solid var(--border);
+  }
+  .stat-item {
+    text-align: center;
+    padding: 1rem;
+    border-radius: 12px;
+    background: var(--card);
+    border: 1px solid var(--border);
+  }
+  .stat-number { font-size: 2rem; font-weight: 800; }
+  .stat-number.blue { color: var(--accent); }
+  .stat-number.purple { color: var(--accent2); }
+  .stat-number.green { color: var(--accent3); }
+  .stat-number.yellow { color: var(--accent4); }
+  .stat-number.red { color: var(--accent5); }
+  .stat-label { color: var(--text2); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.25rem; }
+
+  /* Main content */
+  .main { padding: 2rem 3rem; max-width: 1600px; margin: 0 auto; }
+
+  /* Section */
+  .section { margin-bottom: 2.5rem; }
+  .section-title {
+    font-size: 1.3rem; font-weight: 700; margin-bottom: 1rem;
+    display: flex; align-items: center; gap: 0.5rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 2px solid var(--border);
+  }
+  .section-icon { font-size: 1.2rem; }
+
+  /* Cards grid */
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 1rem; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.25rem;
+    transition: all 0.2s ease;
+    position: relative;
+    overflow: hidden;
+  }
+  .card:hover { border-color: var(--accent); box-shadow: 0 0 20px var(--glow); transform: translateY(-2px); }
+  .card-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; }
+  .card-badge {
+    padding: 0.2rem 0.6rem; border-radius: 6px;
+    font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  .badge-blue { background: rgba(59,130,246,0.15); color: #60a5fa; }
+  .badge-purple { background: rgba(139,92,246,0.15); color: #a78bfa; }
+  .badge-green { background: rgba(16,185,129,0.15); color: #34d399; }
+  .badge-yellow { background: rgba(245,158,11,0.15); color: #fbbf24; }
+  .badge-red { background: rgba(239,68,68,0.15); color: #f87171; }
+  .badge-cyan { background: rgba(6,182,212,0.15); color: #22d3ee; }
+  .card h3 { font-size: 1rem; font-weight: 700; }
+  .card p { color: var(--text2); font-size: 0.85rem; margin-top: 0.35rem; }
+  .card-features { margin-top: 0.75rem; display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  .feature-tag {
+    padding: 0.15rem 0.5rem; border-radius: 4px;
+    font-size: 0.7rem; background: rgba(255,255,255,0.05);
+    color: var(--text2); border: 1px solid rgba(255,255,255,0.08);
+  }
+
+  /* API table */
+  .api-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .api-table th {
+    background: rgba(59,130,246,0.1);
+    padding: 0.75rem 1rem;
+    text-align: left;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text2);
+  }
+  .api-table td {
+    padding: 0.6rem 1rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.85rem;
+  }
+  .api-table tr:hover td { background: rgba(59,130,246,0.05); }
+  .method {
+    display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px;
+    font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+  }
+  .method-get { background: rgba(16,185,129,0.2); color: #34d399; }
+  .method-post { background: rgba(59,130,246,0.2); color: #60a5fa; }
+  .endpoint { font-family: 'Menlo', 'Fira Code', monospace; font-size: 0.8rem; color: #fbbf24; }
+
+  /* Test coverage */
+  .test-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 0.75rem; }
+  .test-item {
+    display: flex; align-items: center; gap: 1rem;
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 0.75rem 1rem;
+  }
+  .test-count {
+    width: 48px; height: 48px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 1.1rem;
+    background: rgba(16,185,129,0.15); color: #34d399;
+    flex-shrink: 0;
+  }
+  .test-name { font-size: 0.8rem; font-weight: 600; }
+  .test-desc { font-size: 0.7rem; color: var(--text2); }
+
+  /* Phase timeline */
+  .timeline { position: relative; padding-left: 2rem; }
+  .timeline::before {
+    content: '';
+    position: absolute; left: 8px; top: 0; bottom: 0;
+    width: 2px;
+    background: linear-gradient(to bottom, var(--accent), var(--accent2), var(--accent3));
+  }
+  .timeline-item { position: relative; margin-bottom: 1.25rem; padding-left: 1.5rem; }
+  .timeline-item::before {
+    content: '';
+    position: absolute; left: -1.5rem; top: 0.5rem;
+    width: 12px; height: 12px; border-radius: 50%;
+    background: var(--accent3);
+    border: 2px solid var(--bg);
+    box-shadow: 0 0 10px rgba(16,185,129,0.4);
+  }
+  .timeline-phase { font-weight: 700; color: var(--accent); font-size: 0.85rem; }
+  .timeline-title { font-weight: 600; font-size: 0.95rem; margin-top: 0.15rem; }
+  .timeline-desc { color: var(--text2); font-size: 0.8rem; margin-top: 0.25rem; }
+
+  /* Automation status */
+  .auto-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
+  .auto-card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 1.25rem; display: flex; align-items: flex-start; gap: 1rem;
+  }
+  .auto-icon {
+    width: 44px; height: 44px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.3rem; flex-shrink: 0;
+  }
+  .auto-icon.active { background: rgba(16,185,129,0.15); }
+  .auto-icon.partial { background: rgba(245,158,11,0.15); }
+  .auto-status { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+  .auto-status.active { color: #34d399; }
+  .auto-status.partial { color: #fbbf24; }
+  .auto-title { font-weight: 700; font-size: 0.95rem; margin-top: 0.15rem; }
+  .auto-desc { color: var(--text2); font-size: 0.8rem; margin-top: 0.25rem; }
+
+  /* Progress bar */
+  .progress-container { margin-top: 0.5rem; }
+  .progress-bar { height: 6px; border-radius: 3px; background: rgba(255,255,255,0.08); overflow: hidden; }
+  .progress-fill { height: 100%; border-radius: 3px; transition: width 1s ease; }
+  .progress-fill.green { background: linear-gradient(to right, #10b981, #34d399); }
+  .progress-fill.yellow { background: linear-gradient(to right, #f59e0b, #fbbf24); }
+  .progress-label { display: flex; justify-content: space-between; font-size: 0.7rem; color: var(--text2); margin-top: 0.25rem; }
+
+  /* Architecture diagram */
+  .arch-diagram {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 2rem; text-align: center; font-family: 'Menlo', monospace; font-size: 0.8rem;
+    line-height: 1.8; white-space: pre; overflow-x: auto; color: var(--text2);
+  }
+  .arch-diagram .highlight { color: var(--accent); font-weight: 700; }
+  .arch-diagram .green { color: #34d399; }
+  .arch-diagram .purple { color: #a78bfa; }
+  .arch-diagram .yellow { color: #fbbf24; }
+
+  /* Footer */
+  .footer {
+    text-align: center; padding: 2rem;
+    color: var(--text2); font-size: 0.8rem;
+    border-top: 1px solid var(--border);
+  }
+
+  @media (max-width: 768px) {
+    .header { padding: 1.5rem; }
+    .stats-bar, .main { padding: 1rem; }
+    .cards { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="header">
+  <div class="header-content">
+    <div class="logo">
+      <div class="logo-icon">N</div>
+      <div>
+        <h1>NEXUS BRAIN</h1>
+        <p>Autonomous AI Development System &mdash; Dashboard Tổng Quan</p>
+      </div>
+    </div>
+    <div class="status-badge">
+      <div class="status-dot"></div>
+      408 Tests Passed &bull; Phase 16 Complete
+    </div>
+  </div>
+</div>
+
+<!-- STATS BAR -->
+<div class="stats-bar">
+  <div class="stat-item">
+    <div class="stat-number blue">75+</div>
+    <div class="stat-label">Python Modules</div>
+  </div>
+  <div class="stat-item">
+    <div class="stat-number purple">34</div>
+    <div class="stat-label">API Endpoints</div>
+  </div>
+  <div class="stat-item">
+    <div class="stat-number green">408</div>
+    <div class="stat-label">Tests Passed</div>
+  </div>
+  <div class="stat-item">
+    <div class="stat-number yellow">8</div>
+    <div class="stat-label">AI Agents</div>
+  </div>
+  <div class="stat-item">
+    <div class="stat-number red">16</div>
+    <div class="stat-label">Phases Complete</div>
+  </div>
+</div>
+
+<!-- MAIN -->
+<div class="main">
+
+<!-- ARCHITECTURE -->
+<div class="section">
+  <div class="section-title"><span class="section-icon">&#9881;</span> Kiến Trúc Hệ Thống</div>
+  <div class="arch-diagram"><span class="highlight">                           ┌──────────────────────┐</span>
+<span class="highlight">                           │    NEXUS BRAIN API   │</span>
+<span class="highlight">                           │   FastAPI :8766/8767  │</span>
+<span class="highlight">                           └─────────┬────────────┘</span>
+                                     │
+              ┌──────────────────────┼──────────────────────┐
+              │                      │                      │
+    <span class="purple">┌─────────▼─────────┐  ┌──────▼──────┐  ┌──────▼──────────┐</span>
+    <span class="purple">│  Brain API (25ep)  │  │ Loop API    │  │ Monitor (Flask)  │</span>
+    <span class="purple">│  /api/nexus/*      │  │ /api/loop/* │  │ :5111            │</span>
+    <span class="purple">└─────────┬─────────┘  └──────┬──────┘  └──────┬──────────┘</span>
+              │                      │                      │
+    <span class="green">┌─────────▼───────────────────▼──────────────────▼──────────┐</span>
+    <span class="green">│                    CORE INFRASTRUCTURE                    │</span>
+    <span class="green">│  LLM Caller │ Circuit Breaker │ Rate Limiter │ Event Bus  │</span>
+    <span class="green">│  Model Router │ Runtime Guard │ Backup │ Logger │ Metrics  │</span>
+    <span class="green">└─────────┬────────────────────────────────────────────────┘</span>
+              │
+    <span class="yellow">┌─────────▼─────────────────────────────────────────────────┐</span>
+    <span class="yellow">│                     BRAIN MODULES                         │</span>
+    <span class="yellow">│  NexusBrain │ ActionExecutor │ ReactAgent │ AutoEvolution │</span>
+    <span class="yellow">│  OmniscientScout │ CuttingEdgeTech │ IntegrationHub      │</span>
+    <span class="yellow">│  KnowledgeDigestion │ MetaEvolution │ R&D Lab            │</span>
+    <span class="yellow">└─────────┬─────────────────────────────────────────────────┘</span>
+              │
+    ┌─────────▼─────────────────────────────────────────────────┐
+    │                   AI AGENT TEAM (8 Agents)                │
+    │  <span class="highlight">Orion</span>(PM) │ <span class="green">Nova</span>(Dev) │ <span class="purple">Cipher</span>(Security) │ <span class="yellow">Echo</span>(QA)  │
+    │  Flux(DevOps) │ Pixel(UI/UX) │ Guardian(Supervisor)      │
+    └─────────┬─────────────────────────────────────────────────┘
+              │
+    ┌─────────▼─────────────────────────────────────────────────┐
+    │                  MEMORY & LEARNING (30+ modules)          │
+    │  LearningLoop │ AutonomousImprover │ FeedbackManager     │
+    │  PolicyBandit │ ExperimentTracker │ KnowledgeScanner     │
+    └───────────────────────────────────────────────────────────┘</div>
+</div>
+
+<!-- CORE MODULES -->
+<div class="section">
+  <div class="section-title"><span class="section-icon">&#128171;</span> Modules Cốt Lõi Đã Phát Triển</div>
+  <div class="cards">
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-badge badge-blue">BRAIN</span>
+        <h3>NexusBrain</h3>
+      </div>
+      <p>Trung tâm trí tuệ chính - điều phối memory, learning, skills, execution cycles</p>
+      <div class="card-features">
+        <span class="feature-tag">Self-learning</span>
+        <span class="feature-tag">Skill progression</span>
+        <span class="feature-tag">Cycle management</span>
+        <span class="feature-tag">Structured logging</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-badge badge-red">EXECUTION</span>
+        <h3>ActionExecutor</h3>
+      </div>
+      <p>Engine thực thi hành động thực - file ops, code execution, browser, API, system ops</p>
+      <div class="card-features">
+        <span class="feature-tag">Path policy</span>
+        <span class="feature-tag">Shell safety</span>
+        <span class="feature-tag">Auto-retry</span>
+        <span class="feature-tag">22 action types</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-badge badge-purple">AI</span>
+        <h3>ReAct Agent</h3>
+      </div>
+      <p>Agent tự suy luận Thought→Action→Observation với real tool execution</p>
+      <div class="card-features">
+        <span class="feature-tag">Multi-agent</span>
+        <span class="feature-tag">Self-reflection</span>
+        <span class="feature-tag">Tool chaining</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-badge badge-cyan">SCOUT</span>
+        <h3>OmniscientScout</h3>
+      </div>
+      <p>Thu thập tri thức từ 40+ nguồn: GitHub, HackerNews, arXiv, blogs, forums</p>
+      <div class="card-features">
+        <span class="feature-tag">40+ sources</span>
+        <span class="feature-tag">Auto-ranking</span>
+        <span class="feature-tag">Quality scoring</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-badge badge-green">EVOLUTION</span>
+        <h3>AutoEvolution</h3>
+      </div>
+      <p>Tự khám phá, đánh giá, thêm nguồn tri thức mới - tự tiến hóa liên tục</p>
+      <div class="card-features">
+        <span class="feature-tag">Source discovery</span>
+        <span class="feature-tag">Auto-evaluate</span>
+        <span class="feature-tag">Persistence</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-badge badge-yellow">RAG</span>
+        <h3>CuttingEdgeTech</h3>
+      </div>
+      <p>Tích hợp SOTA: GraphRAG, MemGPT, HyDE, Mamba, speculative decoding</p>
+      <div class="card-features">
+        <span class="feature-tag">Hybrid search</span>
+        <span class="feature-tag">BM25+Vector</span>
+        <span class="feature-tag">KV cache</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-badge badge-blue">LLM</span>
+        <h3>LLM Caller + Circuit Breaker</h3>
+      </div>
+      <p>Multi-model interface (GLM-5, MiniMax, Codex) với circuit breaker pattern</p>
+      <div class="card-features">
+        <span class="feature-tag">Auto-fallback</span>
+        <span class="feature-tag">CLOSED/OPEN/HALF</span>
+        <span class="feature-tag">Graceful degradation</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-badge badge-green">INFRA</span>
+        <h3>Core Infrastructure</h3>
+      </div>
+      <p>Rate limiter, Event bus, Backup/Restore, Metrics, Logger, Runtime Guard</p>
+      <div class="card-features">
+        <span class="feature-tag">Rate limiting</span>
+        <span class="feature-tag">Event pub/sub</span>
+        <span class="feature-tag">tar.gz backup</span>
+        <span class="feature-tag">JSON logging</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-badge badge-purple">LOOP</span>
+        <h3>Autonomous Learning Loop</h3>
+      </div>
+      <p>Level 3: Task Queue → Execute → Verify → Analyze → Learn → Improve (24/7)</p>
+      <div class="card-features">
+        <span class="feature-tag">Priority queue</span>
+        <span class="feature-tag">Browser verify</span>
+        <span class="feature-tag">Auto-learn</span>
+        <span class="feature-tag">Command safety</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-badge badge-yellow">AGENTS</span>
+        <h3>8-Agent Team</h3>
+      </div>
+      <p>Orion(PM), Nova(Dev), Cipher(Security), Echo(QA), Flux(DevOps), Pixel(UI), Guardian</p>
+      <div class="card-features">
+        <span class="feature-tag">Multi-orion hub</span>
+        <span class="feature-tag">Orion factory</span>
+        <span class="feature-tag">Inter-messaging</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-badge badge-cyan">MEMORY</span>
+        <h3>Memory System (30+ modules)</h3>
+      </div>
+      <p>LearningLoop, AutonomousImprover, FeedbackManager, PolicyBandit, ExperimentTracker</p>
+      <div class="card-features">
+        <span class="feature-tag">CAFE calibration</span>
+        <span class="feature-tag">Policy bandit</span>
+        <span class="feature-tag">Self-debugger</span>
+        <span class="feature-tag">User profile</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-badge badge-red">ROUTER</span>
+        <h3>Model Router</h3>
+      </div>
+      <p>Adaptive model selection - rule-based routing, multi-provider fallback, budget-aware</p>
+      <div class="card-features">
+        <span class="feature-tag">Complexity classify</span>
+        <span class="feature-tag">BYOK providers</span>
+        <span class="feature-tag">Telemetry</span>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- API ENDPOINTS -->
+<div class="section">
+  <div class="section-title"><span class="section-icon">&#128279;</span> API Endpoints (34 Endpoints)</div>
+
+  <h4 style="margin-bottom: 0.75rem; color: var(--accent);">Brain API &mdash; /api/nexus</h4>
+  <table class="api-table" style="margin-bottom: 1.5rem;">
+    <thead><tr><th>Method</th><th>Endpoint</th><th>Mô tả</th></tr></thead>
+    <tbody>
+      <tr><td><span class="method method-get">GET</span></td><td class="endpoint">/status</td><td>Trạng thái Brain và stats</td></tr>
+      <tr><td><span class="method method-post">POST</span></td><td class="endpoint">/start</td><td>Khởi động Nexus Brain</td></tr>
+      <tr><td><span class="method method-post">POST</span></td><td class="endpoint">/learn</td><td>Học tri thức mới (rate limited)</td></tr>
+      <tr><td><span class="method method-post">POST</span></td><td class="endpoint">/feedback</td><td>Submit feedback + sentiment</td></tr>
+      <tr><td><span class="method method-post">POST</span></td><td class="endpoint">/task</td><td>Record task execution</td></tr>
+      <tr><td><span class="method method-post">POST</span></td><td class="endpoint">/search</td><td>Tìm kiếm knowledge base (rate limited)</td></tr>
+      <tr><td><span class="method method-post">POST</span></td><td class="endpoint">/execute</td><td>Thực thi task tự chủ (rate limited)</td></tr>
+      <tr><td><span class="method method-get">GET</span></td><td class="endpoint">/skills</td><td>Skill progression</td></tr>
+      <tr><td><span class="method method-get">GET</span></td><td class="endpoint">/memory</td><td>Memory statistics</td></tr>
+      <tr><td><span class="method method-get">GET</span></td><td class="endpoint">/cycles</td><td>Cycle status</td></tr>
+      <tr><td><span class="method method-get">GET</span></td><td class="endpoint">/safety</td><td>Execution policy &amp; stats</td></tr>
+      <tr><td><span class="method method-get">GET</span></td><td class="endpoint">/trust-metrics</td><td>Trust metrics (success/fail rate)</td></tr>
+      <tr><td><span class="method method-get">GET</span></td><td class="endpoint">/skill-recommendation/{type}</td><td>Gợi ý skill cho task type</td></tr>
+      <tr><td><span class="method method-get">GET</span></td><td class="endpoint">/budget-projection</td><td>Budget spend projection</td></tr>
+      <tr><td><span class="method method-get">GET</span></td><td class="endpoint">/source-quality</td><td>Ranked source quality scores</td></tr>
+      <tr><td><span class="method method-get">GET</span></td><td class="endpoint">/system-overview</td><td>Tổng quan toàn bộ hệ thống</td></tr>
+      <tr><td><span class="method method-get">GET</span></td><td class="endpoint">/health</td><td>Quick health check</td></tr>
+      <tr><td><span class="method method-get">GET</span></td><td class="endpoint">/system-health</td><td>Comprehensive health (all subsystems)</td></tr>
+      <tr><td><span class="method method-get">GET</span></td><td class="endpoint">/self-diagnostic</td><td>Self-diagnostic chi tiết</td></tr>
+      <tr><td><span class="method method-post">POST</span></td><td class="endpoint">/maintenance</td><td>Chạy bảo trì (cache prune, trim)</td></tr>
+      <tr><td><span class="method method-get">GET</span></td><td class="endpoint">/metrics</td><td>Request metrics &amp; latency</td></tr>
+      <tr><td><span class="method method-get">GET</span></td><td class="endpoint">/events</td><td>Recent system events</td></tr>
+      <tr><td><span class="method method-post">POST</span></td><td class="endpoint">/backup</td><td>Tạo backup brain data</td></tr>
+      <tr><td><span class="method method-get">GET</span></td><td class="endpoint">/backups</td><td>Danh sách backups</td></tr>
+      <tr><td><span class="method method-post">POST</span></td><td class="endpoint">/restore/{name}</td><td>Khôi phục từ backup</td></tr>
+    </tbody>
+  </table>
+
+  <h4 style="margin-bottom: 0.75rem; color: var(--accent2);">Loop API &mdash; /api/loop</h4>
+  <table class="api-table">
+    <thead><tr><th>Method</th><th>Endpoint</th><th>Mô tả</th></tr></thead>
+    <tbody>
+      <tr><td><span class="method method-get">GET</span></td><td class="endpoint">/status</td><td>Trạng thái loop hiện tại</td></tr>
+      <tr><td><span class="method method-post">POST</span></td><td class="endpoint">/start</td><td>Khởi động autonomous loop</td></tr>
+      <tr><td><span class="method method-post">POST</span></td><td class="endpoint">/stop</td><td>Dừng autonomous loop</td></tr>
+      <tr><td><span class="method method-post">POST</span></td><td class="endpoint">/task</td><td>Thêm task vào queue</td></tr>
+      <tr><td><span class="method method-post">POST</span></td><td class="endpoint">/verify</td><td>Thêm verification task (url/file)</td></tr>
+      <tr><td><span class="method method-get">GET</span></td><td class="endpoint">/tasks</td><td>Lấy danh sách tasks</td></tr>
+      <tr><td><span class="method method-get">GET</span></td><td class="endpoint">/stats</td><td>Thống kê comprehensive</td></tr>
+      <tr><td><span class="method method-get">GET</span></td><td class="endpoint">/log</td><td>Loop log</td></tr>
+      <tr><td><span class="method method-post">POST</span></td><td class="endpoint">/learn</td><td>Thêm learning trực tiếp</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- AUTOMATION STATUS -->
+<div class="section">
+  <div class="section-title"><span class="section-icon">&#9889;</span> Mức Độ Tự Động Hóa</div>
+  <div class="auto-grid">
+
+    <div class="auto-card">
+      <div class="auto-icon active">&#9989;</div>
+      <div>
+        <div class="auto-status active">Hoàn toàn tự động</div>
+        <div class="auto-title">Learning Loop</div>
+        <div class="auto-desc">Task queue → Execute → Verify → Analyze → Learn → Improve cycle chạy 24/7</div>
+        <div class="progress-container">
+          <div class="progress-bar"><div class="progress-fill green" style="width:100%"></div></div>
+          <div class="progress-label"><span>Automation</span><span>100%</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="auto-card">
+      <div class="auto-icon active">&#9989;</div>
+      <div>
+        <div class="auto-status active">Hoàn toàn tự động</div>
+        <div class="auto-title">Knowledge Acquisition</div>
+        <div class="auto-desc">Scout + AutoEvolution tự khám phá, thu thập, đánh giá tri thức từ 40+ nguồn</div>
+        <div class="progress-container">
+          <div class="progress-bar"><div class="progress-fill green" style="width:100%"></div></div>
+          <div class="progress-label"><span>Automation</span><span>100%</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="auto-card">
+      <div class="auto-icon active">&#9989;</div>
+      <div>
+        <div class="auto-status active">Hoàn toàn tự động</div>
+        <div class="auto-title">Action Execution</div>
+        <div class="auto-desc">22 action types: file ops, code, browser, API, system, NEXUS ops với safety policy</div>
+        <div class="progress-container">
+          <div class="progress-bar"><div class="progress-fill green" style="width:100%"></div></div>
+          <div class="progress-label"><span>Automation</span><span>100%</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="auto-card">
+      <div class="auto-icon active">&#9989;</div>
+      <div>
+        <div class="auto-status active">Hoàn toàn tự động</div>
+        <div class="auto-title">LLM Resilience</div>
+        <div class="auto-desc">Circuit breaker + auto-fallback + graceful degradation cho multi-model LLM</div>
+        <div class="progress-container">
+          <div class="progress-bar"><div class="progress-fill green" style="width:100%"></div></div>
+          <div class="progress-label"><span>Automation</span><span>100%</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="auto-card">
+      <div class="auto-icon active">&#9989;</div>
+      <div>
+        <div class="auto-status active">Hoàn toàn tự động</div>
+        <div class="auto-title">API Security</div>
+        <div class="auto-desc">Input validation (Pydantic), Rate limiting, Path policy, Shell policy, Control chars block</div>
+        <div class="progress-container">
+          <div class="progress-bar"><div class="progress-fill green" style="width:100%"></div></div>
+          <div class="progress-label"><span>Automation</span><span>100%</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="auto-card">
+      <div class="auto-icon active">&#9989;</div>
+      <div>
+        <div class="auto-status active">Hoàn toàn tự động</div>
+        <div class="auto-title">Data Protection</div>
+        <div class="auto-desc">Backup/Restore tự động, path traversal protection, auto-prune old backups</div>
+        <div class="progress-container">
+          <div class="progress-bar"><div class="progress-fill green" style="width:100%"></div></div>
+          <div class="progress-label"><span>Automation</span><span>100%</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="auto-card">
+      <div class="auto-icon active">&#9989;</div>
+      <div>
+        <div class="auto-status active">Hoàn toàn tự động</div>
+        <div class="auto-title">Monitoring & Metrics</div>
+        <div class="auto-desc">Event bus, request metrics, health checks, self-diagnostic, structured logging</div>
+        <div class="progress-container">
+          <div class="progress-bar"><div class="progress-fill green" style="width:100%"></div></div>
+          <div class="progress-label"><span>Automation</span><span>100%</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="auto-card">
+      <div class="auto-icon active">&#9989;</div>
+      <div>
+        <div class="auto-status active">Hoàn toàn tự động</div>
+        <div class="auto-title">Multi-Agent Orchestration</div>
+        <div class="auto-desc">8 agents chuyên biệt, Multi-Orion Hub, factory pattern, inter-messaging</div>
+        <div class="progress-container">
+          <div class="progress-bar"><div class="progress-fill green" style="width:100%"></div></div>
+          <div class="progress-label"><span>Automation</span><span>100%</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="auto-card">
+      <div class="auto-icon partial">&#9888;&#65039;</div>
+      <div>
+        <div class="auto-status partial">Cần LLM API key</div>
+        <div class="auto-title">LLM-Powered Intelligence</div>
+        <div class="auto-desc">ReAct reasoning, pre-analysis, reflection, improvement suggestions cần LLM API active</div>
+        <div class="progress-container">
+          <div class="progress-bar"><div class="progress-fill yellow" style="width:85%"></div></div>
+          <div class="progress-label"><span>Automation</span><span>85%</span></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- TEST COVERAGE -->
+<div class="section">
+  <div class="section-title"><span class="section-icon">&#127919;</span> Test Coverage &mdash; 408 Tests / 39 Files</div>
+  <div class="test-grid">
+    <div class="test-item"><div class="test-count">108</div><div><div class="test-name">Monitor Control Plane</div><div class="test-desc">API contract, subscriptions, health</div></div></div>
+    <div class="test-item"><div class="test-count">26</div><div><div class="test-name">ReAct Agent</div><div class="test-desc">Reasoning, tools, reflection</div></div></div>
+    <div class="test-item"><div class="test-count">25</div><div><div class="test-name">Autonomous Loop Safety</div><div class="test-desc">Command injection, state, parsing</div></div></div>
+    <div class="test-item"><div class="test-count">23</div><div><div class="test-name">Action Executor Safety</div><div class="test-desc">Path policy, shell policy, edge cases</div></div></div>
+    <div class="test-item"><div class="test-count">21</div><div><div class="test-name">CuttingEdgeTech</div><div class="test-desc">RAG, cosine similarity, memory</div></div></div>
+    <div class="test-item"><div class="test-count">20</div><div><div class="test-name">Integration Hub</div><div class="test-desc">Hub integration, modules</div></div></div>
+    <div class="test-item"><div class="test-count">18</div><div><div class="test-name">Omniscient Scout</div><div class="test-desc">Sources, quality, findings</div></div></div>
+    <div class="test-item"><div class="test-count">17</div><div><div class="test-name">Runtime Guard</div><div class="test-desc">Singleton, heartbeat, locks</div></div></div>
+    <div class="test-item"><div class="test-count">15</div><div><div class="test-name">Orion Token Guard</div><div class="test-desc">Token safety, limits</div></div></div>
+    <div class="test-item"><div class="test-count">14</div><div><div class="test-name">Learning v2</div><div class="test-desc">Learning system</div></div></div>
+    <div class="test-item"><div class="test-count">13</div><div><div class="test-name">Brain API + Validation</div><div class="test-desc">Endpoints + input validation</div></div></div>
+    <div class="test-item"><div class="test-count">12</div><div><div class="test-name">Event Bus</div><div class="test-desc">Subscribe, emit, wildcard</div></div></div>
+    <div class="test-item"><div class="test-count">11</div><div><div class="test-name">Nexus Logger</div><div class="test-desc">Formatters, levels, file output</div></div></div>
+    <div class="test-item"><div class="test-count">10</div><div><div class="test-name">Backup/Restore</div><div class="test-desc">Create, list, restore, prune</div></div></div>
+    <div class="test-item"><div class="test-count">9</div><div><div class="test-name">Loop API Validation</div><div class="test-desc">Pydantic constraints</div></div></div>
+    <div class="test-item"><div class="test-count">8</div><div><div class="test-name">Circuit Breaker</div><div class="test-desc">States, transitions</div></div></div>
+  </div>
+</div>
+
+<!-- PHASE TIMELINE -->
+<div class="section">
+  <div class="section-title"><span class="section-icon">&#128197;</span> Development Phases (1-16)</div>
+  <div class="timeline">
+    <div class="timeline-item">
+      <div class="timeline-phase">Phase 1-4</div>
+      <div class="timeline-title">Foundation &amp; Core Architecture</div>
+      <div class="timeline-desc">NexusBrain core, Memory system, Agent framework, LLM caller với multi-model support</div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-phase">Phase 5-7</div>
+      <div class="timeline-title">Agent Team &amp; Knowledge System</div>
+      <div class="timeline-desc">8 specialized agents, OmniscientScout (40+ sources), Knowledge digestion &amp; RAG</div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-phase">Phase 8-10</div>
+      <div class="timeline-title">Execution Engine &amp; Autonomous Loop</div>
+      <div class="timeline-desc">ActionExecutor (22 actions), Autonomous Learning Loop, Browser verification, ReactAgent</div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-phase">Phase 11-12</div>
+      <div class="timeline-title">API &amp; Monitor Dashboard</div>
+      <div class="timeline-desc">FastAPI endpoints, Flask monitor dashboard, Multi-Orion Hub, Central Command</div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-phase">Phase 13</div>
+      <div class="timeline-title">Security &amp; Quality Hardening</div>
+      <div class="timeline-desc">Pydantic validation, Centralized logging, Encoding fixes, 294 tests green</div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-phase">Phase 14</div>
+      <div class="timeline-title">Resilience &amp; Observability</div>
+      <div class="timeline-desc">Circuit breaker, Request metrics, Event bus, 329 tests green</div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-phase">Phase 15</div>
+      <div class="timeline-title">Rate Limiting &amp; Graceful Degradation</div>
+      <div class="timeline-desc">Sliding-window rate limiter, call_llm_safe(), Print→Logger migration, 335 tests green</div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-phase">Phase 16</div>
+      <div class="timeline-title">Data Integrity &amp; Safety Tests</div>
+      <div class="timeline-desc">Backup/Restore, System health endpoint, ActionExecutor safety tests, Loop safety tests, 408 tests green</div>
+    </div>
+  </div>
+</div>
+
+<!-- SECURITY MEASURES -->
+<div class="section">
+  <div class="section-title"><span class="section-icon">&#128274;</span> Biện Pháp Bảo Mật</div>
+  <div class="cards">
+    <div class="card">
+      <div class="card-header"><span class="card-badge badge-red">CRITICAL</span><h3>Path Policy Enforcement</h3></div>
+      <p>Chặn ghi vào /etc, /System, /bin. Mutating actions chỉ trong allowed_roots. SAFE mode khóa mọi thứ.</p>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-badge badge-red">CRITICAL</span><h3>Shell Command Safety</h3></div>
+      <p>Chặn rm -rf /, sudo, reboot, fork bomb. Chặn pipe-to-shell (curl|bash). Chặn null bytes, control chars.</p>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-badge badge-yellow">HIGH</span><h3>API Input Validation</h3></div>
+      <p>Pydantic Field constraints: max_length, ge/le bounds, pattern regex. Chặn payload quá lớn.</p>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-badge badge-yellow">HIGH</span><h3>Rate Limiting</h3></div>
+      <p>Sliding-window per-client. 120 RPM default. Auto-prune stale buckets. 429 response với retry-after.</p>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-badge badge-blue">MEDIUM</span><h3>Path Traversal Protection</h3></div>
+      <p>Backup restore chặn ../ traversal. resolve() paths. Validate filenames trước khi extract.</p>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-badge badge-blue">MEDIUM</span><h3>Loop Command Sanitization</h3></div>
+      <p>Chặn shell metacharacters (;|&amp;&lt;&gt;`$()), unterminated quotes, trailing escape. shlex.split safe parsing.</p>
+    </div>
+  </div>
+</div>
+
+</div>
+
+<!-- FOOTER -->
+<div class="footer">
+  <p>NEXUS Autonomous AI Development System &mdash; Phase 16 Complete &mdash; 408 Tests Passing</p>
+  <p style="margin-top:0.5rem; opacity:0.6;">Built with Python &bull; FastAPI &bull; Playwright &bull; Multi-Model LLM &bull; 75+ Modules</p>
+</div>
+
+<script>
+  // Animate numbers on load
+  document.querySelectorAll('.stat-number').forEach(el => {
+    const target = parseInt(el.textContent);
+    if (isNaN(target)) return;
+    let current = 0;
+    const step = Math.ceil(target / 30);
+    const timer = setInterval(() => {
+      current += step;
+      if (current >= target) { current = target; clearInterval(timer); }
+      el.textContent = current + (el.textContent.includes('+') ? '+' : '');
+    }, 30);
+  });
+
+  // Animate progress bars
+  setTimeout(() => {
+    document.querySelectorAll('.progress-fill').forEach(el => {
+      const w = el.style.width;
+      el.style.width = '0%';
+      setTimeout(() => el.style.width = w, 100);
+    });
+  }, 500);
+</script>
+</body>
+</html>

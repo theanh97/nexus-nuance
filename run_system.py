@@ -10,6 +10,7 @@ import os
 import sys
 import asyncio
 import threading
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -34,6 +35,13 @@ from src.core.provider_profile import ProviderProfileStore
 from src.core.runtime_sync import run_full_sync
 from src.core.runtime_guard import ProcessSingleton
 from src.core.prompt_system import get_prompt_system
+
+
+def _getenv_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
 
 
 class AutoDevSystem:
@@ -83,21 +91,21 @@ class AutoDevSystem:
         self.main_loop = None
         self.guardian_watchdog_task: Optional[asyncio.Task] = None
         self.guardian_auto_recovery = True
-        self.guardian_watchdog_interval_sec = int(os.getenv("GUARDIAN_WATCHDOG_INTERVAL_SEC", "8"))
-        self.guardian_stuck_threshold_sec = int(os.getenv("GUARDIAN_STUCK_THRESHOLD_SEC", "180"))
-        self.guardian_recovery_cooldown_sec = int(os.getenv("GUARDIAN_RECOVERY_COOLDOWN_SEC", "25"))
+        self.guardian_watchdog_interval_sec = _getenv_int("GUARDIAN_WATCHDOG_INTERVAL_SEC", 8)
+        self.guardian_stuck_threshold_sec = _getenv_int("GUARDIAN_STUCK_THRESHOLD_SEC", 180)
+        self.guardian_recovery_cooldown_sec = _getenv_int("GUARDIAN_RECOVERY_COOLDOWN_SEC", 25)
         self.last_guardian_intervention_at: Optional[datetime] = None
-        self.manual_override_sec = int(os.getenv("MANUAL_OVERRIDE_SEC", "90"))
+        self.manual_override_sec = _getenv_int("MANUAL_OVERRIDE_SEC", 90)
         self.manual_override_until: Optional[datetime] = None
         self.manual_override_reason: str = ""
         self.autonomy_profile = self._normalize_autonomy_profile(os.getenv("AUTONOMY_PROFILE", "full_auto"))
         self.full_auto_user_pause_max_sec = max(
             60,
-            int(os.getenv("MONITOR_FULL_AUTO_USER_PAUSE_MAX_SEC", "240")),
+            _getenv_int("MONITOR_FULL_AUTO_USER_PAUSE_MAX_SEC", 240),
         )
         self.full_auto_maintenance_lease_sec = max(
             30,
-            int(os.getenv("MONITOR_FULL_AUTO_MAINTENANCE_LEASE_SEC", "180")),
+            _getenv_int("MONITOR_FULL_AUTO_MAINTENANCE_LEASE_SEC", 180),
         )
         self.cost_guard_mode = str(os.getenv("DEFAULT_COST_GUARD_MODE", "balanced")).strip().lower() or "balanced"
         self.cost_guard_last_updated_at: Optional[datetime] = None
@@ -119,7 +127,7 @@ class AutoDevSystem:
             self.auto_cost_guard_warn_ratio - 0.05 if self.auto_cost_guard_warn_ratio > 0.1 else 0.4,
             float(os.getenv("AUTO_COST_GUARD_RECOVER_RATIO", "0.45")),
         )
-        self.auto_cost_guard_cooldown_sec = max(20, int(os.getenv("AUTO_COST_GUARD_COOLDOWN_SEC", "60")))
+        self.auto_cost_guard_cooldown_sec = max(20, _getenv_int("AUTO_COST_GUARD_COOLDOWN_SEC", 60))
         self.last_auto_cost_guard_adjust_at: Optional[datetime] = None
         self.last_auto_cost_guard_reason: str = ""
         self.provider_store = ProviderProfileStore()
@@ -213,20 +221,44 @@ class AutoDevSystem:
         print("└─────────────────────────────────────────────────────────────────┘")
         print()
 
+        # Initialize Brain Integration Hub
+        try:
+            from src.brain.integration_hub import get_hub
+            hub = get_hub()
+            hub_result = hub.initialize()
+            active = sum(1 for s in hub.status.get("systems", {}).values() if s == "active")
+            total = len(hub.status.get("systems", {}))
+            print(f"  🧠 NEXUS Brain Hub: {active}/{total} systems active")
+        except Exception as e:
+            print(f"  ⚠️  Brain Hub init: {e}")
+
+        # Check LLM availability
+        try:
+            from src.core.llm_caller import get_available_models
+            models = get_available_models()
+            available = [n for n, ok in models.items() if ok]
+            if available:
+                print(f"  🤖 LLM Models: {', '.join(available)}")
+            else:
+                print("  ⚠️  No LLM models available (heuristic fallback)")
+        except ImportError:
+            pass
+
+        print()
         self._check_api_keys()
 
     def _cost_guard_profiles(self) -> Dict[str, Dict[str, Any]]:
         balanced = {
-            "nova_stable_interval": max(1, int(os.getenv("ORION_NOVA_STABLE_INTERVAL", "2"))),
-            "echo_interval": max(1, int(os.getenv("ECHO_TEST_INTERVAL", "4"))),
-            "security_audit_interval": max(1, int(os.getenv("SECURITY_AUDIT_INTERVAL", "8"))),
-            "security_fallback_audit_interval": max(2, int(os.getenv("SECURITY_FALLBACK_AUDIT_INTERVAL", "20"))),
-            "max_backoff_sec": max(2, int(os.getenv("ORION_MAX_BACKOFF_SEC", "20"))),
+            "nova_stable_interval": max(1, _getenv_int("ORION_NOVA_STABLE_INTERVAL", 2)),
+            "echo_interval": max(1, _getenv_int("ECHO_TEST_INTERVAL", 4)),
+            "security_audit_interval": max(1, _getenv_int("SECURITY_AUDIT_INTERVAL", 8)),
+            "security_fallback_audit_interval": max(2, _getenv_int("SECURITY_FALLBACK_AUDIT_INTERVAL", 20)),
+            "max_backoff_sec": max(2, _getenv_int("ORION_MAX_BACKOFF_SEC", 20)),
             "prompt_max_injected_directives": max(
-                1, int(os.getenv("PROMPT_SYSTEM_MAX_INJECTED_DIRECTIVES", "4"))
+                1, _getenv_int("PROMPT_SYSTEM_MAX_INJECTED_DIRECTIVES", 4)
             ),
             "prompt_low_importance_directives": max(
-                1, int(os.getenv("PROMPT_SYSTEM_LOW_IMPORTANCE_DIRECTIVES", "2"))
+                1, _getenv_int("PROMPT_SYSTEM_LOW_IMPORTANCE_DIRECTIVES", 2)
             ),
             "prompt_low_importance_compact": str(
                 os.getenv("PROMPT_SYSTEM_LOW_IMPORTANCE_COMPACT", "true")
@@ -1111,11 +1143,20 @@ class AutoDevSystem:
         if not self.main_loop:
             return {"success": False, "error": "Main runtime loop not available"}
 
+        options = options or {}
+        async_dispatch_raw = options.get("async_dispatch", options.get("fire_and_forget", False))
+        async_dispatch = str(async_dispatch_raw).strip().lower() in {"1", "true", "yes", "on"}
+        wait_timeout_raw = options.get("wait_timeout_sec", 180)
+        try:
+            wait_timeout_sec = max(3.0, min(180.0, float(wait_timeout_raw)))
+        except Exception:
+            wait_timeout_sec = 180.0
+
         coro = self._execute_dashboard_command(
             target=target,
             command=command,
             priority=priority,
-            options=options or {},
+            options=options,
         )
         try:
             future = asyncio.run_coroutine_threadsafe(coro, self.main_loop)
@@ -1126,8 +1167,28 @@ class AutoDevSystem:
             except Exception:
                 pass
             return {"success": False, "error": str(exc)}
+
+        if async_dispatch:
+            command_id = str(uuid.uuid4())
+
+            def _on_done(done_future: Any) -> None:
+                try:
+                    done_future.result()
+                except Exception as done_exc:
+                    if self.guardian:
+                        self.guardian._log(f"⚠️ Async dashboard command failed: {done_exc}")
+
+            future.add_done_callback(_on_done)
+            return {
+                "success": True,
+                "accepted": True,
+                "async_dispatch": True,
+                "command_id": command_id,
+                "target": target,
+                "command": command,
+            }
         try:
-            return future.result(timeout=180)
+            return future.result(timeout=wait_timeout_sec)
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
@@ -1608,10 +1669,7 @@ async def main():
         help="Clear stale autodev_runtime lock and retry startup once",
     )
     default_host = str(os.getenv("DASHBOARD_HOST", "localhost")).strip() or "localhost"
-    try:
-        default_port = int(os.getenv("DASHBOARD_PORT", "5000"))
-    except Exception:
-        default_port = 5000
+    default_port = _getenv_int("DASHBOARD_PORT", 5000)
     default_port = max(1, min(65535, default_port))
 
     parser.add_argument("--host", type=str, default=default_host, help="Dashboard host")

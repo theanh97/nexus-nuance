@@ -86,7 +86,7 @@ class ChatLearner:
             project_root = Path(__file__).parent.parent.parent
             self.data_path = project_root / "data" / "memory"
             self.data_path.mkdir(parents=True, exist_ok=True)
-        except:
+        except (OSError, NameError, TypeError):
             self.data_path = Path.cwd() / "data" / "memory"
 
         self.chat_file = self.data_path / "chat_learnings.json"
@@ -107,7 +107,7 @@ class ChatLearner:
                     data = json.load(f)
                     self.learned_items = data.get("learned_items", [])
                     self.conversation_history = data.get("history", [])
-            except:
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
                 pass
 
     def _save(self):
@@ -119,7 +119,7 @@ class ChatLearner:
                     "history": self.conversation_history[-1000:],
                     "last_updated": datetime.now().isoformat()
                 }, f, indent=2)
-        except:
+        except (OSError, TypeError, ValueError):
             pass
 
     def learn_from_message(self, message: str, role: str = "user") -> Optional[Dict]:

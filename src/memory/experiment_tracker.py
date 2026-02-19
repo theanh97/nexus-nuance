@@ -40,7 +40,7 @@ class ExperimentTracker:
             try:
                 project_root = Path(__file__).parent.parent.parent
                 self.data_path = project_root / "data" / "experiments"
-            except:
+            except (NameError, TypeError):
                 self.data_path = Path.cwd() / "data" / "experiments"
 
         self.data_path.mkdir(parents=True, exist_ok=True)
@@ -52,7 +52,7 @@ class ExperimentTracker:
         """Load experiments from file."""
         if self.tracker_file.exists():
             try:
-                with open(self.tracker_file, 'r') as f:
+                with open(self.tracker_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 self.experiments = data.get("experiments", [])
             except Exception:
@@ -67,7 +67,7 @@ class ExperimentTracker:
                 "experiments": self.experiments,
                 "metrics": self._calculate_metrics()
             }
-            with open(self.tracker_file, 'w') as f:
+            with open(self.tracker_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
 
     def _calculate_metrics(self) -> Dict:

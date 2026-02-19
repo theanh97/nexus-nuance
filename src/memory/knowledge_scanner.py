@@ -93,7 +93,7 @@ class KnowledgeScanner:
             try:
                 project_root = Path(__file__).parent.parent.parent
                 data_path = project_root / "data" / "memory"
-            except:
+            except (NameError, TypeError):
                 data_path = Path.cwd() / "data" / "memory"
 
         data_path.mkdir(parents=True, exist_ok=True)

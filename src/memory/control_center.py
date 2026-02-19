@@ -41,7 +41,7 @@ class ControlCenter:
                 project_root = Path(__file__).parent.parent.parent
                 self.base_path = project_root / "data" / "control"
                 self.base_path.mkdir(parents=True, exist_ok=True)
-            except:
+            except (OSError, NameError, TypeError):
                 self.base_path = Path.cwd() / "data" / "control"
 
         self.approvals_file = self.base_path / "approvals.json"

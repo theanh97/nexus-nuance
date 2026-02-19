@@ -51,8 +51,27 @@ from dataclasses import dataclass, field
 from collections import defaultdict
 import random
 
+try:
+    from core.llm_caller import call_llm
+    _LLM_AVAILABLE = True
+except ImportError:
+    _LLM_AVAILABLE = False
+
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 DATA_DIR = PROJECT_ROOT / "data" / "brain"
+
+
+def cosine_similarity(vector_a: List[float], vector_b: List[float]) -> float:
+    """Compute cosine similarity between 2 vectors.
+
+    Safely handles zero-norm vectors by returning 0.0.
+    """
+    dot = sum(a * b for a, b in zip(vector_a, vector_b))
+    norm_a = math.sqrt(sum(a * a for a in vector_a))
+    norm_b = math.sqrt(sum(b * b for b in vector_b))
+    if norm_a > 0 and norm_b > 0:
+        return dot / (norm_a * norm_b)
+    return 0.0
 
 
 @dataclass
@@ -263,14 +282,14 @@ class CuttingEdgeIntegrator:
     def _load(self):
         """Load saved innovations"""
         if self.innovations_file.exists():
-            with open(self.innovations_file, 'r') as f:
+            with open(self.innovations_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 for item in data.get("custom_innovations", []):
                     self.innovations.append(TechInnovation(**item))
 
     def _save(self):
         """Save innovations"""
-        with open(self.innovations_file, 'w') as f:
+        with open(self.innovations_file, 'w', encoding='utf-8') as f:
             json.dump({
                 "innovations": [vars(i) for i in self.innovations],
                 "last_updated": datetime.now().isoformat()
@@ -362,17 +381,40 @@ class AdvancedRAGSystem:
     def _load(self):
         """Load index"""
         if self.index_file.exists():
-            with open(self.index_file, 'r') as f:
+            with open(self.index_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 self.documents = data.get("documents", {})
+                loaded_bm25 = data.get("bm25_index", {})
+                loaded_vectors = data.get("vector_index", {})
+                if loaded_bm25:
+                    self.bm25_index = defaultdict(lambda: defaultdict(int))
+                    for term, postings in loaded_bm25.items():
+                        self.bm25_index[term] = defaultdict(int, {doc_id: int(count) for doc_id, count in postings.items()})
+                if loaded_vectors:
+                    self.vector_index = {doc_id: [float(v) for v in vec] for doc_id, vec in loaded_vectors.items()}
+                if self.documents and (not loaded_bm25 or not loaded_vectors):
+                    self._rebuild_indexes()
 
     def _save(self):
         """Save index"""
-        with open(self.index_file, 'w') as f:
+        with open(self.index_file, 'w', encoding='utf-8') as f:
             json.dump({
                 "documents": self.documents,
+                "bm25_index": {term: dict(postings) for term, postings in self.bm25_index.items()},
+                "vector_index": self.vector_index,
                 "last_updated": datetime.now().isoformat()
             }, f, indent=2)
+
+    def _rebuild_indexes(self):
+        """Rebuild BM25 and vector indexes from documents."""
+        self.bm25_index = defaultdict(lambda: defaultdict(int))
+        self.vector_index = {}
+        for doc_id, doc in self.documents.items():
+            content = str(doc.get("content", ""))
+            words = re.findall(r'\b\w+\b', content.lower())
+            for word in words:
+                self.bm25_index[word][doc_id] += 1
+            self.vector_index[doc_id] = self._pseudo_embed(content)
 
     def index_document(self, doc_id: str, content: str, metadata: Dict = None):
         """Index a document with hybrid approach"""
@@ -395,14 +437,38 @@ class AdvancedRAGSystem:
         self._save()
 
     def _pseudo_embed(self, text: str) -> List[float]:
-        """Generate pseudo-embedding (placeholder for actual embeddings)"""
-        # In production: use sentence-transformers, OpenAI embeddings, etc.
+        """Generate embedding vector using LLM or hash-based fallback."""
+        if _LLM_AVAILABLE:
+            try:
+                # Use LLM to generate a compact semantic fingerprint
+                raw = call_llm(
+                    prompt=f'Generate a semantic fingerprint for this text. Return ONLY a JSON array of exactly 128 float values between -1 and 1 that represent the semantic meaning. Text: {text[:500]}',
+                    task_type='general',
+                    max_tokens=600,
+                    temperature=0.0,
+                )
+                if isinstance(raw, str):
+                    raw = raw.strip()
+                    if raw.startswith('```'):
+                        lines = raw.splitlines()
+                        if len(lines) >= 3:
+                            raw = '\n'.join(lines[1:-1]).strip()
+                    import json as _json
+                    parsed = _json.loads(raw)
+                    if isinstance(parsed, list) and len(parsed) >= 64:
+                        vector = [float(v) for v in parsed[:128]]
+                        while len(vector) < 128:
+                            vector.append(0.0)
+                        norm = math.sqrt(sum(v * v for v in vector)) or 1
+                        return [v / norm for v in vector]
+            except Exception:
+                pass
+
+        # Fallback: TF-based pseudo-vector
         words = text.lower().split()
-        # Simple TF-based pseudo-vector
         vector = [0.0] * 128
         for i, word in enumerate(words[:128]):
             vector[i % 128] += hash(word) % 100 / 100
-        # Normalize
         norm = math.sqrt(sum(v * v for v in vector)) or 1
         return [v / norm for v in vector]
 
@@ -425,12 +491,7 @@ class AdvancedRAGSystem:
         query_vector = self._pseudo_embed(query)
         vector_scores: Dict[str, float] = {}
         for doc_id, doc_vector in self.vector_index.items():
-            # Cosine similarity
-            dot = sum(a * b for a, b in zip(query_vector, doc_vector))
-            norm_q = math.sqrt(sum(a * a for a in query_vector))
-            norm_d = math.sqrt(sum(b * b for b in doc_vector))
-            similarity = dot / (norm_q * norm_d) if norm_q and norm_d else 0
-            vector_scores[doc_id] = similarity
+            vector_scores[doc_id] = cosine_similarity(query_vector, doc_vector)
 
         # Combine scores (hybrid)
         combined_scores: Dict[str, float] = {}
@@ -485,7 +546,7 @@ class HierarchicalMemorySystem:
     def _load(self):
         """Load memory"""
         if self.memory_file.exists():
-            with open(self.memory_file, 'r') as f:
+            with open(self.memory_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 self.main_context = data.get("main_context", [])
                 self.working_memory = data.get("working_memory", [])
@@ -493,7 +554,7 @@ class HierarchicalMemorySystem:
 
     def _save(self):
         """Save memory"""
-        with open(self.memory_file, 'w') as f:
+        with open(self.memory_file, 'w', encoding='utf-8') as f:
             json.dump({
                 "main_context": self.main_context,
                 "working_memory": self.working_memory,
@@ -558,14 +619,30 @@ class HierarchicalMemorySystem:
         self._save()
 
     def _create_summary(self, items: List[Dict]) -> str:
-        """Create summary from items"""
-        # Simple summary (would use LLM in production)
+        """Create summary from items using LLM or heuristic fallback."""
+        if _LLM_AVAILABLE:
+            try:
+                contents = '\n'.join(
+                    f'- [{item.get("type", "event")}] {item.get("content", "")[:200]}'
+                    for item in items[:15]
+                )
+                summary = call_llm(
+                    prompt=f'Summarize these {len(items)} memory events into a concise paragraph (max 3 sentences):\n{contents}',
+                    task_type='general',
+                    max_tokens=200,
+                    temperature=0.3,
+                )
+                if isinstance(summary, str) and summary.strip():
+                    return summary.strip()[:500]
+            except Exception:
+                pass
+
+        # Fallback: heuristic summary
         types = defaultdict(int)
         for item in items:
             types[item.get("type", "unknown")] += 1
-
-        summary_parts = [f"{count} {t}" for t, count in types.items()]
-        return f"Compressed memory containing: {', '.join(summary_parts)}"
+        summary_parts = [f'{count} {t}' for t, count in types.items()]
+        return f'Compressed memory containing: {", ".join(summary_parts)}'
 
     def retrieve(self, query: str, top_k: int = 10) -> List[Dict]:
         """Retrieve from all memory tiers"""

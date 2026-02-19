@@ -66,7 +66,7 @@ class PatchGenerator:
         patches_file = self.patches_dir / "generated.json"
         if patches_file.exists():
             try:
-                with open(patches_file, 'r') as f:
+                with open(patches_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 self.patches = [GeneratedPatch(**p) for p in data.get("patches", [])]
             except Exception as e:
@@ -81,7 +81,7 @@ class PatchGenerator:
                 "total_patches": len(self.patches),
                 "patches": [asdict(p) for p in self.patches[-100:]]
             }
-            with open(patches_file, 'w') as f:
+            with open(patches_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
 
     def _load_templates(self) -> Dict[str, str]:
@@ -177,7 +177,7 @@ except {exception_type} as e:
             return None
 
         try:
-            with open(full_path, 'r') as f:
+            with open(full_path, 'r', encoding='utf-8') as f:
                 original_code = f.read()
 
             # Generate patch based on category
@@ -249,7 +249,7 @@ def sanitize(s):
 
         if applied_file.exists():
             try:
-                with open(applied_file, 'r') as f:
+                with open(applied_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 applied_ids = set(data.get("applied_ids", []))
             except:

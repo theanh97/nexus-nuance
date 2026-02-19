@@ -16,6 +16,12 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
 from pathlib import Path
 
+try:
+    from core.llm_caller import call_llm, plan_reasoning
+    _LLM_AVAILABLE = True
+except ImportError:
+    _LLM_AVAILABLE = False
+
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 # Import real action executor
@@ -23,6 +29,9 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from brain.action_executor import ActionExecutor, ActionStatus, execute_action
 from brain.react_agent import ReActAgent, AgentState, Thought, Action, Observation, Reflection
+from core.nexus_logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class AutonomousAgent(ReActAgent):
@@ -70,6 +79,8 @@ class AutonomousAgent(ReActAgent):
 
     def _real_edit_file(self, path: str, old: str = "", new: str = "", **kwargs) -> str:
         """Really edit a file"""
+        if not old:
+            return "Error: edit_file requires a non-empty 'old' value"
         result = self.executor.execute("edit_file", {"path": path, "old": old, "new": new})
         if result.status == ActionStatus.SUCCESS:
             return result.output
@@ -164,11 +175,15 @@ class AutonomousAgent(ReActAgent):
 
     def observe(self, action_result: str) -> Observation:
         """Observe result - with better success detection"""
-        # Better success detection
+        # Consider result successful only when explicit success markers exist.
+        lower = action_result.lower()
         success = (
-            "success" in action_result.lower() or
-            ("error" not in action_result.lower() and "failed" not in action_result.lower() and len(action_result) > 10)
-        )
+            lower.startswith("success:") or
+            "task completed" in lower or
+            "written " in lower or
+            "edited " in lower or
+            "created task:" in lower
+        ) and "error" not in lower and "failed" not in lower
 
         insights = self._extract_insights(action_result)
 
@@ -195,10 +210,66 @@ class AutonomousAgent(ReActAgent):
 
         return "Task completed"
 
+    # ==================== LLM-ENHANCED REASONING ====================
+
+    def _generate_reasoning(self, context: str) -> str:
+        """Override parent's reasoning with LLM-powered version."""
+        if _LLM_AVAILABLE:
+            try:
+                last_obs = ""
+                if self.observations:
+                    last_obs = f"\nLast observation: {self.observations[-1].content[:200]}"
+                tools_str = ", ".join(self.tools.keys())
+                llm_result = call_llm(
+                    prompt=(
+                        f"Task: {context}\n"
+                        f"Available tools: {tools_str}{last_obs}\n\n"
+                        "Analyze this task. What kind of action is needed? Respond in 1-2 sentences."
+                    ),
+                    task_type="planning",
+                    max_tokens=200,
+                    temperature=0.3,
+                )
+                if isinstance(llm_result, str) and llm_result.strip():
+                    return llm_result.strip()
+            except Exception as e:
+                logger.warning(f"_generate_reasoning LLM failed: {e}")
+        return super()._generate_reasoning(context)
+
     # ==================== SMART ACTION SELECTION ====================
 
     def _decide_action(self, thought) -> Tuple[str, str, Dict]:
         """Decide what action to take based on thought - with real action mapping"""
+        # Try LLM-powered action selection first
+        if _LLM_AVAILABLE:
+            try:
+                last_obs = ""
+                if self.observations:
+                    last_obs = f"\nLast observation (success={self.observations[-1].success}): {self.observations[-1].content[:200]}"
+                tools_list = list(self.tools.keys())
+                prompt = (
+                    f"Current task: {self.current_task or 'unknown'}\n"
+                    f"Current reasoning: {thought.reasoning}\n"
+                    f"Available tools: {tools_list}{last_obs}\n\n"
+                    "Choose the best action. Return JSON with: action_type, target, params"
+                )
+                raw = plan_reasoning(prompt)
+                # Try to extract JSON from response
+                text = raw.strip()
+                # Handle markdown code blocks
+                if text.startswith("```"):
+                    lines = text.splitlines()
+                    if len(lines) >= 3:
+                        text = "\n".join(lines[1:-1]).strip()
+                parsed = json.loads(text)
+                action_type = parsed.get("action_type", "")
+                target = parsed.get("target", "")
+                params = parsed.get("params", {})
+                if action_type in self.tools:
+                    return action_type, target, params if isinstance(params, dict) else {}
+            except Exception as e:
+                logger.warning(f"_decide_action LLM failed: {e}")
+
         reasoning = thought.reasoning.lower()
         task = (self.current_task or "").lower()
 
@@ -222,7 +293,7 @@ class AutonomousAgent(ReActAgent):
 
         if "edit" in task or "modify" in task or "fix" in task:
             path = self._extract_path(task) or "src/brain/nexus_brain.py"
-            return "edit_file", path, {}
+            return "read_file", path, {}
 
         # Shell/code operations
         if "run" in task or "execute" in task or "shell" in task:
@@ -251,6 +322,29 @@ class AutonomousAgent(ReActAgent):
         # Ultimate default: read main brain file
         return "read_file", "src/brain/nexus_brain.py", {}
 
+    def _task_mentions_target(self, task: str, target: str) -> bool:
+        """Check whether a chosen target is grounded in the task text."""
+        if not task or not target:
+            return False
+        task_lower = task.lower()
+        target_lower = target.lower()
+        if target_lower in task_lower:
+            return True
+        return Path(target_lower).name in task_lower
+
+    def _is_action_grounded(self, task: str, action_type: str, target: str) -> bool:
+        """Validate that selected action aligns with user intent."""
+        task_lower = (task or "").lower()
+        if action_type in {"read_file", "write_file", "edit_file"}:
+            if "read" in task_lower and action_type != "read_file":
+                return False
+            if any(k in task_lower for k in ["write", "create"]) and action_type != "write_file":
+                return False
+            if any(k in task_lower for k in ["edit", "fix", "modify"]) and action_type != "edit_file":
+                return False
+            return self._task_mentions_target(task_lower, target)
+        return True
+
     def _extract_path(self, text: str) -> Optional[str]:
         """Extract file path from text"""
         import re
@@ -259,6 +353,7 @@ class AutonomousAgent(ReActAgent):
             r"['\"]([^'\"]+\.(py|js|json|md|txt|html))['\"]",
             r"file[:\s]+([^\s]+)",
             r"path[:\s]+([^\s]+)",
+            r"\b([\w./-]+\.(py|js|json|md|txt|html))\b",
         ]
 
         for pattern in patterns:
@@ -267,6 +362,34 @@ class AutonomousAgent(ReActAgent):
                 return match.group(1)
 
         return None
+
+    def _evaluate_done_criteria(self, task: str, cycles: List[Dict]) -> Tuple[List[str], List[str]]:
+        """Compute completed/missed criteria from task intent and cycle traces."""
+        task_lower = (task or "").lower()
+        met: List[str] = []
+        missed: List[str] = []
+
+        has_success = any(c.get("success") for c in cycles)
+        has_grounded_success = any(c.get("success") and c.get("grounded", False) for c in cycles)
+        has_mutation = any(c.get("action") in {"edit_file", "write_file"} and c.get("success") for c in cycles)
+
+        if has_success:
+            met.append("at_least_one_successful_action")
+        else:
+            missed.append("at_least_one_successful_action")
+
+        if has_grounded_success:
+            met.append("grounded_action_success")
+        else:
+            missed.append("grounded_action_success")
+
+        if any(k in task_lower for k in ["fix", "edit", "modify", "create", "write"]):
+            if has_mutation:
+                met.append("mutation_performed_for_mutation_task")
+            else:
+                missed.append("mutation_performed_for_mutation_task")
+
+        return met, missed
 
     # ==================== FULL AUTONOMOUS EXECUTION ====================
 
@@ -282,9 +405,9 @@ class AutonomousAgent(ReActAgent):
         5. Learn from outcomes
         6. Self-reflect
         """
-        print(f"\n{'=' * 60}")
-        print(f"AUTONOMOUS EXECUTION: {task[:50]}...")
-        print(f"{'=' * 60}\n")
+        logger.info("=" * 60)
+        logger.info(f"AUTONOMOUS EXECUTION: {task[:50]}...")
+        logger.info("=" * 60)
 
         self.current_task = task
         result = {
@@ -293,60 +416,81 @@ class AutonomousAgent(ReActAgent):
             "cycles": [],
             "final_result": None,
             "success": False,
-            "actions_taken": []
+            "actions_taken": [],
+            "grounded": False,
+            "completion_reason": "",
+            "done_criteria_met": [],
+            "done_criteria_missed": [],
         }
 
         try:
             for cycle in range(max_cycles):
-                print(f"\n--- Cycle {cycle + 1} ---")
+                logger.info(f"--- Cycle {cycle + 1} ---")
 
                 # THINK
-                print("💭 Thinking...")
+                logger.debug("Thinking...")
                 thought = self.think(f"Task: {task}" if cycle == 0 else f"Observation: {self.observations[-1].content if self.observations else 'Starting'}")
-                print(f"   Reasoning: {thought.reasoning}")
+                logger.debug(f"Reasoning: {thought.reasoning}")
 
                 # DECIDE ACTION
                 action_type, target, params = self._decide_action(thought)
-                print(f"🎯 Action: {action_type}({target})")
+                grounded = self._is_action_grounded(task, action_type, target)
+                if not grounded:
+                    target = self._extract_path(task) or target
+                    if any(k in task.lower() for k in ["edit", "fix", "modify"]):
+                        action_type = "read_file"
+                    elif any(k in task.lower() for k in ["write", "create"]):
+                        action_type = "write_file"
+                    elif "read" in task.lower():
+                        action_type = "read_file"
+                    grounded = self._is_action_grounded(task, action_type, target)
+                logger.info(f"Action: {action_type}({target})")
 
                 # ACT (REAL EXECUTION)
                 action = self.act(action_type, target, params)
-                print(f"   Result: {action.result[:100] if action.result else 'None'}...")
+                logger.debug(f"Result: {action.result[:100] if action.result else 'None'}...")
 
                 # OBSERVE
                 observation = self.observe(action.result or "No result")
-                print(f"👁 Observation: success={observation.success}")
+                logger.info(f"Observation: success={observation.success}")
 
                 cycle_data = {
                     "cycle": cycle + 1,
                     "thought": thought.reasoning,
                     "action": action_type,
                     "target": target,
+                    "grounded": grounded,
                     "result": action.result[:200] if action.result else None,
                     "success": observation.success
                 }
                 result["cycles"].append(cycle_data)
                 result["actions_taken"].append(action_type)
 
-                # Check if complete
-                if self._is_task_complete(task, observation):
-                    print("\n✅ Task completed!")
+                # Check if complete - evaluate done criteria
+                done_met, done_missed = self._evaluate_done_criteria(task, result["cycles"])
+                if observation.success and "grounded_action_success" in done_met:
+                    logger.info("Task completed!")
                     break
 
             # REFLECT
-            print("\n🪞 Self-reflecting...")
+            logger.debug("Self-reflecting...")
             reflection = self.reflect(f"Task: {task}")
-            print(f"   Quality: {reflection.quality_score:.2f}")
+            logger.info(f"Quality: {reflection.quality_score:.2f}")
             if reflection.improvements:
-                print(f"   Improvements: {reflection.improvements}")
+                logger.info(f"Improvements: {reflection.improvements}")
 
             # LEARN from execution
             try:
                 self._real_learn(f"Executed task: {task[:100]}", "autonomous_execution")
-            except:
-                pass  # Learning failure shouldn't affect result
+            except Exception as e:
+                logger.warning(f"Learning from execution failed: {e}")
 
-            result["success"] = reflection.quality_score >= 0.5
+            done_met, done_missed = self._evaluate_done_criteria(task, result["cycles"])
+            result["done_criteria_met"] = done_met
+            result["done_criteria_missed"] = done_missed
+            result["grounded"] = "grounded_action_success" in done_met
+            result["success"] = bool(not done_missed and reflection.quality_score >= 0.5)
+            result["completion_reason"] = "criteria_met" if result["success"] else "criteria_unmet"
             result["final_result"] = self._synthesize_autonomous_result(result)
 
         except Exception as e:
@@ -358,9 +502,9 @@ class AutonomousAgent(ReActAgent):
         result["completed_at"] = datetime.now().isoformat()
         self.current_task = None
 
-        print(f"\n{'=' * 60}")
-        print(f"RESULT: {'✅ SUCCESS' if result['success'] else '❌ FAILED'}")
-        print(f"{'=' * 60}\n")
+        logger.info("=" * 60)
+        logger.info(f"RESULT: {'SUCCESS' if result['success'] else 'FAILED'}")
+        logger.info("=" * 60)
 
         return result
 

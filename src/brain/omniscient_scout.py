@@ -59,6 +59,7 @@ import subprocess
 import hashlib
 import re
 import random
+import socket
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Tuple, Callable
 from pathlib import Path
@@ -67,6 +68,17 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib.request
 import urllib.error
+import xml.etree.ElementTree as ET
+
+from core.nexus_logger import get_logger
+
+logger = get_logger(__name__)
+
+try:
+    from core.llm_caller import call_llm
+    _LLM_AVAILABLE = True
+except ImportError:
+    _LLM_AVAILABLE = False
 
 # Project paths
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -104,7 +116,7 @@ class OmniscientScout:
         # Sources configuration
         self.sources: Dict[str, Source] = {}
         self.findings_cache: List[Dict] = []
-        self.executor = ThreadPoolExecutor(max_workers=10)
+        self.executor = ThreadPoolExecutor(max_workers=5)
 
         # Initialize all sources
         self._init_sources()
@@ -188,15 +200,17 @@ class OmniscientScout:
         """Load saved state"""
         if self.sources_file.exists():
             try:
-                with open(self.sources_file, 'r') as f:
+                with open(self.sources_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     for name, state in data.get("sources", {}).items():
                         if name in self.sources:
                             self.sources[name].last_scan = state.get("last_scan")
                             self.sources[name].last_error = state.get("last_error")
                             self.sources[name].total_findings = state.get("total_findings", 0)
-            except:
-                pass
+            except Exception:
+                # Keep default source state when state file is malformed.
+                logger.warning("Failed to load scout state from %s, using defaults", self.sources_file)
+                return
 
     def _save_state(self):
         """Save current state"""
@@ -211,7 +225,7 @@ class OmniscientScout:
             },
             "last_updated": datetime.now().isoformat()
         }
-        with open(self.sources_file, 'w') as f:
+        with open(self.sources_file, 'w', encoding='utf-8') as f:
             json.dump(state, f, indent=2)
 
     # ==================== SCANNING ====================
@@ -249,8 +263,23 @@ class OmniscientScout:
 
         except Exception as e:
             source.last_error = str(e)
+            logger.error("Scan failed for source %s: %s", source_name, e)
 
         self._save_state()
+        return findings
+
+    def scan_github_trending(self) -> List[Dict]:
+        """Compatibility wrapper for NexusBrain."""
+        findings = []
+        for source_name in ("github_trending", "github_ai", "github_automation", "github_agents"):
+            findings.extend(self.scan_source(source_name))
+        return findings
+
+    def scan_tech_news(self) -> List[Dict]:
+        """Compatibility wrapper for NexusBrain."""
+        findings = []
+        for source_name in ("hacker_news", "techcrunch", "venturebeat_ai", "wired"):
+            findings.extend(self.scan_source(source_name))
         return findings
 
     def _scan_html(self, source: Source) -> List[Dict]:
@@ -258,49 +287,93 @@ class OmniscientScout:
         findings = []
 
         try:
-            # Simulated HTML scanning (in production would use requests + BeautifulSoup)
-            # For now, generate relevant findings based on source
+            req = urllib.request.Request(
+                source.url,
+                headers={"User-Agent": "NexusScout/1.0 (+https://nexus.local)"}
+            )
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                body = resp.read().decode("utf-8", errors="ignore")
 
-            simulated_findings = {
-                "github_trending": [
-                    {"title": "AI Agent Framework Rising", "type": "trend", "relevance": 0.9},
-                    {"title": "New Browser Automation Tool", "type": "library", "relevance": 0.85},
-                ],
-                "hacker_news": [
-                    {"title": "Breakthrough in Autonomous Systems", "type": "news", "relevance": 0.9},
-                    {"title": "Open Source LLM Discussion", "type": "discussion", "relevance": 0.8},
-                ],
-                "papers_with_code": [
-                    {"title": "New SOTA in Agent Reasoning", "type": "paper", "relevance": 0.95},
-                    {"title": "Multi-agent Collaboration Methods", "type": "paper", "relevance": 0.9},
-                ],
-                "arxiv_ai": [
-                    {"title": "Self-Improving AI Systems", "type": "paper", "relevance": 0.95},
-                    {"title": "Autonomous Code Generation", "type": "paper", "relevance": 0.9},
-                ],
-                "techcrunch": [
-                    {"title": "AI Startup Funding Round", "type": "business", "relevance": 0.7},
-                    {"title": "Enterprise AI Adoption Trends", "type": "trend", "relevance": 0.75},
-                ],
-                "product_hunt": [
-                    {"title": "AI Productivity Tool Launch", "type": "product", "relevance": 0.8},
-                    {"title": "No-code AI Platform", "type": "product", "relevance": 0.75},
-                ],
-            }
+            title_patterns = [
+                r'<a[^>]+class="[^"]*titlelink[^"]*"[^>]*>(.*?)</a>',  # HN
+                r'<h[1-3][^>]*>(.*?)</h[1-3]>',  # Headings
+                r'<title[^>]*>(.*?)</title>',  # Page title fallback
+            ]
+            raw_titles = []
+            for pattern in title_patterns:
+                raw_titles.extend(re.findall(pattern, body, flags=re.IGNORECASE | re.DOTALL))
+                if len(raw_titles) >= 10:
+                    break
 
-            findings = simulated_findings.get(source.name, [
-                {"title": f"Update from {source.name}", "type": "update", "relevance": 0.6}
-            ])
+            cleaned_titles = []
+            for raw in raw_titles:
+                text = re.sub(r"<[^>]+>", "", raw)
+                text = re.sub(r"\s+", " ", text).strip()
+                if text and text not in cleaned_titles:
+                    cleaned_titles.append(text)
+                if len(cleaned_titles) >= 10:
+                    break
 
-            # Add metadata
-            for f in findings:
-                f["source"] = source.name
-                f["category"] = source.category
-                f["url"] = source.url
-                f["scanned_at"] = datetime.now().isoformat()
+            if not cleaned_titles:
+                return [{
+                    "title": f"No parsable content from {source.name}",
+                    "type": "unavailable",
+                    "relevance": 0.1,
+                    "source": source.name,
+                    "category": source.category,
+                    "url": source.url,
+                    "scanned_at": datetime.now().isoformat(),
+                }]
 
+            for title in cleaned_titles:
+                ftype = "update"
+                if "paper" in title.lower() or "arxiv" in source.name:
+                    ftype = "paper"
+                elif "release" in title.lower() or "launch" in title.lower():
+                    ftype = "release"
+                findings.append({
+                    "title": title[:240],
+                    "type": ftype,
+                    "relevance": 0.7,
+                    "source": source.name,
+                    "category": source.category,
+                    "url": source.url,
+                    "scanned_at": datetime.now().isoformat(),
+                })
+
+        except urllib.error.HTTPError as e:
+            findings = [{
+                "title": f"Source unavailable: {source.name}",
+                "type": "unavailable",
+                "relevance": 0.0,
+                "error": f"HTTP {e.code}: {e.reason}",
+                "source": source.name,
+                "category": source.category,
+                "url": source.url,
+                "scanned_at": datetime.now().isoformat(),
+            }]
+        except (urllib.error.URLError, socket.timeout, TimeoutError) as e:
+            findings = [{
+                "title": f"Source unavailable: {source.name}",
+                "type": "unavailable",
+                "relevance": 0.0,
+                "error": f"Network error: {e}",
+                "source": source.name,
+                "category": source.category,
+                "url": source.url,
+                "scanned_at": datetime.now().isoformat(),
+            }]
         except Exception as e:
-            findings = [{"error": str(e), "source": source.name}]
+            findings = [{
+                "title": f"Source unavailable: {source.name}",
+                "type": "unavailable",
+                "relevance": 0.0,
+                "error": str(e),
+                "source": source.name,
+                "category": source.category,
+                "url": source.url,
+                "scanned_at": datetime.now().isoformat(),
+            }]
 
         return findings
 
@@ -309,30 +382,91 @@ class OmniscientScout:
         findings = []
 
         try:
-            # RSS parsing would go here
-            findings = [
-                {"title": f"RSS Update from {source.name}", "type": "update", "relevance": 0.7}
-            ]
-        except:
-            pass
+            req = urllib.request.Request(
+                source.url,
+                headers={"User-Agent": "NexusScout/1.0 (+https://nexus.local)"}
+            )
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                body = resp.read().decode("utf-8", errors="ignore")
+            root = ET.fromstring(body)
+            items = root.findall(".//item")[:10]
+            if not items:
+                return [{
+                    "title": f"No RSS items from {source.name}",
+                    "type": "unavailable",
+                    "relevance": 0.1,
+                    "source": source.name,
+                    "category": source.category,
+                    "url": source.url,
+                    "scanned_at": datetime.now().isoformat(),
+                }]
+
+            for item in items:
+                title_node = item.find("title")
+                title = title_node.text.strip() if title_node is not None and title_node.text else f"Update from {source.name}"
+                findings.append({
+                    "title": title[:240],
+                    "type": "update",
+                    "relevance": 0.7,
+                    "source": source.name,
+                    "category": source.category,
+                    "url": source.url,
+                    "scanned_at": datetime.now().isoformat(),
+                })
+        except urllib.error.HTTPError as e:
+            findings = [{
+                "title": f"RSS unavailable: {source.name}",
+                "type": "unavailable",
+                "relevance": 0.0,
+                "error": f"HTTP {e.code}: {e.reason}",
+                "source": source.name,
+                "category": source.category,
+                "url": source.url,
+                "scanned_at": datetime.now().isoformat(),
+            }]
+        except (urllib.error.URLError, socket.timeout, TimeoutError) as e:
+            findings = [{
+                "title": f"RSS unavailable: {source.name}",
+                "type": "unavailable",
+                "relevance": 0.0,
+                "error": f"Network error: {e}",
+                "source": source.name,
+                "category": source.category,
+                "url": source.url,
+                "scanned_at": datetime.now().isoformat(),
+            }]
+        except Exception as e:
+            findings = [{
+                "title": f"RSS unavailable: {source.name}",
+                "type": "unavailable",
+                "relevance": 0.0,
+                "error": str(e),
+                "source": source.name,
+                "category": source.category,
+                "url": source.url,
+                "scanned_at": datetime.now().isoformat(),
+            }]
 
         return findings
 
     def _scan_api(self, source: Source) -> List[Dict]:
         """Scan API endpoint"""
-        findings = []
-
-        # API scanning would require credentials
-        # For now, return placeholder
-
-        return findings
+        return [{
+            "title": f"API source unsupported without credentials: {source.name}",
+            "type": "unsupported",
+            "relevance": 0.0,
+            "source": source.name,
+            "category": source.category,
+            "url": source.url,
+            "scanned_at": datetime.now().isoformat(),
+        }]
 
     def _store_finding(self, source: Source, finding: Dict):
         """Store finding"""
         finding["id"] = hashlib.md5(f"{source.name}{finding.get('title', '')}{datetime.now()}".encode()).hexdigest()[:12]
         finding["stored_at"] = datetime.now().isoformat()
 
-        with open(self.findings_file, 'a') as f:
+        with open(self.findings_file, 'a', encoding='utf-8') as f:
             f.write(json.dumps(finding) + "\n")
 
         self.findings_cache.append(finding)
@@ -348,8 +482,9 @@ class OmniscientScout:
                     url=finding.get("url"),
                     relevance=finding.get("relevance", 0.7)
                 )
-            except:
-                pass
+            except Exception as e:
+                finding["brain_ingest_error"] = str(e)
+                logger.warning("Brain ingest failed for finding '%s': %s", finding.get("title", "?"), e)
 
     # ==================== BATCH SCANNING ====================
 
@@ -369,6 +504,7 @@ class OmniscientScout:
                 findings = future.result(timeout=60)
                 results[name] = findings
             except Exception as e:
+                logger.error("Batch scan failed for %s: %s", name, e)
                 results[name] = [{"error": str(e)}]
 
         return results
@@ -412,6 +548,7 @@ class OmniscientScout:
                     time.sleep(60)  # Check every minute
 
                 except Exception as e:
+                    logger.error("Continuous scan loop error: %s", e)
                     time.sleep(60)
 
         thread = threading.Thread(target=scan_loop, daemon=True)
@@ -441,6 +578,82 @@ class OmniscientScout:
             }
 
         return stats
+
+    def score_source_quality(self, source_name: str) -> Dict:
+        """Score a source's quality using LLM analysis or heuristics."""
+        source = self.sources.get(source_name)
+        if not source:
+            return {'error': f'Source {source_name} not found'}
+
+        # Basic heuristic scoring
+        score = 0.5
+        reasons = []
+
+        # Frequency bonus
+        if source.total_findings > 10:
+            score += 0.1
+            reasons.append(f'High finding count ({source.total_findings})')
+        elif source.total_findings == 0:
+            score -= 0.2
+            reasons.append('No findings yet')
+
+        # Recency bonus
+        if source.last_scan:
+            try:
+                from datetime import datetime
+                last = datetime.fromisoformat(source.last_scan)
+                hours_ago = (datetime.now() - last).total_seconds() / 3600
+                if hours_ago < 24:
+                    score += 0.1
+                    reasons.append('Recently scanned')
+                elif hours_ago > 168:
+                    score -= 0.1
+                    reasons.append('Stale (>7 days)')
+            except (ValueError, TypeError):
+                pass
+
+        # Error penalty
+        if source.last_error:
+            score -= 0.2
+            reasons.append(f'Has error: {source.last_error[:50]}')
+
+        # LLM quality assessment
+        if _LLM_AVAILABLE:
+            try:
+                llm_result = call_llm(
+                    prompt=f'Rate the quality of this data source for an AI learning system (0-1 scale). Source: {source.name}, Category: {source.category}, URL: {source.url}, Findings: {source.total_findings}, Scan interval: {source.scan_interval_minutes}min. Return a single float number.',
+                    task_type='general',
+                    max_tokens=20,
+                    temperature=0.1,
+                )
+                if isinstance(llm_result, str):
+                    text = llm_result.strip()
+                    # Extract float from response
+                    import re
+                    match = re.search(r'(\d+\.?\d*)', text)
+                    if match:
+                        llm_score = float(match.group(1))
+                        if 0.0 <= llm_score <= 1.0:
+                            score = score * 0.5 + llm_score * 0.5
+                            reasons.append(f'LLM quality score: {llm_score:.2f}')
+            except Exception as e:
+                logger.debug("LLM quality scoring failed for %s: %s", source_name, e)
+
+        return {
+            'source': source_name,
+            'quality_score': round(min(1.0, max(0.0, score)), 2),
+            'reasons': reasons,
+            'category': source.category,
+            'total_findings': source.total_findings,
+        }
+
+    def get_ranked_sources(self) -> List[Dict]:
+        """Get all sources ranked by quality score."""
+        scores = []
+        for name in self.sources:
+            scores.append(self.score_source_quality(name))
+        scores.sort(key=lambda x: x.get('quality_score', 0), reverse=True)
+        return scores
 
     def get_recent_findings(self, limit: int = 50) -> List[Dict]:
         """Get recent findings"""

@@ -23,6 +23,92 @@ from src.memory import (
 )
 from src.core.runtime_sync import run_full_sync
 from src.core.runtime_guard import ProcessSingleton
+from src.core.runtime_hygiene import (
+    cleanup_stale_locks,
+    collect_runtime_processes,
+    collect_terminal_shells,
+    detect_runtime_conflicts,
+    terminate_processes,
+)
+
+try:
+    from src.core.llm_caller import get_available_models
+    _LLM_CALLER_AVAILABLE = True
+except ImportError:
+    _LLM_CALLER_AVAILABLE = False
+
+
+def _runtime_lock_paths() -> list:
+    return [
+        os.getenv("LEARNING_RUNTIME_LOCK_PATH", "data/state/learning_runtime.lock"),
+        os.getenv("AUTODEV_RUNTIME_LOCK_PATH", "data/state/autodev_runtime.lock"),
+        os.getenv("SCAN_OPERATION_LOCK_PATH", "data/state/knowledge_scan.lock"),
+        os.getenv("IMPROVEMENT_OPERATION_LOCK_PATH", "data/state/improvement_apply.lock"),
+        os.getenv("DAILY_CYCLE_OPERATION_LOCK_PATH", "data/state/daily_self_learning.lock"),
+    ]
+
+
+def _print_runtime_diagnostics(workspace_root: Path, apply_fix: bool = False) -> None:
+    runtime_rows = collect_runtime_processes(workspace_hint=str(workspace_root))
+    terminal_rows = collect_terminal_shells()
+    conflicts = detect_runtime_conflicts(runtime_rows)
+    cleanup_rows = []
+    terminated_rows = []
+
+    if apply_fix:
+        cleanup_rows = cleanup_stale_locks(_runtime_lock_paths())
+        if conflicts:
+            terminate_pids = []
+            for conflict in conflicts:
+                terminate_pids.extend(conflict.get("terminate_pids", []))
+            terminated_rows = terminate_processes(terminate_pids)
+            runtime_rows = collect_runtime_processes(workspace_hint=str(workspace_root))
+            conflicts = detect_runtime_conflicts(runtime_rows)
+
+    print("\n🧪 Runtime Processes:")
+    if not runtime_rows:
+        print("  • No workspace runtime process detected.")
+    else:
+        for row in runtime_rows[:20]:
+            print(
+                f"  • [{row.get('kind')}] pid={row.get('pid')} tty={row.get('tty')} "
+                f"etime={row.get('etime')} cmd={row.get('command')}"
+            )
+
+    print("\n🖥️ Terminal Shells:")
+    if not terminal_rows:
+        print("  • No interactive shell process found.")
+    else:
+        for row in terminal_rows[:20]:
+            state = "idle" if row.get("idle", True) else "active"
+            print(
+                f"  • pid={row.get('pid')} tty={row.get('tty')} state={state} "
+                f"children={row.get('child_count')} etime={row.get('etime')}"
+            )
+
+    print("\n⚔️ Runtime Conflicts:")
+    if not conflicts:
+        print("  • No singleton runtime conflict detected.")
+    else:
+        for conflict in conflicts:
+            print(
+                f"  • kind={conflict.get('kind')} count={conflict.get('count')} "
+                f"keep={conflict.get('keep_pid')} terminate={conflict.get('terminate_pids')}"
+            )
+
+    if apply_fix:
+        print("\n🧹 Hygiene Fix:")
+        if cleanup_rows:
+            removed = sum(1 for row in cleanup_rows if row.get("removed", False))
+            stale = sum(1 for row in cleanup_rows if row.get("stale", False))
+            print(f"  • Stale locks detected: {stale}, removed: {removed}")
+        else:
+            print("  • No lock cleanup attempted.")
+        if terminated_rows:
+            ok = sum(1 for row in terminated_rows if row.get("terminated", False))
+            print(f"  • Conflict processes terminated: {ok}/{len(terminated_rows)}")
+        else:
+            print("  • No process termination needed.")
 
 
 def main():
@@ -77,16 +163,41 @@ def main():
         "--write-env", action="store_true",
         help="When used with --sync-models, append missing synced values to .env"
     )
+    parser.add_argument(
+        "--runtime-doctor", action="store_true",
+        help="Inspect runtime processes, terminal shells, and conflict signals"
+    )
+    parser.add_argument(
+        "--runtime-fix", action="store_true",
+        help="With --runtime-doctor or startup preflight: clean stale locks and terminate duplicate runtime processes"
+    )
 
     args = parser.parse_args()
+    workspace_root = Path(__file__).parent.parent
 
     print("=" * 60)
     print("  THE DREAM TEAM - AUTO DEV LOOP")
     print("  Self-Learning AI Development System")
     print("=" * 60)
 
+    if args.runtime_doctor:
+        print("\n🩺 RUNTIME DOCTOR")
+        print("-" * 40)
+        _print_runtime_diagnostics(workspace_root=workspace_root, apply_fix=args.runtime_fix)
+        return
+
     runtime_guard = None
     needs_runtime_guard = not args.status and not args.sync_models
+    if needs_runtime_guard and (args.runtime_fix or os.getenv("AUTO_RUNTIME_HYGIENE", "true").lower() == "true"):
+        cleanup_stale_locks(_runtime_lock_paths())
+    if needs_runtime_guard and args.runtime_fix:
+        runtime_rows = collect_runtime_processes(workspace_hint=str(workspace_root))
+        conflicts = detect_runtime_conflicts(runtime_rows)
+        terminate_pids = []
+        for conflict in conflicts:
+            terminate_pids.extend(conflict.get("terminate_pids", []))
+        if terminate_pids:
+            terminate_processes(terminate_pids)
     if needs_runtime_guard:
         lock_path = os.getenv("LEARNING_RUNTIME_LOCK_PATH", "data/state/learning_runtime.lock")
         runtime_guard = ProcessSingleton(name="learning_runtime", lock_path=lock_path)
@@ -126,25 +237,34 @@ def main():
     # Keep routing/provider state synchronized for every runtime start.
     run_full_sync(write_env=False)
 
+    print("\n🤖 LLM Model Availability Check")
+    print("-" * 40)
+    if _LLM_CALLER_AVAILABLE:
+        try:
+            models = get_available_models()
+            available = [name for name, ready in models.items() if ready]
+            unavailable = [name for name, ready in models.items() if not ready]
+            if available:
+                print(f"  LLM Models available: {', '.join(available)}")
+            if unavailable:
+                print(f"  LLM Models unavailable (no API key): {', '.join(unavailable)}")
+            if not available:
+                print("  WARNING: No LLM models available - agents will use heuristic fallback")
+        except Exception as e:
+            print(f"  LLM check failed: {e}")
+    else:
+        print("  LLM caller module not available")
+
     if args.status:
         # Show status
         print("\n📊 SYSTEM STATUS")
         print("-" * 40)
-        learning_lock = ProcessSingleton.inspect(
-            os.getenv("LEARNING_RUNTIME_LOCK_PATH", "data/state/learning_runtime.lock")
-        )
-        autodev_lock = ProcessSingleton.inspect(
-            os.getenv("AUTODEV_RUNTIME_LOCK_PATH", "data/state/autodev_runtime.lock")
-        )
-        scan_lock = ProcessSingleton.inspect(
-            os.getenv("SCAN_OPERATION_LOCK_PATH", "data/state/knowledge_scan.lock")
-        )
-        improvement_lock = ProcessSingleton.inspect(
-            os.getenv("IMPROVEMENT_OPERATION_LOCK_PATH", "data/state/improvement_apply.lock")
-        )
-        daily_cycle_lock = ProcessSingleton.inspect(
-            os.getenv("DAILY_CYCLE_OPERATION_LOCK_PATH", "data/state/daily_self_learning.lock")
-        )
+        lock_paths = _runtime_lock_paths()
+        learning_lock = ProcessSingleton.inspect(lock_paths[0])
+        autodev_lock = ProcessSingleton.inspect(lock_paths[1])
+        scan_lock = ProcessSingleton.inspect(lock_paths[2])
+        improvement_lock = ProcessSingleton.inspect(lock_paths[3])
+        daily_cycle_lock = ProcessSingleton.inspect(lock_paths[4])
 
         def _print_lock_line(label: str, snapshot: dict) -> None:
             owner = snapshot.get("owner", {}) if isinstance(snapshot.get("owner"), dict) else {}
@@ -164,6 +284,7 @@ def main():
         _print_lock_line("Knowledge Scan", scan_lock)
         _print_lock_line("Apply Improvements", improvement_lock)
         _print_lock_line("Daily Self-Learning", daily_cycle_lock)
+        _print_runtime_diagnostics(workspace_root=workspace_root, apply_fix=False)
         report = status()
         print(f"Iteration: {report.get('iteration', 'N/A')}")
         print(f"Running: {report.get('running', False)}")
@@ -201,6 +322,12 @@ def main():
             print(f"  • Last run: {daily_cycle.get('last_run', 'N/A')}")
             print(f"  • Next run in: {daily_cycle.get('next_run_in_seconds', 0)}s")
             print(f"  • Max ideas/experiments: {daily_cycle.get('max_ideas', 0)}/{daily_cycle.get('max_experiments', 0)}")
+            print(
+                f"  • Force scan (stagnation): "
+                f"{daily_cycle.get('stagnation_force_scan_enabled', False)} "
+                f"(streak={daily_cycle.get('stagnation_force_scan_streak', 0)})"
+            )
+            print(f"  • Last forced scan: {daily_cycle.get('last_stagnation_force_scan_at', 'N/A')}")
             print(f"  • File: {daily_cycle.get('path', 'N/A')}")
             recent_cycles = daily_cycle.get("recent", [])
             if recent_cycles:
@@ -210,6 +337,29 @@ def main():
                     f"ideas={len(latest_cycle.get('improvement_ideas', []))}, "
                     f"experiments={len(latest_cycle.get('experiments', []))}, "
                     f"warnings={len(latest_cycle.get('warnings', []))}"
+                )
+
+        daily_strategy = report.get("daily_strategy", {})
+        if daily_strategy:
+            print(f"\n🎯 Daily Strategy:")
+            print(f"  • Objective: {daily_strategy.get('objective_title', 'N/A')}")
+            print(f"  • Focus: {daily_strategy.get('focus_area', 'N/A')}")
+            print(f"  • Status: {daily_strategy.get('status', 'N/A')}")
+            print(
+                f"  • Target completion: "
+                f"{daily_strategy.get('met_targets', 0)}/{daily_strategy.get('total_targets', 0)} "
+                f"({daily_strategy.get('completion_ratio', 0)})"
+            )
+            print(f"  • Adaptations today: {daily_strategy.get('adaptations_today', 0)}")
+            latest_adaptation = (
+                daily_strategy.get("latest_adaptation", {})
+                if isinstance(daily_strategy.get("latest_adaptation"), dict)
+                else {}
+            )
+            if latest_adaptation:
+                print(
+                    f"  • Latest adaptation: {latest_adaptation.get('type', 'N/A')} "
+                    f"({latest_adaptation.get('reason', 'N/A')})"
                 )
 
         prompt_system = report.get("prompt_system", {})

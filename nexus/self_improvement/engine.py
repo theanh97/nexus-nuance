@@ -88,7 +88,7 @@ class SelfImprovementEngine:
         """Load history and state."""
         if self.history_file.exists():
             try:
-                with open(self.history_file, 'r') as f:
+                with open(self.history_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 self.cycle_history = [CycleResult(**c) for c in data.get("cycles", [])]
             except Exception as e:
@@ -103,7 +103,7 @@ class SelfImprovementEngine:
                 "total_cycles": len(self.cycle_history),
                 "cycles": [asdict(c) for c in self.cycle_history[-100:]]
             }
-            with open(self.history_file, 'w') as f:
+            with open(self.history_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
 
             # Save state
@@ -113,7 +113,7 @@ class SelfImprovementEngine:
                 "total_cycles": len(self.cycle_history),
                 "total_improvements": sum(c.patches_successful for c in self.cycle_history),
             }
-            with open(self.state_file, 'w') as f:
+            with open(self.state_file, 'w', encoding='utf-8') as f:
                 json.dump(state, f, indent=2)
 
     def run_cycle(self, max_patches: int = 3) -> CycleResult:

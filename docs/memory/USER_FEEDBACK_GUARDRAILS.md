@@ -38,6 +38,11 @@ Last updated: 2026-02-15
 - Nắm nguyên tắc user, tình trạng hệ thống và luồng thực thi hiện tại.
 - Điều phối tránh xung đột giữa Monitor/Guardian/Orion.
 
+9. Chế độ vận hành mặc định phải “không hỏi lại user”:
+- Ưu tiên tự xử lý end-to-end cho luồng an toàn.
+- Không tạo pending decision/human input prompt trừ khi policy hard-deny hoặc rủi ro phá hủy không thể tự suy luận.
+- Khi thiếu input: auto-fill từ intake/default + ghi log “auto_resolved” thay vì chờ user trả lời.
+
 ## Quy tắc vận hành suy ra từ feedback
 
 1. Mọi khiếu nại mức cao phải được lưu vào `data/state/user_feedback.jsonl` và nâng cấp thành directive.
@@ -49,3 +54,4 @@ Last updated: 2026-02-15
 - token/performance impact
 - log signal quality
 3. Nếu còn lỗi ở bất kỳ mục nào, tiếp tục lặp cải tiến; không dừng ở trạng thái “tạm được”.
+4. Với feedback “đừng hỏi nữa”, mọi nhánh intervention phải ưu tiên auto-resolve và không làm gián đoạn flow chính.

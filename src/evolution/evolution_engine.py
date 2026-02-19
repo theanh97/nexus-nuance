@@ -122,7 +122,7 @@ class EvolutionEngine:
         """Load all data"""
         if self.events_file.exists():
             try:
-                with open(self.events_file, 'r') as f:
+                with open(self.events_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     self.events = [LearningEvent(**e) for e in data.get("events", [])[-5000:]]
             except:
@@ -130,7 +130,7 @@ class EvolutionEngine:
 
         if self.patterns_file.exists():
             try:
-                with open(self.patterns_file, 'r') as f:
+                with open(self.patterns_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     for k, v in data.get("patterns", {}).items():
                         self.patterns[k] = Pattern(**v)
@@ -139,7 +139,7 @@ class EvolutionEngine:
 
         if self.skills_file.exists():
             try:
-                with open(self.skills_file, 'r') as f:
+                with open(self.skills_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     for k, v in data.get("skills", {}).items():
                         self.skills[k] = SkillLevel(**v)
@@ -148,19 +148,19 @@ class EvolutionEngine:
 
     def _save(self):
         """Save all data"""
-        with open(self.events_file, 'w') as f:
+        with open(self.events_file, 'w', encoding='utf-8') as f:
             json.dump({
                 "events": [asdict(e) for e in self.events[-5000:]],
                 "last_updated": datetime.now().isoformat()
             }, f, indent=2, default=str)
 
-        with open(self.patterns_file, 'w') as f:
+        with open(self.patterns_file, 'w', encoding='utf-8') as f:
             json.dump({
                 "patterns": {k: asdict(v) for k, v in self.patterns.items()},
                 "last_updated": datetime.now().isoformat()
             }, f, indent=2, default=str)
 
-        with open(self.skills_file, 'w') as f:
+        with open(self.skills_file, 'w', encoding='utf-8') as f:
             json.dump({
                 "skills": {k: asdict(v) for k, v in self.skills.items()},
                 "last_updated": datetime.now().isoformat()
@@ -170,7 +170,7 @@ class EvolutionEngine:
         """Log to evolution log"""
         timestamp = datetime.now().isoformat()
         log_line = f"[{timestamp}] [{level}] {message}\n"
-        with open(self.evolution_log, 'a') as f:
+        with open(self.evolution_log, 'a', encoding='utf-8') as f:
             f.write(log_line)
 
     # ==================== CAPTURE ====================
@@ -417,7 +417,7 @@ class EvolutionEngine:
         self.diagnostics.append(diagnosis)
 
         # Save diagnostics
-        with open(self.diagnostics_file, 'w') as f:
+        with open(self.diagnostics_file, 'w', encoding='utf-8') as f:
             json.dump(self.diagnostics[-100:], f, indent=2, default=str)
 
     def _analyze_error(self, error: str) -> str:
@@ -488,13 +488,13 @@ class EvolutionEngine:
         improvements = []
         if improvements_file.exists():
             try:
-                with open(improvements_file, 'r') as f:
+                with open(improvements_file, 'r', encoding='utf-8') as f:
                     improvements = json.load(f)
             except:
                 pass
 
         improvements.append(improvement)
-        with open(improvements_file, 'w') as f:
+        with open(improvements_file, 'w', encoding='utf-8') as f:
             json.dump(improvements[-100:], f, indent=2, default=str)
 
         self._log(f"Generated improvement: {trigger[:100]}...")

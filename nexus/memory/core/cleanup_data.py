@@ -47,7 +47,7 @@ def cleanup_patterns(patterns_path: Path) -> Dict:
     """Clean up patterns.json"""
     print("🧹 Cleaning patterns.json...")
 
-    with open(patterns_path, 'r') as f:
+    with open(patterns_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
     original_count = len(data.get("patterns", []))
@@ -56,7 +56,7 @@ def cleanup_patterns(patterns_path: Path) -> Dict:
 
     data["last_cleaned"] = datetime.now().isoformat()
 
-    with open(patterns_path, 'w') as f:
+    with open(patterns_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2)
 
     return {
@@ -71,7 +71,7 @@ def cleanup_lessons(lessons_path: Path) -> Dict:
     """Clean up lessons.json"""
     print("🧹 Cleaning lessons.json...")
 
-    with open(lessons_path, 'r') as f:
+    with open(lessons_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
     original_count = len(data.get("lessons", []))
@@ -92,7 +92,7 @@ def cleanup_lessons(lessons_path: Path) -> Dict:
 
     data["last_cleaned"] = datetime.now().isoformat()
 
-    with open(lessons_path, 'w') as f:
+    with open(lessons_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2)
 
     return {
@@ -110,7 +110,7 @@ def cleanup_issues(issues_path: Path) -> Dict:
     if not issues_path.exists():
         return {"file": "issues.json", "original": 0, "cleaned": 0, "removed": 0}
 
-    with open(issues_path, 'r') as f:
+    with open(issues_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
     original_count = len(data.get("issues", []))
@@ -129,7 +129,7 @@ def cleanup_issues(issues_path: Path) -> Dict:
 
     data["last_cleaned"] = datetime.now().isoformat()
 
-    with open(issues_path, 'w') as f:
+    with open(issues_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2)
 
     return {

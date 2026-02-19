@@ -34,6 +34,10 @@ from dataclasses import dataclass, field
 from collections import defaultdict
 import subprocess
 
+from core.nexus_logger import get_logger
+
+logger = get_logger(__name__)
+
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 DATA_DIR = PROJECT_ROOT / "data" / "brain"
 
@@ -250,21 +254,42 @@ class AutoDiscoveryEngine:
         """Load discovered sources"""
         if self.discovered_file.exists():
             try:
-                with open(self.discovered_file, 'r') as f:
+                with open(self.discovered_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     for item in data.get("discovered", []):
                         source = DiscoveredSource(**item)
                         self.discovered.append(source)
                         self.discovered_urls.add(source.url)
-            except:
+            except (json.JSONDecodeError, OSError, KeyError) as e:
+                logger.warning(f"Failed to load discovered sources from {self.discovered_file}: {e}")
+                pass
+
+        if self.categories_file.exists():
+            try:
+                with open(self.categories_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                loaded_categories = {}
+                for item in data.get("categories", []):
+                    category = Category(**item)
+                    loaded_categories[category.name] = category
+                if loaded_categories:
+                    self.categories = loaded_categories
+            except (json.JSONDecodeError, OSError, KeyError) as e:
+                logger.warning(f"Failed to load categories from {self.categories_file}: {e}")
                 pass
 
     def _save(self):
         """Save discovered sources"""
-        with open(self.discovered_file, 'w') as f:
+        with open(self.discovered_file, 'w', encoding='utf-8') as f:
             json.dump({
                 "discovered": [vars(s) for s in self.discovered],
                 "total": len(self.discovered),
+                "last_updated": datetime.now().isoformat()
+            }, f, indent=2)
+        with open(self.categories_file, 'w', encoding='utf-8') as f:
+            json.dump({
+                "categories": [vars(c) for c in self.categories.values()],
+                "total": len(self.categories),
                 "last_updated": datetime.now().isoformat()
             }, f, indent=2)
 
@@ -272,9 +297,14 @@ class AutoDiscoveryEngine:
         """Log evolution event"""
         timestamp = datetime.now().isoformat()
         line = f"[{timestamp}] [{level}] {message}\n"
-        with open(self.evolution_log, 'a') as f:
+        with open(self.evolution_log, 'a', encoding='utf-8') as f:
             f.write(line)
-        print(f"[EVOLUTION] [{level}] {message}")
+        if level == "ERROR":
+            logger.error(message)
+        elif level == "WARN":
+            logger.warning(message)
+        else:
+            logger.info(message)
 
     # ==================== DISCOVERY METHODS ====================
 
@@ -434,7 +464,8 @@ class AutoDiscoveryEngine:
         # Import Scout's Source class
         try:
             from .omniscient_scout import Source
-        except:
+        except (ImportError, AttributeError) as e:
+            logger.warning(f"Failed to import Scout Source class: {e}")
             return False
 
         # Create new source for scout
@@ -515,15 +546,16 @@ class AutoDiscoveryEngine:
 
     def get_stats(self) -> Dict:
         """Get discovery statistics"""
+        method_counts = defaultdict(int)
+        for source in self.discovered:
+            method_counts[source.discovery_method] += 1
         return {
             "total_discovered": len(self.discovered),
             "verified_sources": sum(1 for s in self.discovered if s.verified),
             "added_to_scout": sum(1 for s in self.discovered if s.added_to_scout),
             "categories": len(self.categories),
             "category_list": list(self.categories.keys()),
-            "discovery_methods": defaultdict(int, {
-                s.discovery_method: 1 for s in self.discovered
-            })
+            "discovery_methods": method_counts
         }
 
 

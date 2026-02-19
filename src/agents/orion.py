@@ -965,7 +965,7 @@ Messages: {report['message_stats']['total_messages']} total"""
             # Save to decision history
             decision_file = Path("data/memory/decision_log.json")
             if decision_file.exists():
-                with open(decision_file, 'r') as f:
+                with open(decision_file, 'r', encoding='utf-8') as f:
                     decisions = json.load(f)
             else:
                 decisions = {"sessions": []}
@@ -980,7 +980,7 @@ Messages: {report['message_stats']['total_messages']} total"""
             if len(decisions["sessions"][-1]["decisions"]) > 1000:
                 decisions["sessions"][-1]["decisions"] = decisions["sessions"][-1]["decisions"][-1000:]
 
-            with open(decision_file, 'w') as f:
+            with open(decision_file, 'w', encoding='utf-8') as f:
                 json.dump(decisions, f, indent=2)
 
             # Log summary

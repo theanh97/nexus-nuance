@@ -2,7 +2,12 @@ from pathlib import Path
 
 
 def test_openclaw_open_guard_blocks_window_open_on_unhealthy_dashboard():
-    dashboard_html = Path("/Users/qtmobile/Desktop/Jack - Full Automation Tools/monitor/templates/dashboard.html").read_text(encoding="utf-8")
+    # Use local project's dashboard template
+    dashboard_path = Path(__file__).parent.parent.parent / "monitor" / "templates" / "dashboard.html"
+    if not dashboard_path.exists():
+        import pytest
+        pytest.skip("dashboard.html not found in local project")
+    dashboard_html = dashboard_path.read_text(encoding="utf-8")
 
     fn_start = dashboard_html.find("function openOpenClaw()")
     assert fn_start != -1

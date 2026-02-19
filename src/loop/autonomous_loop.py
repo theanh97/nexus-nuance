@@ -30,6 +30,47 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from memory.user_feedback import UserFeedbackManager
 from memory.autonomous_improver import AutonomousImprover, learn_from_input
 
+try:
+    from core.llm_caller import call_llm, reflect_on_work
+
+    _LLM_AVAILABLE = True
+except ImportError:
+    _LLM_AVAILABLE = False
+
+
+def _parse_llm_json_response(response: Any) -> Any:
+    if isinstance(response, (dict, list)):
+        return response
+    if not isinstance(response, str):
+        raise TypeError(f"Expected str/dict/list, got {type(response).__name__}")
+
+    text = response.strip()
+    if text.startswith("```") and "```" in text[3:]:
+        parts = text.split("```")
+        if len(parts) >= 3:
+            text = parts[1].strip()
+            if "\n" in text:
+                first_line, remainder = text.split("\n", 1)
+                if first_line.strip().lower() in {"json", "javascript"}:
+                    text = remainder.strip()
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    for open_char, close_char in [("{", "}"), ("[", "]")]:
+        start = text.find(open_char)
+        end = text.rfind(close_char)
+        if start != -1 and end != -1 and end > start:
+            candidate = text[start : end + 1]
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+
+    return json.loads(text)
+
 
 class TaskStatus(Enum):
     PENDING = "pending"
@@ -147,6 +188,54 @@ class LearningAnalyzer:
             "timestamp": datetime.now().isoformat()
         }
 
+        if _LLM_AVAILABLE:
+            try:
+                work_description = (
+                    "Task result for reflection:\n"
+                    f"Task ID: {task.id}\n"
+                    f"Name: {task.name}\n"
+                    f"Description: {task.description}\n"
+                    f"Action: {task.action}\n"
+                    f"Params: {json.dumps(task.params, ensure_ascii=False, default=str)}\n"
+                    f"Result: {json.dumps(task.result, ensure_ascii=False, default=str)}\n"
+                    f"Verification: {json.dumps(verification, ensure_ascii=False, default=str)}\n"
+                    f"Retry count: {task.retry_count}/{task.max_retries}\n"
+                )
+
+                llm_raw = reflect_on_work(work_description)
+                llm_data = _parse_llm_json_response(llm_raw)
+                if not isinstance(llm_data, dict):
+                    raise TypeError("LLM reflection response must be a JSON object")
+
+                quality_score = float(llm_data.get("quality_score"))
+                quality_score = max(0.0, min(1.0, quality_score))
+                improvements = llm_data.get("improvements")
+                summary = llm_data.get("summary")
+
+                if not isinstance(improvements, list) or not all(
+                    isinstance(item, str) for item in improvements
+                ):
+                    raise TypeError("LLM improvements must be a list of strings")
+                if not isinstance(summary, str) or not summary.strip():
+                    raise TypeError("LLM summary must be a non-empty string")
+
+                analysis["quality_score"] = quality_score
+                analysis["improvements"] = improvements
+                analysis["summary"] = summary
+                analysis["learnings"].append(
+                    {
+                        "type": "llm_reflection",
+                        "content": summary.strip(),
+                        "value_score": quality_score,
+                        "suggestion": improvements,
+                    }
+                )
+
+                return analysis
+
+            except Exception:
+                pass
+
         # Nếu task fail
         if not verification.get("success"):
             learning = {
@@ -189,7 +278,72 @@ class LearningAnalyzer:
 
     def generate_improvement_suggestions(self, analysis: Dict) -> List[Dict]:
         """Tạo improvement suggestions từ analysis"""
-        suggestions = []
+        if _LLM_AVAILABLE:
+            try:
+                prompt = (
+                    "Generate improvement suggestions for an autonomous task outcome.\n"
+                    "Return ONLY a JSON array. Each element can be either a string suggestion or an object with keys:\n"
+                    "priority (high|medium|low), type, description, suggested_action.\n"
+                    f"Analysis JSON:\n{json.dumps(analysis, ensure_ascii=False, default=str)}\n"
+                )
+                llm_raw = call_llm(
+                    prompt=prompt,
+                    task_type="code_review",
+                    max_tokens=800,
+                    temperature=0.3,
+                    system_prompt=(
+                        "Return only valid JSON. Prefer a list of objects with keys: "
+                        "priority, type, description, suggested_action."
+                    ),
+                )
+                llm_data = _parse_llm_json_response(llm_raw)
+                if isinstance(llm_data, dict) and isinstance(
+                    llm_data.get("suggestions"), list
+                ):
+                    llm_data = llm_data["suggestions"]
+                if not isinstance(llm_data, list):
+                    raise TypeError("LLM suggestions must be a JSON array")
+
+                llm_suggestions: List[Dict] = []
+                for item in llm_data:
+                    if isinstance(item, str):
+                        text = item.strip()
+                        if not text:
+                            continue
+                        llm_suggestions.append(
+                            {
+                                "priority": "medium",
+                                "type": "llm_suggestion",
+                                "description": text,
+                                "suggested_action": text,
+                            }
+                        )
+                    elif isinstance(item, dict):
+                        desc = (
+                            item.get("description")
+                            or item.get("suggestion")
+                            or item.get("text")
+                        )
+                        if not isinstance(desc, str) or not desc.strip():
+                            continue
+
+                        normalized = dict(item)
+                        normalized.setdefault("priority", "medium")
+                        normalized.setdefault("type", "llm_suggestion")
+                        normalized.setdefault(
+                            "suggested_action",
+                            normalized.get("suggested_action") or desc.strip(),
+                        )
+                        normalized["description"] = desc.strip()
+                        llm_suggestions.append(normalized)
+
+                if llm_suggestions:
+                    return llm_suggestions
+
+            except Exception:
+                pass
+
+        suggestions: List[Dict] = []
 
         for learning in analysis.get("learnings", []):
             if learning["type"] == "failure_pattern":
@@ -251,7 +405,7 @@ class AutonomousLoop:
         state_file = self.data_dir / "loop_state.json"
         if state_file.exists():
             try:
-                with open(state_file, 'r') as f:
+                with open(state_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     # Restore task queue
                     for t in data.get("pending_tasks", []):
@@ -259,13 +413,13 @@ class AutonomousLoop:
                         task.priority = TaskPriority(task.priority.value if isinstance(task.priority, TaskPriority) else task.priority)
                         task.status = TaskStatus.PENDING
                         self.task_queue.append(task)
-            except:
-                pass
+            except (json.JSONDecodeError, OSError, KeyError, TypeError) as e:
+                print(f"[LOOP] Warning: failed to load state from {state_file}: {e}")
 
     def _save_state(self):
         """Save state to disk"""
         state_file = self.data_dir / "loop_state.json"
-        with open(state_file, 'w') as f:
+        with open(state_file, 'w', encoding='utf-8') as f:
             json.dump({
                 "pending_tasks": [asdict(t) for t in self.task_queue],
                 "last_updated": datetime.now().isoformat()
@@ -335,12 +489,34 @@ class AutonomousLoop:
         result = {
             "success": False,
             "output": None,
-            "error": None
+            "error": None,
+            "llm_pre_analysis": None,
         }
 
         try:
             action = task.action
             params = task.params
+
+            if _LLM_AVAILABLE:
+                try:
+                    planning_prompt = (
+                        "Provide a brief pre-execution analysis for this autonomous task.\n"
+                        f"Task ID: {task.id}\n"
+                        f"Name: {task.name}\n"
+                        f"Description: {task.description}\n"
+                        f"Action: {action}\n"
+                        f"Params: {json.dumps(params, ensure_ascii=False, default=str)}\n"
+                        f"Retry count: {task.retry_count}/{task.max_retries}\n"
+                        "Include: risks, suggested checks, and safe execution notes. Keep it concise."
+                    )
+                    result["llm_pre_analysis"] = call_llm(
+                        prompt=planning_prompt,
+                        task_type="planning",
+                        max_tokens=600,
+                        temperature=0.3,
+                    )
+                except Exception:
+                    pass
 
             # Execute action
             if action == "verify_url":
@@ -356,9 +532,70 @@ class AutonomousLoop:
                 task.verification = verification
 
             elif action == "run_command":
+                command = params.get("command", "")
+                if not isinstance(command, str):
+                    raise TypeError("run_command command must be a string")
+                if not command.strip():
+                    raise ValueError("run_command command is empty")
+                if "\x00" in command or "\n" in command or "\r" in command:
+                    raise ValueError("run_command command contains invalid control characters")
+
+                in_single_quote = False
+                in_double_quote = False
+                escaped = False
+                disallowed = None
+                i = 0
+                while i < len(command):
+                    ch = command[i]
+                    if escaped:
+                        escaped = False
+                        i += 1
+                        continue
+
+                    if ch == "\\" and not in_single_quote:
+                        escaped = True
+                        i += 1
+                        continue
+
+                    if ch == "'" and not in_double_quote:
+                        in_single_quote = not in_single_quote
+                        i += 1
+                        continue
+
+                    if ch == '"' and not in_single_quote:
+                        in_double_quote = not in_double_quote
+                        i += 1
+                        continue
+
+                    if not in_single_quote:
+                        if command.startswith("$(", i):
+                            disallowed = "$("
+                            break
+                        if ch == "`":
+                            disallowed = ch
+                            break
+
+                    if not in_single_quote and not in_double_quote:
+                        if ch in {";", "|", "&", "<", ">"}:
+                            disallowed = ch
+                            break
+
+                    i += 1
+
+                if escaped:
+                    raise ValueError("run_command command has a trailing escape character")
+                if in_single_quote or in_double_quote:
+                    raise ValueError("run_command command has unterminated quotes")
+                if disallowed is not None:
+                    raise ValueError(f"run_command command contains disallowed shell metacharacter: {disallowed}")
+
+                import shlex as _shlex
+                try:
+                    cmd_args = _shlex.split(command)
+                except ValueError:
+                    raise ValueError(f"Malformed command: {command!r}")
                 proc = subprocess.run(
-                    params.get("command", ""),
-                    shell=True,
+                    cmd_args,
                     capture_output=True,
                     text=True,
                     timeout=params.get("timeout", 60)
@@ -368,10 +605,40 @@ class AutonomousLoop:
 
             elif action == "run_python":
                 # Execute Python code
-                local_vars = {}
-                exec(params.get("code", "pass"), {}, local_vars)
+                code = params.get("code", "pass")
+                if not isinstance(code, str):
+                    raise TypeError("run_python code must be a string")
+
+                marker = "__NEXUS_RUN_PYTHON_RESULT__:"
+                wrapped_code = (
+                    code
+                    + "\n\n"
+                    + "import json as __json\n"
+                    + "import sys as __sys\n"
+                    + "__nexus_value = globals().get('result', 'Executed')\n"
+                    + "try:\n"
+                    + f"    __sys.stdout.write('\\n{marker}' + __json.dumps(__nexus_value, default=str))\n"
+                    + "except Exception:\n"
+                    + f"    __sys.stdout.write('\\n{marker}' + __json.dumps(str(__nexus_value)))\n"
+                )
+
+                proc = subprocess.run(
+                    ['python3', '-c', wrapped_code],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                if proc.returncode != 0:
+                    raise RuntimeError(proc.stderr.strip() or f"Python exited with code {proc.returncode}")
+
+                stdout = proc.stdout or ""
+                marker_pos = stdout.rfind(marker)
+                if marker_pos == -1:
+                    result["output"] = "Executed"
+                else:
+                    marker_payload = stdout[marker_pos + len(marker):].strip()
+                    result["output"] = json.loads(marker_payload) if marker_payload else "Executed"
                 result["success"] = True
-                result["output"] = local_vars.get("result", "Executed")
 
             elif action == "learn_from_input":
                 # Direct learning action
@@ -404,6 +671,7 @@ class AutonomousLoop:
 
     async def verify_and_learn(self, task: LoopTask) -> Dict:
         """Verify result và learn from it"""
+        execution_success = bool(task.result.get("success", False))
         task.status = TaskStatus.VERIFYING
 
         # Analyze
@@ -422,7 +690,7 @@ class AutonomousLoop:
         suggestions = self.analyzer.generate_improvement_suggestions(analysis)
 
         # Record in feedback manager
-        if task.status == TaskStatus.COMPLETED:
+        if execution_success:
             self.feedback_manager.record_approval(
                 action=task.action,
                 details={"task_id": task.id, "result": task.result}
@@ -472,7 +740,7 @@ class AutonomousLoop:
 
         # Save completed
         completed_file = self.data_dir / "completed_tasks.json"
-        with open(completed_file, 'w') as f:
+        with open(completed_file, 'w', encoding='utf-8') as f:
             json.dump([asdict(t) for t in self.completed_tasks[-100:]], f, indent=2, default=str)
 
         cycle_result["tasks_processed"] = 1
@@ -503,7 +771,7 @@ class AutonomousLoop:
         """Log message"""
         log_file = self.data_dir / "loop.log"
         timestamp = datetime.now().isoformat()
-        with open(log_file, 'a') as f:
+        with open(log_file, 'a', encoding='utf-8') as f:
             f.write(f"[{timestamp}] {message}\n")
         print(f"[LOOP] {message}")
 

@@ -25,6 +25,12 @@ from dataclasses import dataclass, field
 from collections import defaultdict
 import random
 
+try:
+    from core.llm_caller import call_llm
+    _LLM_AVAILABLE = True
+except ImportError:
+    _LLM_AVAILABLE = False
+
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 DATA_DIR = PROJECT_ROOT / "data" / "brain"
 
@@ -91,24 +97,24 @@ class SelfReviewEngine:
     def _load(self):
         """Load existing data"""
         if self.metrics_file.exists():
-            with open(self.metrics_file, 'r') as f:
+            with open(self.metrics_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 for name, metrics in data.get("metrics", {}).items():
                     self.metrics[name] = [SystemMetric(**m) for m in metrics]
 
         if self.improvements_file.exists():
-            with open(self.improvements_file, 'r') as f:
+            with open(self.improvements_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 self.improvements = [Improvement(**i) for i in data.get("improvements", [])]
 
         if self.patterns_file.exists():
-            with open(self.patterns_file, 'r') as f:
+            with open(self.patterns_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 self.patterns = [LearningPattern(**p) for p in data.get("patterns", [])]
 
     def _save(self):
         """Save data"""
-        with open(self.metrics_file, 'w') as f:
+        with open(self.metrics_file, 'w', encoding='utf-8') as f:
             json.dump({
                 "metrics": {
                     name: [vars(m) for m in metrics]
@@ -117,12 +123,12 @@ class SelfReviewEngine:
                 "last_updated": datetime.now().isoformat()
             }, f, indent=2)
 
-        with open(self.improvements_file, 'w') as f:
+        with open(self.improvements_file, 'w', encoding='utf-8') as f:
             json.dump({
                 "improvements": [vars(i) for i in self.improvements]
             }, f, indent=2)
 
-        with open(self.patterns_file, 'w') as f:
+        with open(self.patterns_file, 'w', encoding='utf-8') as f:
             json.dump({
                 "patterns": [vars(p) for p in self.patterns]
             }, f, indent=2)
@@ -131,7 +137,7 @@ class SelfReviewEngine:
         """Log review event"""
         timestamp = datetime.now().isoformat()
         line = f"[{timestamp}] [{level}] {message}\n"
-        with open(self.review_log, 'a') as f:
+        with open(self.review_log, 'a', encoding='utf-8') as f:
             f.write(line)
         print(f"[REVIEW] [{level}] {message}")
 
@@ -147,7 +153,7 @@ class SelfReviewEngine:
             process = psutil.Process()
             metrics["memory_mb"] = process.memory_info().rss / 1024 / 1024
             metrics["cpu_percent"] = process.cpu_percent()
-        except:
+        except (ImportError, OSError, AttributeError):
             metrics["memory_mb"] = 0
             metrics["cpu_percent"] = 0
 
@@ -157,14 +163,14 @@ class SelfReviewEngine:
                 stats = self.brain.get_stats()
                 metrics["knowledge_items"] = stats.get("memory", {}).get("total_knowledge", 0)
                 metrics["skills_count"] = len(stats.get("skills", {}))
-            except:
+            except (AttributeError, KeyError, TypeError):
                 pass
 
         # File metrics
         try:
             data_size = sum(f.stat().st_size for f in self.data_dir.rglob("*") if f.is_file())
             metrics["data_size_mb"] = data_size / 1024 / 1024
-        except:
+        except (OSError, PermissionError):
             metrics["data_size_mb"] = 0
 
         # Store metrics
@@ -226,6 +232,43 @@ class SelfReviewEngine:
                     "suggestion": "Consider data compression and cleanup"
                 })
 
+        # LLM-powered architecture analysis
+        if _LLM_AVAILABLE and issues:
+            try:
+                issues_summary = json.dumps(issues[:5], default=str)
+                llm_result = call_llm(
+                    prompt=(
+                        "Analyze these architecture issues and suggest 2-3 specific improvements. "
+                        "Return JSON array of objects with keys: type, severity (high/medium/low), "
+                        "suggestion, estimated_effort (low/medium/high).\n"
+                        f"Issues: {issues_summary}"
+                    ),
+                    task_type="code_review",
+                    max_tokens=400,
+                    temperature=0.3,
+                )
+                if isinstance(llm_result, str):
+                    text = llm_result.strip()
+                    if text.startswith("```"):
+                        lines = text.splitlines()
+                        if len(lines) >= 3:
+                            text = "\n".join(lines[1:-1]).strip()
+                    try:
+                        parsed = json.loads(text)
+                        if isinstance(parsed, list):
+                            for item in parsed:
+                                if isinstance(item, dict) and item.get("suggestion"):
+                                    issues.append({
+                                        "type": "llm_recommendation",
+                                        "severity": item.get("severity", "medium"),
+                                        "suggestion": item["suggestion"],
+                                        "estimated_effort": item.get("estimated_effort", "medium"),
+                                    })
+                    except json.JSONDecodeError:
+                        pass
+            except Exception:
+                pass
+
         return issues
 
     def review_learning_efficiency(self) -> Dict:
@@ -254,6 +297,27 @@ class SelfReviewEngine:
 
         # Calculate overall score
         efficiency["score"] = max(0, 100 - len(efficiency["issues"]) * 20)
+
+        # LLM-powered learning efficiency analysis
+        if _LLM_AVAILABLE and efficiency["issues"]:
+            try:
+                llm_result = call_llm(
+                    prompt=(
+                        "Given these learning efficiency issues: "
+                        f"{efficiency['issues']}, suggest 2-3 concrete improvements "
+                        "for an autonomous learning system. Return plain text, one suggestion per line."
+                    ),
+                    task_type="planning",
+                    max_tokens=200,
+                    temperature=0.3,
+                )
+                if isinstance(llm_result, str) and llm_result.strip():
+                    for line in llm_result.strip().splitlines():
+                        line = line.strip().lstrip("0123456789.-) ")
+                        if line:
+                            efficiency["recommendations"].append(line)
+            except Exception:
+                pass
 
         return efficiency
 

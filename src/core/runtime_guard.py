@@ -13,7 +13,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 try:
     import fcntl  # POSIX only (macOS/Linux)
-except Exception:  # pragma: no cover - fallback for non-POSIX runtime
+except ImportError:  # pragma: no cover - fallback for non-POSIX runtime (e.g., Windows)
     fcntl = None
 
 
@@ -76,6 +76,50 @@ class ProcessSingleton:
             return json.loads(raw)
         except Exception:
             return {}
+
+    def _cleanup_stale_lock_file(self) -> bool:
+        """
+        Remove stale lock file if it references a dead process and is not locked.
+        """
+        try:
+            if not self.lock_path.exists():
+                return False
+        except Exception:
+            return False
+
+        details = self._read_existing_metadata()
+        owner_pid = details.get("pid") if isinstance(details, dict) else None
+        owner_alive = self._pid_exists(owner_pid)
+        if owner_alive is not False:
+            return False
+
+        if fcntl is not None:
+            try:
+                with open(self.lock_path, "a+", encoding="utf-8") as fh:
+                    try:
+                        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        return False
+                    try:
+                        self.lock_path.unlink(missing_ok=True)
+                        return True
+                    except Exception:
+                        return False
+                    finally:
+                        try:
+                            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                        except Exception:
+                            pass
+            except FileNotFoundError:
+                return False
+            except Exception:
+                return False
+
+        try:
+            self.lock_path.unlink(missing_ok=True)
+            return True
+        except Exception:
+            return False
 
     @classmethod
     def inspect(cls, lock_path: str) -> Dict[str, Any]:
@@ -158,9 +202,32 @@ class ProcessSingleton:
             return True, dict(self._metadata)
 
         if fcntl is None:
-            # Non-POSIX fallback: best-effort "always acquired".
-            self._metadata = self._build_metadata(extra)
-            return True, dict(self._metadata)
+            # Non-POSIX fallback: PID file with stale-lock cleanup.
+            for _ in range(2):
+                try:
+                    self._fh = open(self.lock_path, "x", encoding="utf-8")
+                    self._metadata = self._build_metadata(extra)
+                    self._fh.write(json.dumps(self._metadata, ensure_ascii=False, indent=2))
+                    self._fh.flush()
+                    os.fsync(self._fh.fileno())
+                    self._acquired = True
+                    atexit.register(self.release)
+                    return True, dict(self._metadata)
+                except FileExistsError:
+                    details = self._read_existing_metadata()
+                    owner_pid = details.get("pid") if isinstance(details, dict) else None
+                    owner_alive = self._pid_exists(owner_pid)
+                    if owner_alive is False:
+                        if self._cleanup_stale_lock_file():
+                            continue
+                    return False, details
+                except Exception:
+                    details = self._read_existing_metadata()
+                    return False, details
+            details = self._read_existing_metadata()
+            return False, details
+
+        self._cleanup_stale_lock_file()
 
         self._fh = open(self.lock_path, "a+", encoding="utf-8")
         try:
@@ -251,6 +318,7 @@ class ProcessSingleton:
     def release(self) -> None:
         """Release singleton lock."""
         self.stop_heartbeat()
+        had_lock = bool(self._acquired)
         if not self._fh:
             return
         try:
@@ -264,3 +332,8 @@ class ProcessSingleton:
             pass
         self._fh = None
         self._acquired = False
+        if had_lock:
+            try:
+                self.lock_path.unlink(missing_ok=True)
+            except Exception:
+                pass

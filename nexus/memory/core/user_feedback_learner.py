@@ -68,7 +68,7 @@ class UserFeedbackLearner:
         ]:
             if file_path.exists():
                 try:
-                    with open(file_path, 'r') as f:
+                    with open(file_path, 'r', encoding='utf-8') as f:
                         data = json.load(f)
                         setattr(self, attr, data.get("items", []))
                 except Exception:
@@ -83,7 +83,7 @@ class UserFeedbackLearner:
                 (self.patterns_file, "detected_patterns", "patterns")
             ]:
                 try:
-                    with open(file_path, 'w') as f:
+                    with open(file_path, 'w', encoding='utf-8') as f:
                         json.dump({
                             key: getattr(self, attr)[-1000:],  # Keep last 1000
                             "last_updated": datetime.now().isoformat()

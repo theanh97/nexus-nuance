@@ -33,14 +33,14 @@ def log(message: str):
     timestamp = datetime.now().isoformat()
     line = f"[{timestamp}] {message}"
     print(line)
-    with open(LOG_FILE, 'a') as f:
+    with open(LOG_FILE, 'a', encoding='utf-8') as f:
         f.write(line + "\n")
 
 
 def write_pid():
     """Write PID file"""
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(PID_FILE, 'w') as f:
+    with open(PID_FILE, 'w', encoding='utf-8') as f:
         f.write(str(os.getpid()))
 
 
@@ -56,13 +56,13 @@ def is_running() -> bool:
         return False
 
     try:
-        with open(PID_FILE, 'r') as f:
+        with open(PID_FILE, 'r', encoding='utf-8') as f:
             pid = int(f.read().strip())
 
         # Check if process exists
         os.kill(pid, 0)
         return True
-    except:
+    except (OSError, ValueError, FileNotFoundError):
         remove_pid()
         return False
 
@@ -116,8 +116,8 @@ def start_daemon():
     os.chdir('/')
 
     # Redirect std
-    sys.stdin = open('/dev/null', 'r')
-    sys.stdout = open(LOG_FILE, 'a')
+    sys.stdin = open('/dev/null', 'r', encoding='utf-8')
+    sys.stdout = open(LOG_FILE, 'a', encoding='utf-8')
     sys.stderr = sys.stdout
 
     run_daemon()
@@ -129,7 +129,7 @@ def stop_daemon():
         print("Daemon not running!")
         return
 
-    with open(PID_FILE, 'r') as f:
+    with open(PID_FILE, 'r', encoding='utf-8') as f:
         pid = int(f.read().strip())
 
     try:
@@ -143,7 +143,7 @@ def stop_daemon():
 def show_status():
     """Show daemon status"""
     if is_running():
-        with open(PID_FILE, 'r') as f:
+        with open(PID_FILE, 'r', encoding='utf-8') as f:
             pid = int(f.read().strip())
         print(f"Daemon RUNNING (PID: {pid})")
     else:

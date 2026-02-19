@@ -1,3 +1,4 @@
+import copy
 from datetime import datetime, timedelta
 
 import pytest
@@ -35,6 +36,7 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(monitor_app, "_autonomy_profile", "balanced")
     monkeypatch.setattr(monitor_app, "_monitor_supervisor_enabled", True)
     monkeypatch.setattr(monitor_app, "_monitor_autopilot_pause_until", None)
+    monkeypatch.setattr(monitor_app, "AUTONOMY_NO_HUMAN_PROMPTS", False)
     monkeypatch.setattr(monitor_app, "_agent_coordination_recent", {})
     monkeypatch.setattr(monitor_app, "_automation_recent_tasks", monitor_app.deque(maxlen=monitor_app.AUTOMATION_TASK_HISTORY_MAX))
     monkeypatch.setattr(monitor_app, "_automation_tasks_by_id", {})
@@ -42,8 +44,14 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(monitor_app, "_automation_poll_last_seen", {})
     monkeypatch.setattr(monitor_app, "_automation_scheduled_tasks", {})
     monkeypatch.setattr(monitor_app, "_automation_scheduler_running", False)
+    monkeypatch.setattr(monitor_app, "AUTOMATION_INTAKE_PATH", tmp_path / "automation_intake.json")
+    monitor_app._automation_intake_store.clear()
+    monitor_app._automation_intake_store.update(monitor_app._automation_intake_default())
     monkeypatch.setattr(monitor_app, "OPENCLAW_EXECUTION_MODE", "browser")
     monkeypatch.setattr(monitor_app, "_bridge_terminal_sessions", {})
+    monkeypatch.setattr(monitor_app, "_openclaw_runtime_disabled_until", None)
+    monkeypatch.setattr(monitor_app, "_openclaw_runtime_disable_reason", "")
+    monkeypatch.setattr(monitor_app, "_openclaw_attach_fail_streak", 0)
     monkeypatch.setattr(
         monitor_app,
         "_bridge_state",
@@ -59,6 +67,9 @@ def client(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(monitor_app, "GUARDIAN_CONTROL_TOKEN", "")
     monkeypatch.setattr(monitor_app, "_guardian_control_audit", [])
+    with monitor_app.state._lock:
+        monitor_app.state.pending_decisions = []
+        monitor_app.state.decision_history = []
     monkeypatch.setattr(
         monitor_app,
         "_team_persona_store",
@@ -162,6 +173,35 @@ def test_openclaw_browser_endpoint_rejects_headless_mode(client, monkeypatch):
     body = resp.get_json()
     assert body["success"] is False
     assert body["error_code"] == "BROWSER_MODE_DISABLED"
+
+
+def test_openclaw_browser_endpoint_returns_202_on_queue_timeout(client, monkeypatch):
+    monkeypatch.setattr(
+        monitor_app,
+        "_enqueue_openclaw_command",
+        lambda command_type, payload: {
+            "success": False,
+            "timed_out": True,
+            "mode": "sync",
+            "request_id": "oc-timeout-1",
+            "command": {"state": "running"},
+            "queue_state": {"total_queue_depth": 1},
+            "decision": "auto_approved",
+            "risk_level": "medium",
+            "target_worker": monitor_app.LOCAL_INSTANCE_ID,
+            "resolved_worker": monitor_app.LOCAL_INSTANCE_ID,
+            "error_code": "QUEUE_TIMEOUT",
+        },
+    )
+    resp = client.post(
+        "/api/openclaw/browser",
+        json={"action": "open", "url": "https://example.com"},
+    )
+    assert resp.status_code == 202
+    body = resp.get_json()
+    assert body["success"] is False
+    assert body["error_code"] == "QUEUE_TIMEOUT"
+    assert body["request_id"] == "oc-timeout-1"
 
 
 def test_openclaw_flow_endpoint_requires_browser_mode(client, monkeypatch):
@@ -328,6 +368,87 @@ def test_hub_next_action_autopilot_control_unknown(client):
     assert body["success"] is False
 
 
+def test_hub_autopilot_config_accepts_aliases_and_normalizes_policy(client):
+    original_state = copy.deepcopy(monitor_app._AUTOPILOT_STATE)
+    try:
+        resp = client.post(
+            "/api/hub/autopilot/config",
+            json={
+                "enabled": "true",
+                "dry_run": "false",
+                "executor": "hub_loop",
+                "interval_sec": "17",
+                "max_per_tick": "3",
+                "policy": {
+                    "max_priority": "p1",
+                    "require_confidence": "0.73",
+                    "blocked_actions": ["dispatch_task", "", "dispatch_task"],
+                },
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["success"] is True
+        state = body["state"]
+        assert state["enabled"] is True
+        assert state["dry_run"] is False
+        assert state["active_executor"] == "hub_loop"
+        assert state["interval"] == 17
+        assert state["max_actions_per_cycle"] == 3
+        assert state["policy"]["max_priority"] == "p1"
+        assert abs(float(state["policy"]["require_confidence"]) - 0.73) < 0.001
+        assert state["policy"]["blocked_actions"] == ["dispatch_task"]
+    finally:
+        monitor_app._AUTOPILOT_STATE.clear()
+        monitor_app._AUTOPILOT_STATE.update(original_state)
+
+
+def test_hub_autopilot_config_rejects_invalid_policy(client):
+    resp = client.post(
+        "/api/hub/autopilot/config",
+        json={"policy": {"max_priority": "p9"}},
+    )
+    assert resp.status_code == 400
+    body = resp.get_json()
+    assert body["success"] is False
+    assert "policy.max_priority" in str(body.get("error", ""))
+
+
+def test_hub_autopilot_run_auto_enables_when_requested(client):
+    original_state = copy.deepcopy(monitor_app._AUTOPILOT_STATE)
+    try:
+        monitor_app._AUTOPILOT_STATE["enabled"] = False
+        resp = client.post(
+            "/api/hub/autopilot/run",
+            json={"auto_enable": True, "dry_run": True, "max_actions_per_cycle": 1},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["success"] is True
+        assert "scanned" in body
+        assert body["state"]["enabled"] is True
+    finally:
+        monitor_app._AUTOPILOT_STATE.clear()
+        monitor_app._AUTOPILOT_STATE.update(original_state)
+
+
+def test_hub_autopilot_trigger_respects_auto_enable_flag(client):
+    original_state = copy.deepcopy(monitor_app._AUTOPILOT_STATE)
+    try:
+        monitor_app._AUTOPILOT_STATE["enabled"] = False
+        resp = client.post(
+            "/api/hub/next-action/autopilot/control",
+            json={"action": "trigger", "auto_enable": False},
+        )
+        assert resp.status_code == 400
+        body = resp.get_json()
+        assert body["success"] is False
+        assert "disabled" in str(body.get("error", "")).lower()
+    finally:
+        monitor_app._AUTOPILOT_STATE.clear()
+        monitor_app._AUTOPILOT_STATE.update(original_state)
+
+
 def test_central_file_lock_reclaims_expired_lock(client):
     monitor_app._global_file_locks.clear()
     monitor_app._global_file_locks["src/demo.py"] = monitor_app.FileLock(
@@ -449,6 +570,206 @@ def test_openclaw_flow_dashboard_burst_uses_queue_idempotency(client, monkeypatc
     assert after_hits >= before_hits + 1
 
 
+def test_openclaw_flow_fallback_handles_due_diligence_keywords(monkeypatch):
+    monkeypatch.setattr(
+        monitor_app,
+        "_automation_execute_app",
+        lambda action, params: {"success": True, "running_apps": ["MSTeams", "Mail"], "action": action},
+    )
+    monkeypatch.setattr(
+        monitor_app,
+        "_automation_execute_window",
+        lambda action, params: {"success": True, "windows": [{"title": "Teams", "appName": "MSTeams"}], "action": action},
+    )
+    monkeypatch.setattr(
+        monitor_app,
+        "_automation_execute_mail",
+        lambda action, params: {"success": True, "messages": [{"from": "ravin@example.com"}], "action": action},
+    )
+
+    result = monitor_app._openclaw_flow_fallback("check teams Khiem and Ravin email in Gmail")
+    assert isinstance(result, dict)
+    assert result["success"] is True
+    actions = [row.get("action") for row in result.get("actions", [])]
+    assert "app_list_running" in actions
+    assert "window_list" in actions
+    assert "mail_list_recent" in actions
+
+
+def test_openclaw_flow_fallback_requests_human_input_when_khiem_account_missing(monkeypatch):
+    monkeypatch.setattr(monitor_app, "_autonomy_profile", "balanced")
+    monkeypatch.setattr(monitor_app, "AUTONOMY_NO_HUMAN_PROMPTS", False)
+    monkeypatch.setattr(
+        monitor_app,
+        "_automation_execute_app",
+        lambda action, params: {"success": True, "running_apps": ["MSTeams"], "action": action},
+    )
+    monkeypatch.setattr(
+        monitor_app,
+        "_automation_execute_window",
+        lambda action, params: {"success": True, "windows": [{"title": "Teams", "appName": "MSTeams"}], "action": action},
+    )
+    monitor_app._automation_update_intake_store(
+        {
+            "accounts": {"khiem_selected": ""},
+            "channels": {"mail_mode": "edge_gmail"},
+            "partners": {"khiem_team_hint": ""},
+            "automation": {"auto_prompt_on_stuck": True},
+        }
+    )
+
+    result = monitor_app._openclaw_flow_fallback("check teams Khiem and Ravin email in Gmail")
+    assert isinstance(result, dict)
+    actions = result.get("actions", [])
+    prompt_action = next((row for row in actions if row.get("action") == "human_input_request"), None)
+    assert isinstance(prompt_action, dict)
+    prompt_result = prompt_action.get("result", {})
+    decision_id = str(prompt_result.get("decision_id", ""))
+    assert decision_id
+    pending = monitor_app.state.get_pending_decision(decision_id)
+    assert isinstance(pending, dict)
+    assert pending.get("kind") == "human_input_request"
+
+
+def test_openclaw_runtime_guard_disables_after_attach_streak(monkeypatch):
+    monkeypatch.setattr(monitor_app, "OPENCLAW_FAIL_FAST_ON_ATTACH_STREAK", True)
+    monkeypatch.setattr(monitor_app, "OPENCLAW_ATTACH_FAIL_STREAK_THRESHOLD", 2)
+    monkeypatch.setattr(monitor_app, "OPENCLAW_RUNTIME_DISABLE_SEC", 120)
+    monkeypatch.setattr(monitor_app, "_openclaw_runtime_disabled_until", None)
+    monkeypatch.setattr(monitor_app, "_openclaw_runtime_disable_reason", "")
+    monkeypatch.setattr(monitor_app, "_openclaw_attach_fail_streak", 0)
+
+    monitor_app._openclaw_runtime_guard_record_attach(False, detail="unit_test_1")
+    first = monitor_app._openclaw_runtime_guard_snapshot()
+    assert first["active"] is False
+    assert first["attach_fail_streak"] == 1
+
+    monitor_app._openclaw_runtime_guard_record_attach(False, detail="unit_test_2")
+    second = monitor_app._openclaw_runtime_guard_snapshot()
+    assert second["active"] is True
+    assert second["reason"] == "attach_failure_streak"
+    assert second["retry_after_sec"] > 0
+
+    gate = monitor_app._openclaw_runtime_guard_allows("browser", context={"source": "manual"}, payload={"action": "open"})
+    assert gate["allowed"] is False
+    assert gate["error_code"] == "OPENCLAW_TEMP_DISABLED"
+
+
+def test_openclaw_queue_context_defaults_async_for_browser_open(monkeypatch):
+    monkeypatch.setattr(monitor_app, "OPENCLAW_DEFAULT_ASYNC_BROWSER_ACTIONS", {"open", "navigate"})
+    context = monitor_app._parse_openclaw_queue_context(
+        "browser",
+        {"action": "open", "source": "manual"},
+    )
+    assert context["mode"] == "async"
+
+
+def test_openclaw_queue_context_caps_sync_wait_timeout(monkeypatch):
+    monkeypatch.setattr(monitor_app, "OPENCLAW_SYNC_WAIT_TIMEOUT_MS", 2400)
+    sync_context = monitor_app._parse_openclaw_queue_context(
+        "browser",
+        {"action": "status", "mode": "sync", "timeout_ms": 9000},
+    )
+    assert sync_context["mode"] == "sync"
+    assert sync_context["timeout_ms"] == 2400
+
+    async_context = monitor_app._parse_openclaw_queue_context(
+        "browser",
+        {"action": "open", "mode": "async", "timeout_ms": 9000},
+    )
+    assert async_context["mode"] == "async"
+    assert async_context["timeout_ms"] == 9000
+
+
+def test_automation_browser_open_defaults_to_local_provider(monkeypatch):
+    monkeypatch.setattr(
+        monitor_app,
+        "_enqueue_openclaw_command",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("openclaw should not be called")),
+    )
+
+    class _Completed:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(monitor_app.subprocess, "run", lambda *args, **kwargs: _Completed())
+
+    result = monitor_app._automation_execute_browser("open", {"url": "https://example.com"})
+    assert result["success"] is True
+    assert result["provider"] == "local"
+    assert result["mode"] == "local"
+    assert result["result"]["url"] == "https://example.com"
+
+
+def test_automation_browser_openclaw_provider_uses_local_fallback_when_temp_disabled(monkeypatch):
+    monkeypatch.setattr(
+        monitor_app,
+        "_enqueue_openclaw_command",
+        lambda command_type, payload: {
+            "success": False,
+            "error_code": "OPENCLAW_TEMP_DISABLED",
+            "error": "OpenClaw disabled",
+            "session_id": "sess-1",
+        },
+    )
+
+    class _Completed:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(monitor_app.subprocess, "run", lambda *args, **kwargs: _Completed())
+
+    result = monitor_app._automation_execute_browser("open", {"url": "https://example.com", "provider": "openclaw"})
+    assert result["success"] is True
+    assert result["provider"] == "openclaw"
+    assert result["mode"] == "fallback_local_browser"
+    assert result["error_code"] == "OPENCLAW_FALLBACK_EXECUTED"
+    assert result["result"]["url"] == "https://example.com"
+
+
+def test_automation_browser_openclaw_provider_uses_local_fallback_when_error_code_missing(monkeypatch):
+    monkeypatch.setattr(
+        monitor_app,
+        "_enqueue_openclaw_command",
+        lambda command_type, payload: {
+            "success": False,
+            "error_code": "",
+            "error": None,
+            "session_id": "sess-2",
+        },
+    )
+
+    class _Completed:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(monitor_app.subprocess, "run", lambda *args, **kwargs: _Completed())
+
+    result = monitor_app._automation_execute_browser("open", {"url": "https://example.com", "provider": "openclaw"})
+    assert result["success"] is True
+    assert result["provider"] == "openclaw"
+    assert result["mode"] == "fallback_local_browser"
+    assert result["error_code"] == "OPENCLAW_FALLBACK_EXECUTED"
+    assert result["result"]["url"] == "https://example.com"
+
+
+def test_openclaw_flow_fallback_computes_quick_valuation():
+    result = monitor_app._openclaw_flow_fallback("50k for 20% valuation")
+    assert isinstance(result, dict)
+    assert result["success"] is True
+    assess = next((row for row in result.get("actions", []) if row.get("action") == "valuation_quick_assessment"), None)
+    assert isinstance(assess, dict)
+    payload = assess.get("result", {})
+    assert float(payload.get("post_money_valuation_usd", 0)) == pytest.approx(250000.0)
+    assert payload.get("verdict") in {
+        "likely_too_low_for_ambitious_multi-product_ai",
+        "potentially_reasonable_if_traction_and_strategic_value_are_real",
+    }
+
+
 def test_openclaw_browser_auto_attach_uses_non_force_mode(monkeypatch):
     monkeypatch.setattr(monitor_app, "_collect_token_info", lambda force_refresh=False: _healthy_token_info())
     monkeypatch.setattr(monitor_app, "OPENCLAW_EXECUTION_MODE", "browser")
@@ -509,6 +830,7 @@ def test_openclaw_browser_auto_attach_skips_inside_attach_scope(monkeypatch):
 
 
 def test_openclaw_attempt_attach_verification_disables_nested_auto_attach(monkeypatch):
+    monkeypatch.setattr(monitor_app, "OPENCLAW_EXTENSION_AUTOMATION_ENABLED", True)
     monkeypatch.setattr(monitor_app, "pyautogui", object())
     monkeypatch.setattr(monitor_app, "OPENCLAW_AUTO_ATTACH_RETRIES", 1)
     monkeypatch.setattr(monitor_app, "OPENCLAW_AUTO_ATTACH_HEURISTIC", False)
@@ -540,6 +862,13 @@ def test_openclaw_attempt_attach_verification_disables_nested_auto_attach(monkey
     assert result["success"] is True
     assert auto_attach_flags
     assert all(flag is False for flag in auto_attach_flags)
+
+
+def test_openclaw_attempt_attach_blocked_when_extension_automation_disabled(monkeypatch):
+    monkeypatch.setattr(monitor_app, "OPENCLAW_EXTENSION_AUTOMATION_ENABLED", False)
+    result = monitor_app._openclaw_attempt_attach(force=True)
+    assert result["success"] is False
+    assert result["error_code"] == "EXTENSION_AUTOMATION_DISABLED"
 
 
 def test_hub_task_create_returns_version(client):
@@ -817,6 +1146,33 @@ def test_monitor_recovery_skips_openclaw_flow_when_execution_mode_headless(monke
     assert result["reason"] == "execution_mode_headless"
 
 
+def test_monitor_recovery_skips_openclaw_flow_when_autopilot_session_busy(monkeypatch):
+    monkeypatch.setattr(monitor_app, "OPENCLAW_AUTONOMOUS_UI_ENABLED", True)
+    monkeypatch.setattr(monitor_app, "MONITOR_AUTOPILOT_OPENCLAW_FLOW_ENABLED", True)
+    monkeypatch.setattr(monitor_app, "OPENCLAW_EXECUTION_MODE", "browser")
+    monkeypatch.setattr(monitor_app, "OPENCLAW_REQUIRE_TASK_LEASE", False)
+    monkeypatch.setattr(monitor_app, "_monitor_last_openclaw_flow_at", {})
+
+    class _BusyQueue:
+        @staticmethod
+        def queue_snapshot():
+            return {
+                "sessions": [
+                    {
+                        "session_id": "autopilot:orion-test",
+                        "queue_depth": 2,
+                        "active_request_id": "oc-queued-1",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(monitor_app, "_openclaw_command_manager", _BusyQueue())
+    result = monitor_app._monitor_maybe_enqueue_openclaw_flow("orion-test", "not_running")
+    assert result["attempted"] is False
+    assert result["reason"] == "queue_busy"
+    assert result["session_id"] == "autopilot:orion-test"
+
+
 def test_monitor_recovery_skips_openclaw_autopilot_when_lease_required(monkeypatch):
     monkeypatch.setattr(monitor_app, "OPENCLAW_AUTONOMOUS_UI_ENABLED", True)
     monkeypatch.setattr(monitor_app, "MONITOR_AUTOPILOT_OPENCLAW_FLOW_ENABLED", True)
@@ -916,6 +1272,175 @@ def test_interventions_force_approve_runs_command(client, monkeypatch):
     assert approved_payload["execution"]["success"] is True
 
 
+def test_monitor_auto_approve_keeps_human_input_request_pending(monkeypatch):
+    monkeypatch.setattr(monitor_app, "_autonomy_profile", "balanced")
+    monkeypatch.setattr(monitor_app, "AUTONOMY_NO_HUMAN_PROMPTS", False)
+    monkeypatch.setattr(monitor_app, "MONITOR_AUTO_APPROVE_SAFE_DECISIONS", True)
+    monkeypatch.setattr(monitor_app, "MONITOR_AUTO_APPROVE_ALL_DECISIONS", True)
+    decision = monitor_app.state.add_pending_decision(
+        {
+            "action": "human_input_request",
+            "kind": "human_input_request",
+            "title": "Need account hint",
+            "risk_level": "medium",
+            "details": {"request_key": "test-human-input"},
+        }
+    )
+    monitor_app._monitor_auto_approve_safe_decisions()
+    still_pending = monitor_app.state.get_pending_decision(decision["id"])
+    assert isinstance(still_pending, dict)
+    assert still_pending.get("kind") == "human_input_request"
+
+
+def test_monitor_auto_approve_full_auto_auto_responds_human_input_request(monkeypatch):
+    monkeypatch.setattr(monitor_app, "_autonomy_profile", "full_auto")
+    monkeypatch.setattr(monitor_app, "MONITOR_AUTO_APPROVE_SAFE_DECISIONS", True)
+    monkeypatch.setattr(monitor_app, "MONITOR_AUTO_APPROVE_ALL_DECISIONS", True)
+    monkeypatch.setattr(monitor_app, "AUTOMATION_FULL_AUTO_AUTO_RESPOND_HUMAN_INPUT", True)
+
+    decision = monitor_app.state.add_pending_decision(
+        {
+            "action": "human_input_request",
+            "kind": "human_input_request",
+            "title": "Need intake defaults",
+            "risk_level": "medium",
+            "details": {
+                "request_key": "test-auto-resolve",
+                "fields": [
+                    {"key": "mail_mode", "type": "select", "required": True, "options": ["edge_gmail", "mail_app"]},
+                    {"key": "khiem_selected", "type": "text", "required": True},
+                ],
+            },
+        }
+    )
+
+    monitor_app._monitor_auto_approve_safe_decisions()
+    still_pending = monitor_app.state.get_pending_decision(decision["id"])
+    assert still_pending is None
+
+    with monitor_app.state._lock:
+        resolved = next((row for row in monitor_app.state.decision_history if row.get("id") == decision["id"]), None)
+    assert isinstance(resolved, dict)
+    assert resolved.get("decision") == "responded"
+    response = resolved.get("response", {})
+    assert response.get("auto_resolved") is True
+    assert response.get("values", {}).get("mail_mode") == "edge_gmail"
+
+
+def test_monitor_auto_approve_balanced_auto_responds_when_no_prompt_enabled(monkeypatch):
+    monkeypatch.setattr(monitor_app, "_autonomy_profile", "balanced")
+    monkeypatch.setattr(monitor_app, "AUTONOMY_NO_HUMAN_PROMPTS", True)
+    monkeypatch.setattr(monitor_app, "MONITOR_AUTO_APPROVE_SAFE_DECISIONS", True)
+    monkeypatch.setattr(monitor_app, "MONITOR_AUTO_APPROVE_ALL_DECISIONS", True)
+    monkeypatch.setattr(monitor_app, "AUTOMATION_FULL_AUTO_AUTO_RESPOND_HUMAN_INPUT", True)
+
+    decision = monitor_app.state.add_pending_decision(
+        {
+            "action": "human_input_request",
+            "kind": "human_input_request",
+            "title": "Need intake defaults",
+            "risk_level": "medium",
+            "details": {
+                "request_key": "test-no-prompt-auto-resolve",
+                "fields": [
+                    {"key": "mail_mode", "type": "select", "required": True, "options": ["edge_gmail", "mail_app"]},
+                ],
+            },
+        }
+    )
+
+    monitor_app._monitor_auto_approve_safe_decisions()
+    still_pending = monitor_app.state.get_pending_decision(decision["id"])
+    assert still_pending is None
+
+    with monitor_app.state._lock:
+        resolved = next((row for row in monitor_app.state.decision_history if row.get("id") == decision["id"]), None)
+    assert isinstance(resolved, dict)
+    assert resolved.get("decision") == "responded"
+    assert (resolved.get("response") or {}).get("auto_resolved") is True
+
+
+def test_chat_approval_prompt_no_pending_when_no_prompt_mode(client, monkeypatch):
+    monkeypatch.setattr(monitor_app, "AUTONOMY_NO_HUMAN_PROMPTS", True)
+    monkeypatch.setattr(monitor_app, "MONITOR_AUTO_APPROVE_ALL_DECISIONS", False)
+    monkeypatch.setattr(monitor_app, "MONITOR_AUTO_EXECUTE_COMMANDS", False)
+    monkeypatch.setattr(
+        monitor_app,
+        "_call_instance_command",
+        lambda *args, **kwargs: {
+            "success": True,
+            "result": {
+                "output": {
+                    "risk": "medium",
+                    "decision": "ask_user",
+                    "reason": "unit_test_guardian_advice",
+                    "safer_alternative": "ls -la",
+                }
+            },
+        },
+    )
+
+    with monitor_app.state._lock:
+        monitor_app.state.pending_decisions = []
+
+    resp = client.post(
+        "/api/chat/ask",
+        json={
+            "message": "Would you like to run the following command?\n$ ls",
+            "instance_id": "orion-1",
+        },
+    )
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["success"] is True
+    pending_decision = payload.get("pending_decision")
+    assert pending_decision is None or pending_decision == {}
+
+    with monitor_app.state._lock:
+        assert len(monitor_app.state.pending_decisions) == 0
+
+
+def test_intervention_respond_updates_intake_memory(client):
+    decision = monitor_app._automation_request_due_diligence_context(
+        reason="unit_test",
+        source="test_suite",
+        chat_text="check teams khiem and ravin email",
+    )
+    decision_id = decision["id"]
+
+    response = client.post(
+        f"/api/interventions/{decision_id}/respond",
+        json={
+            "actor": "test-suite",
+            "remember": True,
+            "values": {
+                "mail_mode": "edge_gmail",
+                "mail_browser": "Microsoft Edge",
+                "teams_mode": "teams_app",
+                "teams_app_name": "Microsoft Teams",
+                "target_gmail": "admin@algoxpert.org",
+                "khiem_selected": "Khiem - Work",
+                "khiem_candidates": "Khiem - Work, Khiem - Personal",
+            },
+        },
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["item"]["decision"] == "responded"
+    assert payload["intake"]["channels"]["mail_mode"] == "edge_gmail"
+    assert payload["intake"]["channels"]["teams_mode"] == "teams_app"
+    assert payload["intake"]["accounts"]["khiem_selected"] == "Khiem - Work"
+    assert payload["intake"]["accounts"]["khiem_candidates"] == ["Khiem - Work", "Khiem - Personal"]
+    assert "accounts.khiem_selected" in payload["applied_keys"]
+
+    queue = client.get("/api/interventions/queue")
+    assert queue.status_code == 200
+    queue_payload = queue.get_json()
+    ids = [row["id"] for row in queue_payload["queue"]]
+    assert decision_id not in ids
+
+
 def test_hub_tasks_batch_update_and_history(client):
     created = client.post(
         "/api/hub/tasks",
@@ -933,12 +1458,43 @@ def test_hub_tasks_batch_update_and_history(client):
     assert updated_payload["success"] is True
     assert updated_payload["summary"]["applied"] == 1
 
+    tasks = client.get("/api/hub/tasks")
+    assert tasks.status_code == 200
+    rows = tasks.get_json()["tasks"]
+    saved = next(row for row in rows if row["id"] == task_id)
+    assert saved["status"] == "review"
+    assert saved["assigned_to"] == "orion-1"
+
     history = client.get(f"/api/hub/tasks/{task_id}/history")
     assert history.status_code == 200
     history_payload = history.get_json()
     assert history_payload["success"] is True
     assert history_payload["task_id"] == task_id
     assert history_payload["count"] >= 1
+
+
+def test_hub_tasks_batch_update_auto_force_lease_override(client):
+    task_id = _create_hub_task(client, title="Lease override task")
+    claimed = client.post(
+        f"/api/hub/tasks/{task_id}/claim",
+        json={"owner_id": "orion:owner", "lease_sec": 120},
+    )
+    assert claimed.status_code == 200
+    updated = client.post(
+        "/api/hub/tasks/batch-update",
+        json={"updates": [{"task_id": task_id, "status": "done"}]},
+    )
+    assert updated.status_code == 200
+    payload = updated.get_json()
+    assert payload["success"] is True
+    row = payload["results"][0]
+    assert row["success"] is True
+    assert row.get("lease_override") is True
+
+    tasks = client.get("/api/hub/tasks")
+    assert tasks.status_code == 200
+    saved = next(item for item in tasks.get_json()["tasks"] if item["id"] == task_id)
+    assert saved["status"] == "done"
 
 
 def test_hub_task_dispatch_assigns_and_runs_cycle(client, monkeypatch):
@@ -980,12 +1536,41 @@ def test_hub_task_dispatch_assigns_and_runs_cycle(client, monkeypatch):
     assert calls[0]["target"] == "orion"
     assert calls[0]["command"] == "run_cycle"
     assert calls[0]["options"]["dispatch_task_id"] == task_id
+    assert calls[0]["options"]["async_dispatch"] is True
+    assert float(calls[0]["options"]["wait_timeout_sec"]) >= 3.0
 
     tasks = client.get("/api/hub/tasks")
     assert tasks.status_code == 200
     task_rows = tasks.get_json()["tasks"]
     updated_task = next(row for row in task_rows if row["id"] == task_id)
     assert updated_task["assigned_to"] == "orion-2"
+    assert updated_task["status"] == "in_progress"
+    assert payload["status_after_dispatch"]["success"] is True
+
+
+def test_hub_process_board_reports_handoff_visibility(client):
+    created = client.post(
+        "/api/hub/tasks",
+        json={"title": "Process board visibility", "description": "process", "assigned_to": "orion-1"},
+    )
+    assert created.status_code == 200
+    task_id = created.get_json()["task"]["id"]
+    moved = client.post(
+        "/api/hub/tasks/batch-update",
+        json={"updates": [{"task_id": task_id, "status": "in_progress", "assigned_to": "orion-1"}]},
+    )
+    assert moved.status_code == 200
+
+    board = client.get("/api/hub/process-board?limit=6&transitions=12")
+    assert board.status_code == 200
+    payload = board.get_json()
+    assert payload["success"] is True
+    snapshot = payload["board"]
+    assert snapshot["summary"]["total_tasks"] >= 1
+    processes = snapshot["processes"]
+    assert any(str(row.get("assignee")) == "orion-1" for row in processes)
+    transitions = snapshot["transitions"]
+    assert any(str(row.get("task_id")) == task_id for row in transitions)
 
 
 def test_hub_task_dispatch_rejects_finalized_task_without_force_reopen(client):
@@ -1364,6 +1949,107 @@ def test_chat_ask_auto_dispatches_agent_coordination(client, monkeypatch):
     assert payload["result"]["task_materialization"]["enabled"] is True
     assert payload["result"]["task_materialization"]["created"] >= 1
     assert len(calls) >= 2
+
+
+def test_chat_ask_autonomous_execute_intent_runs_coordination_and_dispatch(client, monkeypatch):
+    monkeypatch.setattr(
+        monitor_app,
+        "_execute_agent_coordination",
+        lambda **kwargs: {
+            "goal": kwargs.get("goal"),
+            "execution": {"executed": True, "instances": ["orion-1"], "total_sent": 2, "total_success": 2, "total_failed": 0},
+            "plan": {"token_budget": {"estimated_tokens_saved": 42, "saving_ratio": 0.25}},
+            "results": {},
+        },
+    )
+    monkeypatch.setattr(
+        monitor_app,
+        "_materialize_coordination_tasks",
+        lambda **kwargs: {
+            "enabled": True,
+            "created": 2,
+            "requested": 2,
+            "results": [{"success": True, "task": {"id": "task_auto_1"}}, {"success": True, "task": {"id": "task_auto_2"}}],
+        },
+    )
+
+    dispatch_calls = []
+
+    def fake_invoke(path, view_func, payload):
+        dispatch_calls.append({"path": path, "payload": dict(payload or {})})
+        return 200, {"success": True, "instance_id": "orion-1"}
+
+    monkeypatch.setattr(monitor_app, "_invoke_internal_post", fake_invoke)
+
+    response = client.post(
+        "/api/chat/ask",
+        json={
+            "member_id": "owner",
+            "instance_id": "orion-1",
+            "message": "học hỏi và phát triển giùm tôi, tại sao cứ bị lỗi mà bàn giao cho tôi mãi thế",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["intent"] == "autonomous_execute"
+    assert payload["executed"] is True
+    assert payload["result"]["task_materialization"]["created"] == 2
+    assert payload["result"]["task_dispatch"]["attempted"] == 2
+    assert payload["result"]["task_dispatch"]["dispatched_success"] == 2
+    assert len(dispatch_calls) == 2
+
+
+def test_chat_ask_task_status_intelligence_when_no_tasks(client):
+    response = client.post(
+        "/api/chat/ask",
+        json={
+            "member_id": "owner",
+            "instance_id": "orion-1",
+            "message": "task giao cho Khiem xong chua?",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["intent"] == "task_status_intelligence"
+    snapshot = payload.get("task_intelligence") or {}
+    assert int(snapshot.get("total_tasks", 0)) == 0
+    assert "tracking" in str(payload.get("reply", "")).lower()
+
+
+def test_chat_ask_task_status_intelligence_matches_done_task(client):
+    created = client.post(
+        "/api/hub/tasks",
+        json={
+            "title": "Check Teams Khiem + Ravin email partnership",
+            "description": "Due diligence follow-up",
+            "priority": "high",
+            "assigned_to": "orion-1",
+        },
+    )
+    assert created.status_code == 200
+    task_id = str((created.get_json() or {}).get("task", {}).get("id", ""))
+    assert task_id
+
+    updated = client.put(f"/api/hub/tasks/{task_id}", json={"status": "done"})
+    assert updated.status_code == 200
+
+    response = client.post(
+        "/api/chat/ask",
+        json={
+            "member_id": "owner",
+            "instance_id": "orion-1",
+            "message": "task Khiem va Ravin xong chua",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["intent"] == "task_status_intelligence"
+    snapshot = payload.get("task_intelligence") or {}
+    assert int(snapshot.get("matched_count", 0) or 0) >= 1
+    assert str(snapshot.get("verdict", "")) == "done"
 
 
 def test_agents_coordination_dispatch_compact_mode(client, monkeypatch):
@@ -1887,6 +2573,44 @@ def test_automation_terminal_command_allowlist_denies_unknown_binary(client):
     assert payload["error_code"] in {"COMMAND_DENIED", "INVALID_COMMAND"}
 
 
+def test_automation_terminal_python_binary_is_allowlisted(monkeypatch):
+    bins = set(getattr(monitor_app, "AUTOMATION_TERMINAL_ALLOWED_BINS", set()) or set())
+    bins.add("python")
+    monkeypatch.setattr(monitor_app, "AUTOMATION_TERMINAL_ALLOWED_BINS", bins)
+    monkeypatch.setattr(
+        monitor_app.subprocess,
+        "run",
+        lambda argv, **kwargs: type("Completed", (), {"returncode": 0, "stdout": "Python 3.x\n", "stderr": ""})(),
+    )
+    result = monitor_app._automation_execute_terminal("execute", {"command": "python -V"})
+    assert result.get("success") is True
+    assert result.get("argv", [""])[0] == "python"
+
+
+def test_automation_app_launch_python_automation_alias(client, monkeypatch):
+    monkeypatch.setattr(
+        monitor_app,
+        "_automation_launch_python_dashboard",
+        lambda: {"success": True, "already_running": True, "url": "http://localhost:5001/live"},
+    )
+    run = client.post(
+        "/api/automation/execute",
+        json={
+            "task_type": "app",
+            "action": "launch",
+            "params": {"app_name": "python automation"},
+            "session_id": "app-main",
+            "owner_id": "tester-a",
+        },
+    )
+    assert run.status_code == 200
+    payload = run.get_json()
+    assert payload["success"] is True
+    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    assert result.get("already_running") is True
+    assert result.get("url") == "http://localhost:5001/live"
+
+
 def test_automation_execute_debounces_passive_browser_status(client, monkeypatch):
     monkeypatch.setattr(monitor_app, "AUTOMATION_PASSIVE_POLL_COOLDOWN_SEC", 60.0)
     calls = {"count": 0}
@@ -1918,6 +2642,60 @@ def test_automation_execute_debounces_passive_browser_status(client, monkeypatch
     assert calls["count"] == 1
 
 
+def test_automation_execute_passes_top_level_browser_provider(client, monkeypatch):
+    captured = {"provider": ""}
+
+    def fake_browser(action, params):
+        captured["provider"] = str((params or {}).get("provider", ""))
+        return {"success": True, "action": action, "provider": captured["provider"]}
+
+    monkeypatch.setattr(monitor_app, "_automation_execute_browser", fake_browser)
+    response = client.post(
+        "/api/automation/execute",
+        json={
+            "task_type": "browser",
+            "action": "status",
+            "provider": "openclaw",
+            "params": {},
+            "session_id": "browser-provider",
+            "owner_id": "tester-a",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert captured["provider"] == "openclaw"
+
+
+def test_automation_execute_browser_flow_fallback_when_mode_disabled(client, monkeypatch):
+    monkeypatch.setattr(monitor_app, "OPENCLAW_EXECUTION_MODE", "hybrid")
+    monkeypatch.setattr(
+        monitor_app,
+        "_openclaw_flow_fallback",
+        lambda text: {
+            "success": True,
+            "actions": [{"action": "status_snapshot", "success": True, "result": {"text": text}}],
+        },
+    )
+    response = client.post(
+        "/api/automation/execute",
+        json={
+            "task_type": "browser",
+            "action": "flow",
+            "params": {"chat_text": "check Teams Khiem and Ravin email"},
+            "session_id": "browser-flow",
+            "owner_id": "tester-a",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["status"] == "completed"
+    result = payload.get("result") or {}
+    assert result.get("mode") == "fallback"
+    assert result.get("error_code") == "FLOW_FALLBACK_EXECUTED"
+
+
 def test_automation_session_lease_conflict(client):
     first = client.post(
         "/api/automation/sessions/lease",
@@ -1945,6 +2723,58 @@ def test_automation_capabilities_endpoint(client):
     assert "capabilities" in payload
     assert "runtime" in payload
     assert "terminal" in payload["capabilities"]
+
+
+def test_automation_intake_roundtrip_and_runtime_mail_flag(client):
+    initial = client.get("/api/automation/intake")
+    assert initial.status_code == 200
+    initial_payload = initial.get_json()
+    assert initial_payload["success"] is True
+    assert "intake" in initial_payload
+    assert initial_payload["intake"]["channels"]["mail_mode"] == "edge_gmail"
+    assert initial_payload["intake"]["channels"]["teams_mode"] == "teams_app"
+
+    saved = client.post(
+        "/api/automation/intake",
+        json={
+            "mail": {
+                "imap_host": "imap.gmail.com",
+                "imap_username": "admin@algoxpert.org",
+                "imap_password": "app-password",
+            },
+            "partners": {"khiem_team_hint": "Khiem team", "ravin_contact_hint": "ravin"},
+            "valuation": {"raise_usd": 50000, "equity_pct": 20},
+        },
+    )
+    assert saved.status_code == 200
+    saved_payload = saved.get_json()
+    assert saved_payload["success"] is True
+    assert saved_payload["intake"]["mail"]["imap_password"] == ""
+    assert saved_payload["intake"]["mail"]["imap_password_configured"] is True
+    assert saved_payload["intake"]["channels"]["mail_mode"] == "edge_gmail"
+
+    capabilities = client.get("/api/automation/capabilities")
+    assert capabilities.status_code == 200
+    runtime = capabilities.get_json()["runtime"]
+    assert runtime["mail_credentials_configured"] is True
+
+
+def test_hub_strategic_brief_endpoint(client):
+    created = client.post(
+        "/api/hub/tasks",
+        json={"title": "Strategic task", "description": "plan me", "priority": "high"},
+    )
+    assert created.status_code == 200
+
+    response = client.get("/api/hub/strategic-brief?limit=5")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    brief = payload["brief"]
+    assert "thought_lines" in brief
+    assert "strategy" in brief
+    assert isinstance(brief["thought_lines"], list)
+    assert isinstance(brief["allocation_plan"], list)
 
 
 def test_automation_schedule_create_and_list(client):

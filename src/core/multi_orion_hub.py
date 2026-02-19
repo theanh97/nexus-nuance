@@ -744,6 +744,7 @@ class MultiOrionHub:
             "backlog": [],
             "todo": [],
             "in_progress": [],
+            "blocked": [],
             "review": [],
             "done": [],
         }
@@ -776,12 +777,14 @@ class MultiOrionHub:
         total_tasks = len(tasks)
         done_tasks = len([t for t in tasks if str(t.get("status")) == "done"])
         in_progress = len([t for t in tasks if str(t.get("status")) == "in_progress"])
+        blocked_tasks = len([t for t in tasks if str(t.get("status")) == "blocked"])
         leased_tasks = len([t for t in tasks if self._is_task_lease_active(t, now)])
 
         return {
             "total_tasks": total_tasks,
             "done_tasks": done_tasks,
             "in_progress": in_progress,
+            "blocked_tasks": blocked_tasks,
             "leased_tasks": leased_tasks,
             "completion_rate": round(done_tasks / total_tasks * 100, 1) if total_tasks > 0 else 0,
             "orion_count": len(orions),

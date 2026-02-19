@@ -12,7 +12,7 @@ from .nexus_brain import (
     SkillTracker,
     get_brain,
     start_brain,
-    learn,
+    learn as brain_learn,
     feedback,
     task_executed,
     brain_stats
@@ -31,10 +31,15 @@ from .cutting_edge_tech import (
     get_integrator, get_advanced_rag, get_hierarchical_memory
 )
 from .react_agent import ReActAgent, MultiAgentOrchestrator, get_agent, get_orchestrator, execute_with_react
+from .autonomous_agent import AutonomousAgent, get_autonomous_agent, run_autonomously
+from .action_executor import ActionExecutor, get_executor
 from .integration_hub import (
     NexusIntegrationHub, get_hub, initialize_nexus, execute_task,
-    learn, query_knowledge, nexus_status, self_improve
+    learn as hub_learn, query_knowledge, nexus_status, self_improve
 )
+
+# Backward-compatible alias. Prefer explicit brain_learn/hub_learn to avoid ambiguity.
+learn = hub_learn
 
 __all__ = [
     # Core
@@ -57,6 +62,8 @@ __all__ = [
     "get_brain",
     "start_brain",
     "learn",
+    "brain_learn",
+    "hub_learn",
     "feedback",
     "task_executed",
     "brain_stats",
@@ -76,5 +83,32 @@ __all__ = [
     "get_rnd",
     "run_research",
     "get_rnd_stats",
-    "get_roadmap"
+    "get_roadmap",
+    # Cutting Edge
+    "CuttingEdgeIntegrator",
+    "AdvancedRAGSystem",
+    "HierarchicalMemorySystem",
+    "get_integrator",
+    "get_advanced_rag",
+    "get_hierarchical_memory",
+    # ReAct Agent
+    "ReActAgent",
+    "MultiAgentOrchestrator",
+    "get_agent",
+    "get_orchestrator",
+    "execute_with_react",
+    # Autonomous Agent
+    "AutonomousAgent",
+    "get_autonomous_agent",
+    "run_autonomously",
+    "ActionExecutor",
+    "get_executor",
+    # Integration Hub
+    "NexusIntegrationHub",
+    "get_hub",
+    "initialize_nexus",
+    "execute_task",
+    "query_knowledge",
+    "nexus_status",
+    "self_improve",
 ]

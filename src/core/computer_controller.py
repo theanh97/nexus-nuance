@@ -7,6 +7,7 @@ Uses PyAutoGUI for mouse/keyboard control and AppleScript for macOS
 import os
 import sys
 import asyncio
+import shlex
 import subprocess
 import tempfile
 from typing import Dict, Any, List, Optional, Tuple
@@ -144,9 +145,12 @@ class ComputerController:
         })
 
         try:
+            try:
+                cmd_args = shlex.split(command)
+            except ValueError:
+                return {"success": False, "error": f"Malformed command: {command!r}"}
             result = subprocess.run(
-                command,
-                shell=True,
+                cmd_args,
                 capture_output=True,
                 text=True,
                 timeout=timeout

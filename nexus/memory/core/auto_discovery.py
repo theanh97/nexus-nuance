@@ -80,7 +80,7 @@ class AutoDiscoveryEngine:
         """Load sources configuration."""
         if self.config_path.exists():
             try:
-                with open(self.config_path, 'r') as f:
+                with open(self.config_path, 'r', encoding='utf-8') as f:
                     config = json.load(f)
 
                 self.sources = config.get("sources", {})
@@ -119,7 +119,7 @@ class AutoDiscoveryEngine:
         """Load previous state."""
         if self.discovered_file.exists():
             try:
-                with open(self.discovered_file, 'r') as f:
+                with open(self.discovered_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     self.discovered_items = data.get("items", [])[-5000:]  # Keep last 5000
                     # Build seen hashes
@@ -132,7 +132,7 @@ class AutoDiscoveryEngine:
 
         if self.state_file.exists():
             try:
-                with open(self.state_file, 'r') as f:
+                with open(self.state_file, 'r', encoding='utf-8') as f:
                     self.scan_state = json.load(f)
             except Exception:
                 pass
@@ -141,7 +141,7 @@ class AutoDiscoveryEngine:
         """Save current state."""
         with self._lock:
             try:
-                with open(self.discovered_file, 'w') as f:
+                with open(self.discovered_file, 'w', encoding='utf-8') as f:
                     json.dump({
                         "items": self.discovered_items[-5000:],
                         "last_updated": datetime.now().isoformat(),
@@ -151,7 +151,7 @@ class AutoDiscoveryEngine:
                 pass
 
             try:
-                with open(self.state_file, 'w') as f:
+                with open(self.state_file, 'w', encoding='utf-8') as f:
                     json.dump(self.scan_state, f, indent=2)
             except Exception:
                 pass

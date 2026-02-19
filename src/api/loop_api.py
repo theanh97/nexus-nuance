@@ -3,8 +3,8 @@ Autonomous Loop API Endpoints
 FastAPI endpoints for loop control and monitoring
 """
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 import sys
@@ -27,16 +27,16 @@ router = APIRouter(prefix="/api/loop", tags=["Autonomous Loop"])
 # ==================== MODELS ====================
 
 class TaskCreate(BaseModel):
-    name: str
-    description: str
-    action: str
-    params: Optional[Dict[str, Any]] = {}
-    priority: str = "MEDIUM"
+    name: str = Field(..., min_length=1, max_length=200)
+    description: str = Field(..., min_length=1, max_length=5000)
+    action: str = Field(..., min_length=1, max_length=200)
+    params: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    priority: str = Field("MEDIUM", pattern=r"^(CRITICAL|HIGH|MEDIUM|LOW)$")
 
 
 class VerificationTask(BaseModel):
-    target: str
-    task_type: str = "url"  # url or file
+    target: str = Field(..., min_length=1, max_length=2000)
+    task_type: str = Field("url", pattern=r"^(url|file)$")
 
 
 # ==================== HELPERS ====================
@@ -124,7 +124,7 @@ async def add_verification(task: VerificationTask):
 
 
 @router.get("/tasks")
-async def get_tasks(status: Optional[str] = None, limit: int = 20):
+async def get_tasks(status: Optional[str] = None, limit: int = Query(default=20, ge=1, le=200)):
     """Get tasks from queue"""
     loop = get_loop()
 
@@ -153,21 +153,25 @@ async def get_stats():
 
 
 @router.get("/log")
-async def get_log(lines: int = 50):
+async def get_log(lines: int = Query(default=50, ge=1, le=500)):
     """Get loop log"""
     log_file = Path(__file__).parent.parent.parent / "data" / "loop" / "loop.log"
 
     if not log_file.exists():
         return {"log": [], "message": "No log file yet"}
 
-    with open(log_file, 'r') as f:
+    with open(log_file, 'r', encoding='utf-8') as f:
         all_lines = f.readlines()
 
     return {"log": all_lines[-lines:], "total_lines": len(all_lines)}
 
 
 @router.post("/learn")
-async def add_learning(input_type: str, content: str, value_score: float = 0.5):
+async def add_learning(
+    input_type: str = Query(..., min_length=1, max_length=100),
+    content: str = Query(..., min_length=1, max_length=10_000),
+    value_score: float = Query(0.5, ge=0.0, le=1.0),
+):
     """Add learning directly"""
     loop = get_loop()
     result = loop.improver.learn_from_input(input_type, content, value_score)

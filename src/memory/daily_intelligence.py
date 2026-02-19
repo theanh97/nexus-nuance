@@ -30,7 +30,7 @@ class DailyIntelligence:
                 project_root = Path(__file__).parent.parent.parent
                 self.base_path = project_root / "data" / "daily_intelligence"
                 self.base_path.mkdir(parents=True, exist_ok=True)
-            except:
+            except (OSError, NameError, TypeError):
                 self.base_path = Path.cwd() / "data" / "daily_intelligence"
 
         self.morning_file = self.base_path / "morning_queries.jsonl"

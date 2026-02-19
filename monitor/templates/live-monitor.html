@@ -31,6 +31,20 @@
             --fs-metric-sub: clamp(10px, 0.12vw + 9.8px, 11.5px);
             --fs-table: clamp(11px, 0.2vw + 10.4px, 12.5px);
             --fs-connection: clamp(10px, 0.12vw + 9.7px, 11.5px);
+            /* Legacy aliases used by automation panel styles. */
+            --primary-color: var(--accent);
+            --secondary-color: #6b7a97;
+            --card-bg: var(--panel);
+            --bg-secondary: var(--bg-soft);
+            --input-bg: var(--panel-soft);
+            --text-primary: var(--text);
+            --text-secondary: var(--muted);
+            --border-color: var(--border);
+            --info-color: var(--accent);
+            --warning-color: var(--warn);
+            --error-color: var(--danger);
+            --success-color: var(--ok);
+            --critical-color: #dc2626;
         }
 
         body[data-theme="dark"], html[data-theme="dark"] {
@@ -503,6 +517,40 @@
             padding-right: 4px;
         }
 
+        .process-board-lanes {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 12px;
+            margin-top: 8px;
+        }
+
+        .process-board-lane {
+            background: var(--panel-soft);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 10px;
+        }
+
+        .process-board-lane h4 {
+            margin: 0 0 8px 0;
+            font-size: 12px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+
+        .process-lane-list {
+            max-height: 250px;
+            margin: 0;
+            padding: 0;
+        }
+
+        @media (max-width: 1180px) {
+            .process-board-lanes {
+                grid-template-columns: 1fr;
+            }
+        }
+
         .feedback-item,
         .activity-item {
             background: var(--panel-soft);
@@ -941,6 +989,7 @@
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
             gap: 16px;
+            align-items: start;
         }
 
         .auto-card {
@@ -950,6 +999,82 @@
             border: 1px solid var(--border-color);
             transition: transform 0.2s, box-shadow 0.2s;
             box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .auto-card.auto-card-primary {
+            grid-column: span 2;
+        }
+
+        .auto-helper {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin: -6px 0 12px 0;
+            line-height: 1.45;
+        }
+
+        .auto-preset-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: -2px;
+        }
+
+        .auto-preset-btn {
+            border: 1px solid var(--border-color);
+            border-radius: 999px;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            padding: 6px 10px;
+            font-size: 11px;
+            cursor: pointer;
+        }
+
+        .auto-preset-btn:hover {
+            border-color: var(--primary-color);
+            color: var(--primary-color);
+        }
+
+        .auto-command-actions {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .auto-advanced {
+            border: 1px dashed var(--border-color);
+            border-radius: 10px;
+            padding: 10px;
+            background: color-mix(in srgb, var(--bg-secondary) 76%, transparent);
+        }
+
+        .auto-advanced summary {
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 10px;
+            outline: none;
+        }
+
+        .auto-result-box {
+            margin-top: 12px;
+            font-size: 12px;
+            line-height: 1.45;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 180px;
+            overflow-y: auto;
+            padding: 10px;
+            border-radius: 10px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            font-family: var(--font-mono);
+        }
+
+        .auto-result-box.is-error {
+            border-color: color-mix(in srgb, var(--danger) 65%, var(--border));
+            background: color-mix(in srgb, var(--danger-soft) 60%, var(--bg-secondary));
         }
 
         .auto-card:hover {
@@ -977,6 +1102,40 @@
             display: flex;
             flex-direction: column;
             gap: 12px;
+        }
+
+        .auto-inline-grid {
+            display: grid;
+            grid-template-columns: 110px 1fr 130px 1fr;
+            gap: 8px 12px;
+            align-items: center;
+        }
+
+        .auto-inline-grid label {
+            font-size: 12px;
+            color: var(--text-secondary);
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .auto-inline-actions {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 8px;
+        }
+
+        .auto-switch {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+        }
+
+        .auto-switch input {
+            width: 14px;
+            height: 14px;
+            margin: 0;
         }
 
         .auto-form label {
@@ -1071,6 +1230,11 @@
             transform: translateY(0);
         }
 
+        .task-type-btn.is-running {
+            opacity: 0.75;
+            pointer-events: none;
+        }
+
         .task-type-btn.active {
             background: linear-gradient(135deg, var(--primary-color) 0%, #6366f1 100%);
             color: white;
@@ -1081,6 +1245,12 @@
         .task-type-btn .icon {
             font-size: 22px;
             display: block;
+        }
+
+        @media (max-width: 1200px) {
+            .auto-card.auto-card-primary {
+                grid-column: span 1;
+            }
         }
 
         .schedule-list {
@@ -1398,6 +1568,43 @@
             margin-bottom: 12px;
             flex-wrap: wrap;
         }
+        .task-composer {
+            border: 1px solid var(--border);
+            background: var(--panel-soft);
+            border-radius: 12px;
+            padding: 10px;
+            margin-bottom: 12px;
+        }
+        .task-composer-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(120px, 0.7fr);
+            gap: 8px;
+            margin-top: 8px;
+        }
+        .task-composer-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .task-composer textarea {
+            width: 100%;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--panel);
+            color: var(--text);
+            padding: 7px 9px;
+            font-size: 12px;
+            margin-top: 8px;
+            min-height: 68px;
+            resize: vertical;
+        }
+        @media (max-width: 960px) {
+            .task-composer-grid {
+                grid-template-columns: 1fr;
+            }
+        }
         .task-filter-select {
             padding: 6px 10px;
             border: 1px solid var(--border);
@@ -1424,6 +1631,44 @@
         }
         .task-filter-btn:hover {
             filter: brightness(1.05);
+        }
+
+        .intake-panel {
+            border: 1px solid var(--border);
+            background: var(--panel-soft);
+            border-radius: 12px;
+            padding: 10px;
+            margin-bottom: 12px;
+        }
+        .intake-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 8px;
+            margin-top: 8px;
+        }
+        .intake-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+        }
+        .intake-input {
+            width: 100%;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--panel);
+            color: var(--text);
+            padding: 7px 9px;
+            font-size: 12px;
+        }
+        @media (max-width: 1080px) {
+            .intake-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+        }
+        @media (max-width: 760px) {
+            .intake-grid {
+                grid-template-columns: 1fr;
+            }
         }
 
         /* Workload card */
@@ -1641,6 +1886,102 @@
         .intervention-btn.decline {
             border-color: color-mix(in srgb, var(--danger) 60%, var(--border));
             color: var(--danger);
+        }
+
+        .stuck-modal {
+            position: fixed;
+            inset: 0;
+            background: color-mix(in srgb, var(--bg) 62%, transparent);
+            backdrop-filter: blur(4px);
+            z-index: 120;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+        }
+
+        .stuck-modal.show {
+            display: flex;
+        }
+
+        .stuck-modal-card {
+            width: min(620px, 100%);
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            box-shadow: var(--shadow);
+            padding: 16px;
+        }
+
+        .stuck-modal-title {
+            font-size: 16px;
+            font-weight: 800;
+            margin-bottom: 6px;
+        }
+
+        .stuck-modal-text {
+            font-size: 13px;
+            color: var(--muted);
+            margin-bottom: 10px;
+            line-height: 1.45;
+        }
+
+        .stuck-modal-fields {
+            display: grid;
+            gap: 8px;
+        }
+
+        .stuck-field-row {
+            display: grid;
+            gap: 4px;
+        }
+
+        .stuck-field-row label {
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--text);
+        }
+
+        .stuck-field-row input,
+        .stuck-field-row select,
+        .stuck-field-row textarea {
+            width: 100%;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--panel-soft);
+            color: var(--text);
+            padding: 8px 10px;
+            font-size: 12px;
+            outline: none;
+        }
+
+        .stuck-field-row textarea {
+            min-height: 68px;
+            resize: vertical;
+        }
+
+        .stuck-modal-actions {
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+            margin-top: 12px;
+        }
+
+        .stuck-modal-actions button {
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            padding: 7px 12px;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            background: var(--panel-soft);
+            color: var(--text);
+        }
+
+        .stuck-modal-actions button.primary {
+            border-color: var(--accent-border);
+            background: var(--accent-soft);
+            color: var(--accent);
         }
 
         .tasks-metrics {
@@ -2254,6 +2595,28 @@
                     <div class="priority-stat"><span class="priority-badge priority-p2">P2</span><span class="count" id="p2-count">0</span></div>
                     <div class="priority-stat"><span class="priority-badge priority-p3">P3</span><span class="count" id="p3-count">0</span></div>
                 </div>
+                <div class="task-composer">
+                    <div class="row">
+                        <strong>Tạo Task Nhanh</strong>
+                        <span class="tiny" id="task-quick-status">Sẵn sàng</span>
+                    </div>
+                    <div class="task-composer-grid">
+                        <input class="task-input" id="task-quick-title" type="text" placeholder="Tiêu đề task (bắt buộc)">
+                        <input class="task-input" id="task-quick-assignee" type="text" placeholder="Assignee (vd: orion-1)">
+                        <select class="task-select" id="task-quick-priority">
+                            <option value="medium">P2 - Medium</option>
+                            <option value="critical">P0 - Critical</option>
+                            <option value="high">P1 - High</option>
+                            <option value="low">P3 - Low</option>
+                        </select>
+                    </div>
+                    <textarea id="task-quick-description" placeholder="Mô tả task (optional)"></textarea>
+                    <div class="task-composer-actions">
+                        <button type="button" class="task-filter-btn active" id="task-quick-create">+ Tạo Task</button>
+                        <input class="task-input" id="task-quick-natural" type="text" placeholder="Hoặc gõ tự nhiên: task của Khiêm kiểm tra Teams + Ravin email...">
+                        <button type="button" class="task-filter-btn" id="task-quick-create-natural">AI Parse</button>
+                    </div>
+                </div>
                 <div class="task-filters">
                     <select class="task-filter-select" id="task-filter-assignee">
                         <option value="">All Assignees</option>
@@ -2274,6 +2637,40 @@
                     </select>
                     <button class="task-filter-btn" id="task-filter-clear">Clear</button>
                 </div>
+                <div class="intake-panel" id="automation-intake-panel">
+                    <div class="row">
+                        <strong>Input Nhanh (Auto-Learn)</strong>
+                        <span class="tiny" id="intake-status">Chưa tải dữ liệu...</span>
+                    </div>
+                    <div class="tiny">Điền một lần để hệ thống tự dùng lại khi thiếu thông tin.</div>
+                    <div class="intake-grid">
+                        <select class="intake-input" id="intake-mail-mode">
+                            <option value="edge_gmail">Mail route: Edge Gmail</option>
+                            <option value="mail_app">Mail route: Mail app</option>
+                            <option value="imap">Mail route: IMAP API</option>
+                        </select>
+                        <input class="intake-input" id="intake-mail-browser" type="text" placeholder="Mail browser (vd: Microsoft Edge)">
+                        <select class="intake-input" id="intake-teams-mode">
+                            <option value="teams_app">Teams route: Desktop app</option>
+                            <option value="browser">Teams route: Browser</option>
+                        </select>
+                        <input class="intake-input" id="intake-teams-app" type="text" placeholder="Teams app name (vd: Microsoft Teams)">
+                        <input class="intake-input" id="intake-mail-host" type="text" placeholder="IMAP host (vd: imap.gmail.com)">
+                        <input class="intake-input" id="intake-mail-user" type="text" placeholder="IMAP username / email">
+                        <input class="intake-input" id="intake-mail-pass" type="password" placeholder="IMAP password / app password">
+                        <input class="intake-input" id="intake-target-gmail" type="text" placeholder="Target Gmail (vd: admin@algoxpert.org)">
+                        <input class="intake-input" id="intake-khiem-hint" type="text" placeholder="Teams hint (Khiêm)">
+                        <input class="intake-input" id="intake-khiem-selected" type="text" placeholder="Khiêm account selected (exact)">
+                        <input class="intake-input" id="intake-khiem-candidates" type="text" placeholder="Khiêm account options (comma-separated)">
+                        <input class="intake-input" id="intake-ravin-hint" type="text" placeholder="Ravin hint (email/name)">
+                        <input class="intake-input" id="intake-raise-usd" type="number" min="0" step="1000" placeholder="Raise USD">
+                        <input class="intake-input" id="intake-equity-pct" type="number" min="0" max="100" step="0.1" placeholder="Equity %">
+                    </div>
+                    <div class="intake-actions">
+                        <button class="task-filter-btn active" id="intake-save-btn">Lưu Input</button>
+                        <button class="task-filter-btn" id="intake-reload-btn">Tải Lại</button>
+                    </div>
+                </div>
                 <div class="tasks-metrics" id="tasks-metrics">
                     <div class="tasks-metric"><strong>0</strong><span>Total</span></div>
                     <div class="tasks-metric"><strong>0</strong><span>In Progress</span></div>
@@ -2293,9 +2690,44 @@
             </article>
 
             <article class="card" data-view="workspace tasks" data-zen="secondary">
+                <div class="row">
+                    <h2>Process Board</h2>
+                    <span class="tiny" id="process-board-meta">Loading process state...</span>
+                </div>
+                <div class="process-board-lanes">
+                    <section class="process-board-lane">
+                        <h4>🛰️ Orions</h4>
+                        <ul id="process-board-orions" class="activity-list process-lane-list">
+                            <li class="activity-item"><div class="text">Loading Orions...</div></li>
+                        </ul>
+                    </section>
+                    <section class="process-board-lane">
+                        <h4>⚠️ Stale Tasks</h4>
+                        <ul id="process-board-stale" class="activity-list process-lane-list">
+                            <li class="activity-item"><div class="text">No stale tasks.</div></li>
+                        </ul>
+                    </section>
+                    <section class="process-board-lane">
+                        <h4>🔁 Recent Transitions</h4>
+                        <ul id="process-board-transitions" class="activity-list process-lane-list">
+                            <li class="activity-item"><div class="text">No transitions.</div></li>
+                        </ul>
+                    </section>
+                </div>
+            </article>
+
+            <article class="card" data-view="workspace tasks" data-zen="secondary">
                 <h2>Next Actions</h2>
                 <ul id="next-actions-list" class="activity-list">
                     <li class="activity-item"><div class="text">Analyzing next actions...</div></li>
+                </ul>
+            </article>
+
+            <article class="card" data-view="workspace tasks" data-zen="secondary">
+                <h2>Strategic Thinking</h2>
+                <div class="tiny" id="strategic-meta">Đang phân tích toàn hệ thống...</div>
+                <ul id="strategic-lines" class="activity-list">
+                    <li class="activity-item"><div class="text">NEXUS đang tổng hợp bức tranh tổng thể...</div></li>
                 </ul>
             </article>
 
@@ -2360,9 +2792,24 @@
                 </div>
                 <div class="automation-grid">
                     <!-- Execute Task -->
-                    <div class="auto-card">
+                    <div class="auto-card auto-card-primary">
                         <h3><span class="icon">⚡</span> <span data-i18n="execute_task">Thực Thi Tác Vụ</span></h3>
+                        <p class="auto-helper" data-i18n="auto_helper">Gõ câu tự nhiên để chạy ngay. Không cần nhớ task/action/JSON.</p>
                         <div class="auto-form">
+                            <label data-i18n="natural_command">Lệnh Tự Nhiên</label>
+                            <input id="auto-natural-command" type="text" placeholder='VD: chạy lệnh "pwd", mở Safari, đọc clipboard, chụp màn hình' />
+                            <div class="auto-preset-row">
+                                <button type="button" class="auto-preset-btn" data-auto-command='chạy lệnh "pwd"'>pwd</button>
+                                <button type="button" class="auto-preset-btn" data-auto-command="liệt kê apps đang chạy">Apps</button>
+                                <button type="button" class="auto-preset-btn" data-auto-command="đọc clipboard">Clipboard</button>
+                                <button type="button" class="auto-preset-btn" data-auto-command="chụp màn hình">Screenshot</button>
+                            </div>
+                            <div class="auto-command-actions">
+                                <button type="button" id="auto-run-natural-btn"><span class="icon">⚡</span> <span data-i18n="run_now">Chạy Ngay</span></button>
+                                <button type="button" id="auto-clear-result-btn" class="secondary" data-i18n="clear_result">Xóa Kết Quả</button>
+                            </div>
+                            <details class="auto-advanced">
+                                <summary data-i18n="advanced_mode">Chế độ nâng cao (task/action/JSON)</summary>
                             <label data-i18n="task_type">Loại Tác Vụ</label>
                             <select id="auto-task-type">
                                 <option value="terminal">💻 Terminal</option>
@@ -2384,15 +2831,16 @@
                             </select>
                             <label data-i18n="params">Tham Số (JSON)</label>
                             <input id="auto-params" type="text" placeholder='{"command":"echo hello"}' />
-                            <button type="button" id="auto-execute-btn" data-i18n="execute">▶ Thực Thi</button>
+                                <button type="button" id="auto-execute-btn" data-i18n="execute_advanced">▶ Chạy Nâng Cao</button>
+                            </details>
                         </div>
-                        <div id="auto-result" style="margin-top:10px;font-size:12px;word-break:break-all;max-height:100px;overflow-y:auto;padding:8px;background:var(--bg-secondary);border-radius:6px;color:var(--text-secondary);" data-i18n="result_placeholder">Kết quả sẽ hiển thị ở đây...</div>
+                        <div id="auto-result" class="auto-result-box" data-i18n="result_placeholder">Kết quả sẽ hiển thị ở đây...</div>
                     </div>
 
                     <!-- Quick Actions -->
                     <div class="auto-card">
                         <h3><span class="icon">🚀</span> <span data-i18n="quick_actions">Thao Tác Nhanh</span></h3>
-                        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;">
+                        <div class="task-type-grid">
                             <button class="task-type-btn" data-task="terminal" data-action="execute" data-params='{"command":"pwd"}'>
                                 <span class="icon">💻</span><span data-i18n="terminal">Terminal</span>
                             </button>
@@ -2417,6 +2865,40 @@
                             <button class="task-type-btn" data-task="computer" data-action="screenshot" data-params='{"filepath":"/tmp/screenshot.png"}'>
                                 <span class="icon">📸</span><span data-i18n="screenshot">Chụp Màn</span>
                             </button>
+                        </div>
+                    </div>
+
+                    <!-- Autopilot -->
+                    <div class="auto-card">
+                        <h3><span class="icon">🧭</span> <span>Autopilot Control</span></h3>
+                        <p class="auto-helper">Điều phối và giám sát vòng lặp tự động theo thời gian thực.</p>
+                        <div class="auto-form">
+                            <div class="auto-inline-grid">
+                                <label for="auto-autopilot-executor">Executor</label>
+                                <select id="auto-autopilot-executor">
+                                    <option value="hub_loop">hub_loop</option>
+                                    <option value="policy_loop">policy_loop</option>
+                                </select>
+                                <label for="auto-autopilot-interval">Interval (s)</label>
+                                <input id="auto-autopilot-interval" type="number" min="5" step="5" value="20" />
+                                <label for="auto-autopilot-max">Max actions / cycle</label>
+                                <input id="auto-autopilot-max" type="number" min="1" max="10" value="2" />
+                                <label>Dry-run</label>
+                                <label class="auto-switch">
+                                    <input id="auto-autopilot-dry-run" type="checkbox" checked />
+                                    <span>Bật</span>
+                                </label>
+                            </div>
+                            <div class="auto-inline-actions">
+                                <button type="button" id="auto-autopilot-start">▶ Start</button>
+                                <button type="button" id="auto-autopilot-stop">⏹ Stop</button>
+                                <button type="button" id="auto-autopilot-run">⏩ Run</button>
+                                <button type="button" id="auto-autopilot-preview">👁️ Preview</button>
+                                <button type="button" id="auto-autopilot-refresh">↻ Refresh</button>
+                                <button type="button" class="secondary" id="auto-autopilot-apply">⚙️ Apply config</button>
+                            </div>
+                            <div id="auto-autopilot-summary" class="tiny">Chưa có dữ liệu autopilot...</div>
+                            <div id="auto-autopilot-output" class="auto-result-box">Chưa có trạng thái.</div>
                         </div>
                     </div>
 
@@ -2568,12 +3050,13 @@
                     <div class="chat-resize-handle" id="chat-resize-handle" title="Kéo để thay đổi chiều cao chat"></div>
                     <div class="chat-typing" id="chat-typing" style="display:none">processing...</div>
                     <div class="chat-input-row">
-                        <input id="chat-input" type="text" placeholder="Nhập tự nhiên hoặc gõ 1/2/3, /nexus_rules..." />
+                        <input id="chat-input" type="text" placeholder="Nhập tự nhiên: tạo task Fix chat UX p1 cho nova, list tasks, /nexus_rules..." />
                         <button type="button" onclick="sendChatMessage()">Send</button>
                     </div>
                     <div class="chat-suggestions" id="chat-suggestions">
                         <button type="button" class="chat-chip" data-prompt="còn cái gì đang chạy vậy, tóm giúp mình">Realtime summary</button>
                         <button type="button" class="chat-chip" data-prompt="guardian gỡ kẹt nếu có flow bị stuck">Auto unstick</button>
+                        <button type="button" class="chat-chip" data-prompt="tạo task Fix chat UX p1 cho nova mô tả: làm chat hiểu ngôn ngữ tự nhiên tốt hơn">Create task</button>
                         <button type="button" class="chat-chip" data-prompt="đánh giá nhanh UI/UX hiện tại và đề xuất nâng cấp ngay">UI/UX critique</button>
                         <button type="button" class="chat-chip" data-prompt="chạy 1 vòng Orion rồi báo kết quả ngắn gọn">Run one cycle</button>
                     </div>
@@ -2637,6 +3120,18 @@
         </div>
     </div>
 
+    <div class="stuck-modal" id="stuck-modal" aria-hidden="true">
+        <div class="stuck-modal-card" role="dialog" aria-modal="true" aria-label="Automation input request">
+            <div class="stuck-modal-title" id="stuck-modal-title">Need your input</div>
+            <div class="stuck-modal-text" id="stuck-modal-text">Automation is blocked and needs quick context to continue.</div>
+            <div class="stuck-modal-fields" id="stuck-modal-fields"></div>
+            <div class="stuck-modal-actions">
+                <button type="button" id="stuck-modal-defer">Nhắc lại sau</button>
+                <button type="button" class="primary" id="stuck-modal-submit">Tiếp tục ngay</button>
+            </div>
+        </div>
+    </div>
+
     <div class="connection" id="connection-state">Connecting...</div>
     <div class="toast-stack" id="toast-stack"></div>
 
@@ -2658,6 +3153,7 @@
         let openclawMetrics = null;
         let latestSlo = null;
         let latestStatusPayload = null;
+        let latestAutopilotPayload = null;
         let lastStatusRenderAt = 0;
         let statusRenderTimer = null;
         let pendingStatusPayload = null;
@@ -2678,11 +3174,18 @@
         let deckSuggestedCommand = '';
         let deckPrefillLast = '';
         let lastCoordinationPayload = null;
+        let lastNaturalAutomationKey = '';
+        let lastNaturalAutomationAt = 0;
+        const NATURAL_AUTOMATION_DEBOUNCE_MS = 5500;
         const cardHideTimers = new WeakMap();
         let lastVisualPulseIteration = -1;
         const PIXEL_AUTO_STORAGE_KEY = 'autodev-pixel-auto-enabled';
         const PIXEL_BUSY_STORAGE_KEY = 'autodev-pixel-busy-enabled';
         let lastPixelDensityClass = '';
+        let latestInterventionMap = {};
+        let activeHumanInputIntervention = null;
+        let humanInputModalBusy = false;
+        const dismissedHumanInputIds = new Set();
 
         const refs = {
             iterationCounter: document.getElementById('iteration-counter'),
@@ -2769,13 +3272,44 @@
             tasksBoard: document.getElementById('tasks-board'),
             tasksMetrics: document.getElementById('tasks-metrics'),
             workloadGrid: document.getElementById('workload-grid'),
+            processBoardMeta: document.getElementById('process-board-meta'),
+            processBoardOrions: document.getElementById('process-board-orions'),
+            processBoardStale: document.getElementById('process-board-stale'),
+            processBoardTransitions: document.getElementById('process-board-transitions'),
             nextActionsList: document.getElementById('next-actions-list'),
+            strategicMeta: document.getElementById('strategic-meta'),
+            strategicLines: document.getElementById('strategic-lines'),
             bridgeTerminalsList: document.getElementById('bridge-terminals-list'),
             bridgeTerminalsSummary: document.getElementById('bridge-terminals-summary'),
+            taskQuickStatus: document.getElementById('task-quick-status'),
+            taskQuickTitle: document.getElementById('task-quick-title'),
+            taskQuickAssignee: document.getElementById('task-quick-assignee'),
+            taskQuickPriority: document.getElementById('task-quick-priority'),
+            taskQuickDescription: document.getElementById('task-quick-description'),
+            taskQuickCreateBtn: document.getElementById('task-quick-create'),
+            taskQuickNatural: document.getElementById('task-quick-natural'),
+            taskQuickCreateNaturalBtn: document.getElementById('task-quick-create-natural'),
             taskFilterAssignee: document.getElementById('task-filter-assignee'),
             taskFilterPriority: document.getElementById('task-filter-priority'),
             taskFilterStatus: document.getElementById('task-filter-status'),
             taskFilterClear: document.getElementById('task-filter-clear'),
+            intakeStatus: document.getElementById('intake-status'),
+            intakeMailMode: document.getElementById('intake-mail-mode'),
+            intakeMailBrowser: document.getElementById('intake-mail-browser'),
+            intakeTeamsMode: document.getElementById('intake-teams-mode'),
+            intakeTeamsApp: document.getElementById('intake-teams-app'),
+            intakeMailHost: document.getElementById('intake-mail-host'),
+            intakeMailUser: document.getElementById('intake-mail-user'),
+            intakeMailPass: document.getElementById('intake-mail-pass'),
+            intakeTargetGmail: document.getElementById('intake-target-gmail'),
+            intakeKhiemHint: document.getElementById('intake-khiem-hint'),
+            intakeKhiemSelected: document.getElementById('intake-khiem-selected'),
+            intakeKhiemCandidates: document.getElementById('intake-khiem-candidates'),
+            intakeRavinHint: document.getElementById('intake-ravin-hint'),
+            intakeRaiseUsd: document.getElementById('intake-raise-usd'),
+            intakeEquityPct: document.getElementById('intake-equity-pct'),
+            intakeSaveBtn: document.getElementById('intake-save-btn'),
+            intakeReloadBtn: document.getElementById('intake-reload-btn'),
             p0Count: document.getElementById('p0-count'),
             p1Count: document.getElementById('p1-count'),
             p2Count: document.getElementById('p2-count'),
@@ -2797,16 +3331,101 @@
             notifSendBtn: document.getElementById('notif-send-btn'),
             interventionsList: document.getElementById('interventions-list'),
             interventionsSummary: document.getElementById('interventions-summary'),
+            stuckModal: document.getElementById('stuck-modal'),
+            stuckModalTitle: document.getElementById('stuck-modal-title'),
+            stuckModalText: document.getElementById('stuck-modal-text'),
+            stuckModalFields: document.getElementById('stuck-modal-fields'),
+            stuckModalSubmit: document.getElementById('stuck-modal-submit'),
+            stuckModalDefer: document.getElementById('stuck-modal-defer'),
             // Automation
+            autoNaturalCommand: document.getElementById('auto-natural-command'),
+            autoRunNaturalBtn: document.getElementById('auto-run-natural-btn'),
+            autoClearResultBtn: document.getElementById('auto-clear-result-btn'),
+            autoPresetButtons: Array.from(document.querySelectorAll('.auto-preset-btn')),
             autoTaskType: document.getElementById('auto-task-type'),
             autoAction: document.getElementById('auto-action'),
             autoParams: document.getElementById('auto-params'),
             autoResult: document.getElementById('auto-result'),
+            autoAutopilotExecutor: document.getElementById('auto-autopilot-executor'),
+            autoAutopilotInterval: document.getElementById('auto-autopilot-interval'),
+            autoAutopilotMax: document.getElementById('auto-autopilot-max'),
+            autoAutopilotDryRun: document.getElementById('auto-autopilot-dry-run'),
+            autoAutopilotStart: document.getElementById('auto-autopilot-start'),
+            autoAutopilotStop: document.getElementById('auto-autopilot-stop'),
+            autoAutopilotRun: document.getElementById('auto-autopilot-run'),
+            autoAutopilotPreview: document.getElementById('auto-autopilot-preview'),
+            autoAutopilotRefresh: document.getElementById('auto-autopilot-refresh'),
+            autoAutopilotApply: document.getElementById('auto-autopilot-apply'),
+            autoAutopilotSummary: document.getElementById('auto-autopilot-summary'),
+            autoAutopilotOutput: document.getElementById('auto-autopilot-output'),
             scheduleList: document.getElementById('schedule-list'),
             notifListAuto: document.getElementById('notif-list-auto'),
             webhookList: document.getElementById('webhook-list'),
             historyList: document.getElementById('history-list'),
         };
+
+        const API_ORIGIN_FALLBACKS = ['http://localhost:5001', 'http://127.0.0.1:5001'];
+        const API_REQUEST_TIMEOUT_MS = 12000;
+
+        function resolveApiCandidates(url) {
+            const target = String(url || '').trim();
+            if (!target) return [];
+            if (/^https?:\/\//i.test(target)) return [target];
+            if (!target.startsWith('/')) return [target];
+            const candidates = [];
+            const origin = (window.location && typeof window.location.origin === 'string')
+                ? String(window.location.origin || '').trim()
+                : '';
+            if (/^https?:\/\//i.test(origin)) {
+                candidates.push(`${origin}${target}`);
+            }
+            API_ORIGIN_FALLBACKS.forEach((base) => {
+                const normalized = String(base || '').trim();
+                if (/^https?:\/\//i.test(normalized)) {
+                    candidates.push(`${normalized}${target}`);
+                }
+            });
+            return Array.from(new Set(candidates));
+        }
+
+        async function apiFetchJson(url, init = {}, fallback = null) {
+            const candidates = resolveApiCandidates(url);
+            let lastError = null;
+            for (const target of candidates) {
+                const timeoutMsRaw = Number(init && init.timeoutMs);
+                const timeoutMs = Number.isFinite(timeoutMsRaw) && timeoutMsRaw > 0
+                    ? Math.max(1000, Math.round(timeoutMsRaw))
+                    : API_REQUEST_TIMEOUT_MS;
+                const controller = new AbortController();
+                const timer = window.setTimeout(() => {
+                    controller.abort();
+                }, timeoutMs);
+                const requestInit = Object.assign({}, init || {});
+                delete requestInit.timeoutMs;
+                requestInit.signal = controller.signal;
+                try {
+                    const response = await fetch(target, requestInit);
+                    let data = null;
+                    try {
+                        data = await response.json();
+                    } catch (error) {
+                        data = null;
+                    }
+                    window.clearTimeout(timer);
+                    return { ok: response.ok, response, data, url: target, error: null };
+                } catch (error) {
+                    window.clearTimeout(timer);
+                    lastError = error;
+                }
+            }
+            return {
+                ok: false,
+                response: null,
+                data: fallback,
+                url: candidates[0] || String(url || ''),
+                error: lastError || new Error('Failed to fetch'),
+            };
+        }
 
         const ALLOWED_VIEWS = ['workspace', 'ops', 'activity', 'chat', 'tasks', 'interventions', 'automation'];
         const VIEW_STORAGE_KEY = 'autodev-live-view';
@@ -3047,39 +3666,6 @@
             tourOverlay.appendChild(card);
             document.body.appendChild(tourOverlay);
         }
-            `;
-
-            const card = document.createElement('div');
-            card.style.cssText = `
-                background: linear-gradient(135deg, #1e1e2e 0%, #2d2d44 100%);
-                border-radius: 16px;
-                padding: 24px;
-                max-width: 420px;
-                color: white;
-                box-shadow: 0 20px 60px rgba(0,0,0,0.5);
-                border: 1px solid rgba(99, 102, 241, 0.3);
-            `;
-
-            const rect = element.getBoundingClientRect();
-            card.innerHTML = `
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-                    <h3 style="margin:0;font-size:18px;color:#6366f1;">${step.title}</h3>
-                    <span style="font-size:12px;color:#888;">${tourStep + 1}/${steps.length}</span>
-                </div>
-                <p style="color:#ccc;line-height:1.6;margin-bottom:20px;">${step.content}</p>
-                <div style="display:flex;gap:10px;justify-content:flex-end;">
-                    <button onclick="skipTour()" style="padding:8px 16px;border:none;background:#444;color:#fff;border-radius:8px;cursor:pointer;">Bỏ qua</button>
-                    <button onclick="nextTourStep()" style="padding:8px 20px;border:none;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border-radius:8px;cursor:pointer;font-weight:600;">Tiếp theo →</button>
-                </div>
-            `;
-
-            tourOverlay.appendChild(card);
-            document.body.appendChild(tourOverlay);
-
-            // Highlight element
-            element.style.position = 'relative';
-            element.style.zIndex = '10001';
-        }
 
         function nextTourStep() {
             const lang = localStorage.getItem('autodev-lang') || 'vi';
@@ -3105,10 +3691,11 @@
             console.log('Tour skipped');
         }
 
-        // Auto-start tour for first-time users
+        // Keep tour opt-in to avoid blocking first interactions on /live.
         document.addEventListener('DOMContentLoaded', () => {
-            if (!localStorage.getItem('tour-completed')) {
-                setTimeout(startTour, 1500);
+            const params = new URLSearchParams(window.location.search || '');
+            if (params.get('tour') === '1') {
+                setTimeout(startTour, 350);
             }
         });
 
@@ -3116,6 +3703,7 @@
             { id: 'backlog', label: 'Backlog' },
             { id: 'todo', label: 'To Do' },
             { id: 'in_progress', label: 'In Progress' },
+            { id: 'blocked', label: 'Blocked' },
             { id: 'review', label: 'Review' },
             { id: 'done', label: 'Done' },
         ];
@@ -3540,16 +4128,24 @@
 
         async function loadStatus() {
             try {
-                const [statusResp, openclawResp, sloResp] = await Promise.all([
-                    fetch('/api/status'),
-                    fetch('/api/openclaw/metrics'),
-                    fetch('/api/system/slo'),
+                const safeFetchJson = async (url, fallback = null) => {
+                    const result = await apiFetchJson(url, { method: 'GET' }, fallback);
+                    if (!result.ok || !result.data || typeof result.data !== 'object') {
+                        return fallback;
+                    }
+                    return result.data;
+                };
+                const [data, openclawData, sloData, autopilotData] = await Promise.all([
+                    safeFetchJson('/api/status', {}),
+                    safeFetchJson('/api/openclaw/metrics', null),
+                    safeFetchJson('/api/system/slo', null),
+                    safeFetchJson('/api/hub/autopilot/status', null),
                 ]);
-                const data = await statusResp.json();
-                const openclawData = await openclawResp.json();
-                const sloData = await sloResp.json();
-                openclawMetrics = openclawData || null;
+                const resolvedStatus = (data && typeof data === 'object') ? data : {};
+                const resolvedAutopilot = autopilotData && autopilotData.success !== false ? autopilotData : (resolvedStatus && resolvedStatus.autopilot) || null;
+                openclawMetrics = openclawData && typeof openclawData === 'object' ? openclawData : null;
                 latestSlo = (sloData && sloData.slo) ? sloData.slo : null;
+                latestAutopilotPayload = (resolvedAutopilot && typeof resolvedAutopilot === 'object') ? resolvedAutopilot : null;
                 const successRate = Number((latestSlo && latestSlo.routing && latestSlo.routing.success_rate) || 0);
                 const p95 = Number((latestSlo && latestSlo.routing && latestSlo.routing.p95_latency_ms) || 0);
                 const queueDepth = Number((latestSlo && latestSlo.openclaw_queue && latestSlo.openclaw_queue.total_queue_depth) || 0);
@@ -3558,9 +4154,11 @@
                 const workersRegistered = Number((latestSlo && latestSlo.control_plane && latestSlo.control_plane.registered_workers) || 0);
                 const circuits = Number((latestSlo && latestSlo.control_plane && latestSlo.control_plane.open_circuits) || 0);
                 refs.connection.textContent = `Socket connected | routing ${(successRate * 100).toFixed(0)}% | p95 ${p95}ms | oc-q ${queueDepth} | oc-qp95 ${queueP95}ms | workers ${workersAlive}/${workersRegistered} | circuits ${circuits}`;
-                updateDashboard(data);
+                updateDashboard(resolvedStatus);
+                renderAutopilotStatus(latestAutopilotPayload || (resolvedStatus && resolvedStatus.autopilot));
                 loadKanbanBoard();
                 loadWorkload();
+                loadProcessBoard();
                 loadNextActions();
                 loadBridgeTerminals();
                 loadMessages();
@@ -3643,6 +4241,14 @@
                 <div class="tasks-metric"><strong>${Number(safeMetrics.done_tasks || 0)}</strong><span>Done</span></div>
                 <div class="tasks-metric"><strong>${Number(safeMetrics.completion_rate || 0)}%</strong><span>Complete</span></div>
             `;
+            if (refs.taskQuickStatus) {
+                const total = Number(safeMetrics.total_tasks || 0);
+                if (total <= 0) {
+                    setTaskQuickStatus('Chưa có task tracked. Tạo task đầu tiên để bật workflow.', 'warn');
+                } else {
+                    setTaskQuickStatus(`Đang track ${total} task`, 'ok');
+                }
+            }
 
             const buildStatusOptions = (selected) => TASK_COLUMNS.map((col) => (
                 `<option value="${escapeHtml(col.id)}" ${col.id === selected ? 'selected' : ''}>${escapeHtml(col.label)}</option>`
@@ -3668,9 +4274,11 @@
                     const priorityRaw = String(task.priority || 'normal');
                     const priorityNorm = normalizePriority(priorityRaw);
                     const priorityLabel = priorityNorm.toUpperCase();
-                    const assignee = escapeHtml(String(task.assigned_to || 'unassigned'));
+                    const assigneeRaw = String(task.assigned_to || '').trim();
+                    const assigneeLabel = assigneeRaw || 'unassigned';
+                    const assignee = escapeHtml(assigneeLabel);
                     const status = String(task.status || column.id || 'backlog');
-                    const assigneeValue = assignee === 'unassigned' ? '' : assignee;
+                    const assigneeValue = assigneeRaw;
                     return `
                         <div class="task-item" data-task-id="${escapeHtml(taskId)}">
                             <div class="task-item-title">${title}</div>
@@ -3680,7 +4288,7 @@
                             </div>
                             <div class="task-edit-row">
                                 <select class="task-select" data-task-status>${buildStatusOptions(status)}</select>
-                                <input class="task-input" data-task-assignee type="text" placeholder="assignee" value="${escapeHtml(assigneeValue)}" />
+                                <input class="task-input" data-task-assignee data-current-assignee="${escapeHtml(assigneeValue)}" type="text" placeholder="assignee" value="${escapeHtml(assigneeValue)}" />
                                 <button type="button" class="task-mini-btn" data-task-save>Save</button>
                                 <button type="button" class="task-mini-btn" data-task-dispatch>Dispatch</button>
                             </div>
@@ -3700,7 +4308,8 @@
                     const assigneeInput = card.querySelector('[data-task-assignee]');
                     const status = statusInput ? String(statusInput.value || '').trim() : '';
                     const assignedTo = assigneeInput ? String(assigneeInput.value || '').trim() : '';
-                    await saveTaskQuick(taskId, status, assignedTo);
+                    const currentAssigned = assigneeInput ? String(assigneeInput.dataset.currentAssignee || '').trim() : '';
+                    await saveTaskQuick(taskId, status, assignedTo, assignedTo !== currentAssigned);
                 });
             });
 
@@ -3714,15 +4323,17 @@
                     const assigneeInput = card.querySelector('[data-task-assignee]');
                     const status = statusInput ? String(statusInput.value || '').trim() : '';
                     const assignedTo = assigneeInput ? String(assigneeInput.value || '').trim() : '';
-                    await dispatchTaskNow(taskId, status, assignedTo);
+                    const currentAssigned = assigneeInput ? String(assigneeInput.dataset.currentAssignee || '').trim() : '';
+                    await dispatchTaskNow(taskId, status, assignedTo, assignedTo !== currentAssigned);
                 });
             });
         }
 
-        async function saveTaskQuick(taskId, status, assignedTo) {
+        async function saveTaskQuick(taskId, status, assignedTo, assignmentChanged = false, forceOverride = false) {
             const updates = [{ task_id: taskId }];
             if (status) updates[0].status = status;
-            updates[0].assigned_to = assignedTo || '';
+            if (assignmentChanged) updates[0].assigned_to = assignedTo || '';
+            if (forceOverride) updates[0].force = true;
             try {
                 const response = await fetch('/api/hub/tasks/batch-update', {
                     method: 'POST',
@@ -3731,25 +4342,46 @@
                 });
                 const payload = await response.json();
                 if (!response.ok || payload.success === false) {
-                    const err = (payload && (payload.error || payload.error_code)) || 'update_failed';
+                    const firstResult = Array.isArray(payload && payload.results) && payload.results.length ? payload.results[0] : {};
+                    const err = (
+                        firstResult.error_code
+                        || firstResult.error
+                        || (payload && (payload.error || payload.error_code))
+                        || 'update_failed'
+                    );
+                    if (String(err) === 'LEASE_CONFLICT' && !forceOverride) {
+                        setTaskQuickStatus('Task đang bị lease, thử override...', 'warn');
+                        return await saveTaskQuick(taskId, status, assignedTo, assignmentChanged, true);
+                    }
                     notify(`Task update failed: ${err}`, 'danger', 2200);
-                    return;
+                    setTaskQuickStatus(`Update lỗi: ${err}`, 'danger');
+                    return false;
                 }
-                notify('Task updated', 'ok', 1200);
+                notify(forceOverride ? 'Task updated (lease override)' : 'Task updated', 'ok', 1200);
+                setTaskQuickStatus(forceOverride ? 'Đã override lease và cập nhật task' : 'Đã cập nhật task', 'ok');
                 await loadKanbanBoard();
+                await loadWorkload();
+                await loadProcessBoard();
+                return true;
             } catch (error) {
                 notify(`Task update error: ${error.message || 'unknown'}`, 'danger', 2200);
+                setTaskQuickStatus(`Update lỗi: ${error.message || 'unknown'}`, 'danger');
+                return false;
             }
         }
 
-        async function dispatchTaskNow(taskId, status, assignedTo) {
+        async function dispatchTaskNow(taskId, status, assignedTo, assignmentChanged = false) {
             try {
+                if (status || assignmentChanged) {
+                    const saved = await saveTaskQuick(taskId, status, assignedTo, assignmentChanged);
+                    if (!saved) return;
+                }
                 const payload = {
                     ensure_assigned: true,
                     instance_id: assignedTo || '',
                     priority: 'high',
+                    status_hint: status || 'in_progress',
                 };
-                if (status) payload.status_hint = status;
                 const response = await fetch(`/api/hub/tasks/${encodeURIComponent(taskId)}/dispatch`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -3764,9 +4396,113 @@
                 notify('Task dispatched', 'ok', 1300);
                 await loadKanbanBoard();
                 await loadWorkload();
+                await loadProcessBoard();
                 await loadNextActions();
             } catch (error) {
                 notify(`Dispatch error: ${error.message || 'unknown'}`, 'danger', 2400);
+            }
+        }
+
+        function setTaskQuickStatus(text, tone) {
+            if (!refs.taskQuickStatus) return;
+            refs.taskQuickStatus.textContent = String(text || 'Sẵn sàng');
+            refs.taskQuickStatus.style.color = '';
+            if (tone === 'ok') refs.taskQuickStatus.style.color = 'var(--ok)';
+            if (tone === 'warn') refs.taskQuickStatus.style.color = 'var(--warn)';
+            if (tone === 'danger') refs.taskQuickStatus.style.color = 'var(--danger)';
+        }
+
+        async function createTaskQuickFromPanel() {
+            const title = refs.taskQuickTitle ? String(refs.taskQuickTitle.value || '').trim() : '';
+            const description = refs.taskQuickDescription ? String(refs.taskQuickDescription.value || '').trim() : '';
+            const assignedTo = refs.taskQuickAssignee ? String(refs.taskQuickAssignee.value || '').trim() : '';
+            const priority = refs.taskQuickPriority ? String(refs.taskQuickPriority.value || 'medium').trim() : 'medium';
+            if (!title) {
+                notify('Thiếu tiêu đề task', 'warn', 1800);
+                setTaskQuickStatus('Thiếu tiêu đề', 'warn');
+                if (refs.taskQuickTitle) refs.taskQuickTitle.focus();
+                return;
+            }
+            setTaskQuickStatus('Đang tạo task...', 'warn');
+            try {
+                const result = await apiFetchJson('/api/hub/tasks', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        title,
+                        description,
+                        priority,
+                        assigned_to: assignedTo || null,
+                    }),
+                });
+                const payload = (result.data && typeof result.data === 'object') ? result.data : {};
+                if (!result.response) {
+                    const networkError = (result.error && result.error.message) ? result.error.message : 'backend_unreachable';
+                    notify(`Tạo task lỗi: ${networkError}`, 'danger', 2600);
+                    setTaskQuickStatus(`Lỗi: ${networkError}`, 'danger');
+                    return;
+                }
+                if (!result.ok || payload.success === false) {
+                    const err = (payload && (payload.error || payload.error_code)) || 'create_failed';
+                    notify(`Tạo task lỗi: ${err}`, 'danger', 2600);
+                    setTaskQuickStatus(`Lỗi: ${err}`, 'danger');
+                    return;
+                }
+                const task = (payload && payload.task && typeof payload.task === 'object') ? payload.task : {};
+                const taskId = String(task.id || payload.task_id || '').trim();
+                notify(`Đã tạo task ${taskId || ''}`.trim(), 'ok', 1700);
+                setTaskQuickStatus(`Đã tạo ${taskId || 'task mới'}`, 'ok');
+                if (refs.taskQuickTitle) refs.taskQuickTitle.value = '';
+                if (refs.taskQuickDescription) refs.taskQuickDescription.value = '';
+                if (refs.taskQuickNatural) refs.taskQuickNatural.value = '';
+                await loadKanbanBoard();
+                await loadWorkload();
+                await loadProcessBoard();
+                await loadNextActions();
+                await loadStrategicBrief();
+            } catch (error) {
+                notify(`Tạo task lỗi: ${error.message || 'unknown'}`, 'danger', 2600);
+                setTaskQuickStatus(`Lỗi: ${error.message || 'unknown'}`, 'danger');
+            }
+        }
+
+        async function createTaskQuickFromNatural() {
+            const raw = refs.taskQuickNatural ? String(refs.taskQuickNatural.value || '').trim() : '';
+            if (!raw) {
+                notify('Nhập câu tự nhiên trước', 'warn', 1700);
+                setTaskQuickStatus('Thiếu câu tự nhiên', 'warn');
+                return;
+            }
+            const outbound = /(?:tao|tạo|them|thêm|create|new|add).*(?:task|cong viec)/i.test(raw) ? raw : `tạo task ${raw}`;
+            setTaskQuickStatus('AI đang phân tích và tạo task...', 'warn');
+            try {
+                const response = await fetch('/api/chat/ask', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        message: outbound,
+                        instance_id: currentInstanceId,
+                        member_id: currentMemberId(),
+                    }),
+                });
+                const payload = await response.json();
+                if (!response.ok || payload.success === false) {
+                    const err = (payload && (payload.error || payload.error_code)) || 'chat_create_failed';
+                    notify(`AI create lỗi: ${err}`, 'danger', 2500);
+                    setTaskQuickStatus(`AI lỗi: ${err}`, 'danger');
+                    return;
+                }
+                notify('AI đã xử lý yêu cầu tạo task', 'ok', 1600);
+                setTaskQuickStatus('AI đã xử lý', 'ok');
+                if (refs.taskQuickNatural) refs.taskQuickNatural.value = '';
+                await loadKanbanBoard();
+                await loadWorkload();
+                await loadProcessBoard();
+                await loadNextActions();
+                await loadStrategicBrief();
+            } catch (error) {
+                notify(`AI create lỗi: ${error.message || 'unknown'}`, 'danger', 2500);
+                setTaskQuickStatus(`AI lỗi: ${error.message || 'unknown'}`, 'danger');
             }
         }
 
@@ -3867,6 +4603,83 @@
             refs.workloadGrid.innerHTML = items + unassignedItem;
         }
 
+        async function loadProcessBoard() {
+            try {
+                const response = await fetch('/api/hub/process-board?limit=8&transitions=12');
+                const payload = await response.json();
+                if (!payload || payload.success === false) return;
+                renderProcessBoard(payload.board || {});
+            } catch (error) {
+                console.error('Failed to load process board', error);
+            }
+        }
+
+        function renderProcessBoard(board) {
+            if (!refs.processBoardOrions || !refs.processBoardStale || !refs.processBoardTransitions || !refs.processBoardMeta) return;
+            const safeBoard = (board && typeof board === 'object') ? board : {};
+            const summary = (safeBoard.summary && typeof safeBoard.summary === 'object') ? safeBoard.summary : {};
+            const processes = Array.isArray(safeBoard.processes) ? safeBoard.processes : [];
+            const transitions = Array.isArray(safeBoard.transitions) ? safeBoard.transitions : [];
+            const staleTasks = Array.isArray(safeBoard.stale_tasks) ? safeBoard.stale_tasks : [];
+            const status = (summary.status_breakdown && typeof summary.status_breakdown === 'object') ? summary.status_breakdown : {};
+
+            refs.processBoardMeta.textContent =
+                `Orion online ${Number(summary.online_processes || 0)}/${Number(summary.total_processes || 0)} · in-progress ${Number(status.in_progress || 0)} · blocked ${Number(status.blocked || 0)} · stale ${Number(summary.stale_tasks || 0)}`;
+
+            const processRows = processes.map((proc) => {
+                const name = escapeHtml(String(proc.display_name || proc.assignee || 'orion'));
+                const state = escapeHtml(String(proc.state || 'idle'));
+                const active = Number(proc.active_tasks || 0);
+                const blocked = Number(proc.blocked_tasks || 0);
+                const total = Number(proc.total_tasks || 0);
+                const current = escapeHtml(String(proc.current_task || 'no active task'));
+                const iter = proc.iteration == null ? '-' : escapeHtml(String(proc.iteration));
+                const updated = escapeHtml(formatTime(proc.last_task_update));
+                return `
+                    <li class="activity-item">
+                        <div class="text">🛰 ${name} · ${state} · active ${active} · blocked ${blocked} · total ${total}</div>
+                        <div class="tiny">task: ${current} · iter ${iter} · update ${updated || 'n/a'}</div>
+                    </li>
+                `;
+            });
+
+            const staleRows = staleTasks.slice(0, 5).map((task) => {
+                const title = escapeHtml(String(task.title || task.task_id || 'task'));
+                const assignee = escapeHtml(String(task.assignee || 'unassigned'));
+                const reason = escapeHtml(String(task.stale_reason || 'stale'));
+                const age = Number(task.stale_age_min || 0);
+                return `
+                    <li class="activity-item error">
+                        <div class="text">⚠️ Stale: ${title}</div>
+                        <div class="tiny">${assignee} · ${reason}${age ? ` · ${age}m` : ''}</div>
+                    </li>
+                `;
+            });
+
+            const transitionRows = transitions.slice(0, 8).map((item) => {
+                const taskLabel = escapeHtml(String(item.task_title || item.task_id || 'task'));
+                const action = escapeHtml(String(item.action || 'update'));
+                const from = escapeHtml(String(item.from || ''));
+                const to = escapeHtml(String(item.to || ''));
+                const owner = escapeHtml(String(item.orion_id || item.owner_id || ''));
+                const at = escapeHtml(formatTime(item.timestamp));
+                const moveText = from || to ? ` (${from || '?'} -> ${to || '?'})` : '';
+                return `
+                    <li class="activity-item">
+                        <div class="text">🔁 ${taskLabel} · ${action}${escapeHtml(moveText)}</div>
+                        <div class="tiny">${owner || 'system'} · ${at || 'now'}</div>
+                    </li>
+                `;
+            });
+
+            refs.processBoardOrions.innerHTML = processRows.join('') ||
+                '<li class="activity-item"><div class="text">No Orion telemetry yet.</div></li>';
+            refs.processBoardStale.innerHTML = staleRows.join('') ||
+                '<li class="activity-item"><div class="text">No stale tasks.</div></li>';
+            refs.processBoardTransitions.innerHTML = transitionRows.join('') ||
+                '<li class="activity-item"><div class="text">No transitions in recent window.</div></li>';
+        }
+
         async function loadNextActions() {
             try {
                 const response = await fetch('/api/hub/next-actions?limit=8');
@@ -3909,6 +4722,38 @@
                     await dispatchTaskNow(taskId, '', '');
                 });
             });
+        }
+
+        async function loadStrategicBrief() {
+            try {
+                const response = await fetch('/api/hub/strategic-brief?limit=10');
+                const payload = await response.json();
+                if (!payload || payload.success === false) return;
+                renderStrategicBrief(payload.brief || {});
+            } catch (error) {
+                console.error('Failed to load strategic brief', error);
+            }
+        }
+
+        function renderStrategicBrief(brief) {
+            if (!refs.strategicLines || !refs.strategicMeta) return;
+            const overview = (brief && typeof brief === 'object') ? (brief.system_overview || {}) : {};
+            const lines = Array.isArray(brief.thought_lines) ? brief.thought_lines : [];
+            const strategy = Array.isArray(brief.strategy) ? brief.strategy : [];
+            const allocation = Array.isArray(brief.allocation_plan) ? brief.allocation_plan : [];
+            refs.strategicMeta.textContent =
+                `Tasks ${Number(overview.total_tasks || 0)} · Online ${Number(overview.online_orions || 0)}/${Number(overview.total_orions || 0)} · Unassigned ${Number(overview.unassigned_count || 0)}`;
+
+            const rows = [];
+            lines.forEach((line) => rows.push(`<li class="activity-item"><div class="text">🧠 ${escapeHtml(String(line || ''))}</div></li>`));
+            strategy.slice(0, 3).forEach((line) => rows.push(`<li class="activity-item"><div class="text">🎯 ${escapeHtml(String(line || ''))}</div></li>`));
+            allocation.slice(0, 4).forEach((item) => {
+                const title = escapeHtml(String(item.title || item.task_id || 'task'));
+                const target = escapeHtml(String(item.target_orion || 'orion-1'));
+                const priority = escapeHtml(String(item.priority || '').toUpperCase());
+                rows.push(`<li class="activity-item"><div class="text">🛰 ${title} → ${target}${priority ? ` · ${priority}` : ''}</div></li>`);
+            });
+            refs.strategicLines.innerHTML = rows.join('') || '<li class="activity-item"><div class="text">No strategic signal yet.</div></li>';
         }
 
         async function loadBridgeTerminals() {
@@ -4198,8 +5043,374 @@
         }
 
         // ==================== AUTOMATION HANDLERS ====================
+        function writeAutomationResult(payload, isError) {
+            if (!refs.autoResult) return;
+            const text = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
+            refs.autoResult.textContent = text;
+            refs.autoResult.classList.toggle('is-error', Boolean(isError));
+        }
+
+        async function executeAutomationTask(taskType, action, params, sourceLabel) {
+            const label = sourceLabel || `${taskType}/${action}`;
+            try {
+                const result = await apiFetchJson('/api/automation/execute', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ task_type: taskType, action, params }),
+                });
+                const data = (result.data && typeof result.data === 'object')
+                    ? result.data
+                    : { success: false, error: (result.error && result.error.message) || 'request_failed' };
+                const ok = Boolean(data && data.success);
+                writeAutomationResult(data, !ok);
+                if (ok) {
+                    notify(`Done: ${label}`, 'ok', 1300);
+                } else {
+                    notify(`Failed: ${data.error || data.error_code || label}`, 'danger', 2600);
+                }
+                refreshHistory();
+                return data;
+            } catch (error) {
+                writeAutomationResult(`Error: ${error.message || 'unknown'}`, true);
+                notify(`Error: ${error.message || 'unknown'}`, 'danger', 2600);
+                return { success: false, error: String(error && error.message ? error.message : error) };
+            }
+        }
+
+        function extractQuotedChunk(text) {
+            const m = String(text || '').match(/[\"“](.+?)[\"”]/);
+            return m ? String(m[1] || '').trim() : '';
+        }
+
+        function parseNaturalAutomationCommand(text) {
+            const raw = String(text || '').trim();
+            if (!raw) {
+                return { error: 'Nhập lệnh tự nhiên trước khi chạy.' };
+            }
+            const normalized = normalizeIntentText(raw);
+            const quoted = extractQuotedChunk(raw);
+            const pathMatch = raw.match(/(\/[a-zA-Z0-9._\-\/]+)/);
+            const urlMatch = raw.match(/https?:\/\/[^\s]+/i);
+
+            if (/^\$/.test(raw)) {
+                const command = raw.slice(1).trim();
+                if (!command) return { error: 'Lệnh terminal đang trống.' };
+                return { taskType: 'terminal', action: 'execute', params: { command }, label: `terminal: ${command}` };
+            }
+            if (/(chay lenh|run command|execute command|terminal|cmd)\b/.test(normalized)) {
+                let command = quoted;
+                if (!command) {
+                    command = raw.replace(/^\s*(chạy lệnh|chay lenh|run command|execute command|terminal|cmd)\s*[:\-]?\s*/i, '').trim();
+                }
+                if (!command) return { error: 'Thiếu command terminal. Ví dụ: chạy lệnh "pwd"' };
+                return { taskType: 'terminal', action: 'execute', params: { command }, label: `terminal: ${command}` };
+            }
+            if (/(chup man|screenshot|screen shot|capture screen)/.test(normalized)) {
+                const filepath = `/tmp/nexus_capture_${Date.now()}.png`;
+                return { taskType: 'computer', action: 'screenshot', params: { filepath }, label: 'computer screenshot' };
+            }
+            if (/(vi tri chuot|mouse position|mouse pos|cursor)/.test(normalized)) {
+                return { taskType: 'computer', action: 'position', params: {}, label: 'mouse position' };
+            }
+            const asksRunningProcesses = (
+                /(tien trinh|process(es)?|app|ung dung)/.test(normalized)
+                && /(dang chay|running|hien tai|current|nao|liet ke|list)/.test(normalized)
+            ) || /(co gi dang chay|what.*running|dang chay vay|dang chay vay ban)/.test(normalized);
+            if (asksRunningProcesses) {
+                return { taskType: 'app', action: 'list_running', params: {}, label: 'list running apps' };
+            }
+            if (/(mo url|open url|navigate|truy cap)/.test(normalized) && urlMatch) {
+                return { taskType: 'browser', action: 'open', params: { url: urlMatch[0] }, label: `browser open ${urlMatch[0]}` };
+            }
+            if (/(browser status|trang thai browser|openclaw status)/.test(normalized)) {
+                return { taskType: 'browser', action: 'status', params: {}, label: 'browser status' };
+            }
+            if (/^(mo|open|launch)\b/.test(normalized) && !urlMatch) {
+                const appName = raw.replace(/^\s*(mở|mo|open|launch)\s*/i, '').replace(/^\s*(app|ung dung)\s*/i, '').trim();
+                if (!appName) return { error: 'Thiếu tên ứng dụng. Ví dụ: mở Safari' };
+                return { taskType: 'app', action: 'launch', params: { app_name: appName }, label: `open app ${appName}` };
+            }
+            if (/(clipboard|pasteboard)/.test(normalized)) {
+                if (/(ghi|write|set|copy vao)/.test(normalized)) {
+                    const textValue = quoted || raw.split(':').slice(1).join(':').trim();
+                    if (!textValue) return { error: 'Thiếu nội dung clipboard. Ví dụ: ghi clipboard: hello' };
+                    return { taskType: 'clipboard', action: 'write', params: { content: textValue }, label: 'clipboard write' };
+                }
+                return { taskType: 'clipboard', action: 'read', params: {}, label: 'clipboard read' };
+            }
+            if (/(mail|email|thu).*(unread|chua doc|kiem tra|check)/.test(normalized)) {
+                return { taskType: 'mail', action: 'check_unread', params: {}, label: 'mail unread' };
+            }
+            if (/(tin nhan|messages?|imessage).*(unread|chua doc|kiem tra|check)/.test(normalized)) {
+                return { taskType: 'messages', action: 'check_unread', params: {}, label: 'messages unread' };
+            }
+            if (/(liet ke tep|list files|list file|thu muc|folder|list dir|directory)/.test(normalized)) {
+                const dirpath = pathMatch ? pathMatch[1] : '/tmp';
+                return { taskType: 'file', action: 'list', params: { dirpath }, label: `file list ${dirpath}` };
+            }
+            if (/(teams|gmail|email|ravin|khiem|partnership|hop tac|dinh gia|valuation|50k|20%)/.test(normalized)) {
+                return {
+                    taskType: 'browser',
+                    action: 'flow',
+                    params: {
+                        chat_text: raw,
+                        source: 'dashboard_natural_command',
+                        approve: true,
+                        deny: false,
+                    },
+                    label: 'browser flow due diligence',
+                };
+            }
+            return {
+                error: 'Không hiểu lệnh. Gợi ý: "đang có tiến trình nào chạy", "check Teams Khiêm + Ravin Gmail", "chạy lệnh \\"pwd\\"", "chụp màn hình".',
+            };
+        }
+
+        function writeAutopilotOutput(payload, isError = false) {
+            if (!refs.autoAutopilotOutput) return;
+            const text = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
+            refs.autoAutopilotOutput.textContent = text;
+            refs.autoAutopilotOutput.classList.toggle('is-error', Boolean(isError));
+        }
+
+        function autopilotSnapshotFromPayload(payload) {
+            if (!payload || typeof payload !== 'object') {
+                return null;
+            }
+            if (payload.state && typeof payload.state === 'object' && payload.state.enabled !== undefined) {
+                return payload.state;
+            }
+            if (
+                payload.state
+                && typeof payload.state === 'object'
+                && payload.state.state
+                && typeof payload.state.state === 'object'
+                && payload.state.state.enabled !== undefined
+            ) {
+                return payload.state.state;
+            }
+            if (payload.enabled !== undefined && payload.interval !== undefined) {
+                return payload;
+            }
+            if (payload.snapshot && typeof payload.snapshot === 'object' && payload.snapshot.enabled !== undefined) {
+                return payload.snapshot;
+            }
+            return null;
+        }
+
+        function readAutopilotConfigFromUi() {
+            const intervalRaw = Number(refs.autoAutopilotInterval ? refs.autoAutopilotInterval.value : NaN);
+            const maxRaw = Number(refs.autoAutopilotMax ? refs.autoAutopilotMax.value : NaN);
+            const interval = Number.isFinite(intervalRaw) ? Math.max(5, Math.round(intervalRaw)) : null;
+            const maxActions = Number.isFinite(maxRaw) ? Math.min(10, Math.max(1, Math.round(maxRaw))) : null;
+            return {
+                active_executor: refs.autoAutopilotExecutor ? String(refs.autoAutopilotExecutor.value || '').trim() || 'hub_loop' : 'hub_loop',
+                interval,
+                max_actions_per_cycle: maxActions,
+                dry_run: Boolean(refs.autoAutopilotDryRun && refs.autoAutopilotDryRun.checked),
+            };
+        }
+
+        function renderAutopilotStatus(payload) {
+            const currentPayload = autopilotSnapshotFromPayload(payload) || (latestAutopilotPayload || {});
+            if (!refs.autoAutopilotSummary || !refs.autoAutopilotExecutor || !refs.autoAutopilotInterval || !refs.autoAutopilotMax || !refs.autoAutopilotDryRun) {
+                return;
+            }
+            if (!currentPayload || typeof currentPayload !== 'object') {
+                refs.autoAutopilotSummary.textContent = 'No autopilot telemetry available.';
+                writeAutopilotOutput('No autopilot telemetry available.', false);
+                return;
+            }
+
+            const enabled = Boolean(currentPayload.enabled);
+            const running = Boolean(currentPayload.running);
+            const executor = String(currentPayload.active_executor || 'hub_loop');
+            const interval = Number(currentPayload.interval || currentPayload.interval_sec || 0) || 0;
+            const maxActions = Number(currentPayload.max_actions_per_cycle || currentPayload.max_per_tick || 0) || 0;
+            const dryRun = Boolean(currentPayload.dry_run);
+            const state = (currentPayload.state && typeof currentPayload.state === 'object')
+                ? currentPayload.state
+                : { value: currentPayload.state || 'unknown' };
+            const stats = currentPayload.stats || {};
+            const guard = currentPayload.guard || {};
+            const lastRun = currentPayload.last_run || currentPayload.policy_loop_last_run || currentPayload.last_cycle || '';
+            const lastError = currentPayload.last_error || currentPayload.policy_loop_last_error || '';
+            const hubLoopRunning = Boolean(currentPayload.hub_loop_running);
+            const policyLoopRunning = Boolean(currentPayload.policy_loop_running);
+
+            const executorOptions = Array.from(refs.autoAutopilotExecutor.options || []).map((opt) => String(opt.value || '').trim());
+            if (executorOptions.includes(executor)) {
+                refs.autoAutopilotExecutor.value = executor;
+            }
+            if (interval > 0) refs.autoAutopilotInterval.value = String(interval);
+            if (maxActions > 0) refs.autoAutopilotMax.value = String(maxActions);
+            refs.autoAutopilotDryRun.checked = dryRun;
+
+            const summary = `${enabled ? 'Autopilot ON' : 'Autopilot OFF'}${running ? ' · running' : ' · idle'}`
+                + ` · exec ${executor}`
+                + ` · ${interval}s / cycle`
+                + ` · max ${maxActions}`
+                + ` · dry-run ${dryRun ? 'ON' : 'OFF'}`;
+            const details = `loops: ${hubLoopRunning ? 'hub' : ''}${hubLoopRunning && policyLoopRunning ? ' + ' : ''}${policyLoopRunning ? 'policy' : ''}${(!hubLoopRunning && !policyLoopRunning) ? 'none' : ''}`
+                + ` | cycles ${stats.total_cycles || 0}`
+                + ` | exec ${stats.actions_executed || 0}`
+                + ` | blocked ${stats.actions_blocked || 0}`
+                + ` | errors ${stats.errors || 0}`
+                + ` | timeouts ${stats.timeouts || 0}`;
+            const warning = guard.consecutive_timeouts ? ` | timeouts ${guard.consecutive_timeouts} / streak` : '';
+            const conflict = currentPayload.executor_conflict ? ' | executor_conflict' : '';
+            const extra = [
+                lastRun ? `last run ${formatTime(lastRun)}` : '',
+                lastError ? `last error: ${lastError}` : '',
+                `state: ${state.value || state.phase || 'unknown'}`,
+            ].filter(Boolean).join(' | ');
+            refs.autoAutopilotSummary.textContent = `${summary} · ${details}${warning}${conflict}${extra ? ` | ${extra}` : ''}`;
+            writeAutopilotOutput({
+                enabled,
+                running,
+                executor,
+                interval,
+                max_actions_per_cycle: maxActions,
+                dry_run: dryRun,
+                hub_loop_running: hubLoopRunning,
+                policy_loop_running: policyLoopRunning,
+                state,
+                stats,
+                guard,
+                last_run: lastRun,
+                last_error: lastError,
+            }, false);
+            latestAutopilotPayload = currentPayload;
+        }
+
+        async function invokeAutopilotApi(url, method = 'GET', payload = null) {
+            try {
+                const init = { method: method.toUpperCase() };
+                if (init.method !== 'GET') {
+                    init.headers = { 'Content-Type': 'application/json' };
+                    init.body = JSON.stringify(payload || {});
+                }
+                const response = await fetch(url, init);
+                const data = await response.json().catch(() => null);
+                const success = Boolean(response.ok && data && data.success !== false);
+                return { response, success, data };
+            } catch (error) {
+                return { response: null, success: false, data: { success: false, error: error.message || 'request_failed' } };
+            }
+        }
+
+        async function runAutopilotControl(action) {
+            const cfg = readAutopilotConfigFromUi();
+            if (!cfg.interval || !cfg.max_actions_per_cycle) {
+                notify('Autopilot config invalid: interval hoặc max actions không hợp lệ.', 'warn', 2200);
+                return;
+            }
+            const payload = {
+                action,
+                auto_enable: action !== 'stop',
+                active_executor: cfg.active_executor,
+                interval: cfg.interval,
+                max_actions_per_cycle: cfg.max_actions_per_cycle,
+                dry_run: cfg.dry_run,
+            };
+
+            const result = await invokeAutopilotApi('/api/hub/next-action/autopilot/control', 'POST', payload);
+            const payloadData = result.data || {};
+            writeAutopilotOutput(payloadData, !result.success);
+            const nextState = autopilotSnapshotFromPayload(payloadData)
+                || autopilotSnapshotFromPayload(payloadData.state)
+                || latestAutopilotPayload;
+            if (result.success) {
+                notify(`Autopilot ${action === 'stop' ? 'stopped' : 'started'}.`, 'ok', 1200);
+                renderAutopilotStatus(nextState);
+                await loadProcessBoard();
+                await loadWorkload();
+                await loadStatus();
+                return;
+            }
+            if (payloadData.error) {
+                notify(`Autopilot action failed: ${payloadData.error}`, 'danger', 2400);
+            } else {
+                notify('Autopilot action failed', 'danger', 1800);
+            }
+        }
+
+        async function runAutopilotNow() {
+            const cfg = readAutopilotConfigFromUi();
+            const payload = {
+                auto_enable: true,
+                max_actions_per_cycle: cfg.max_actions_per_cycle,
+                dry_run: cfg.dry_run,
+            };
+            const result = await invokeAutopilotApi('/api/hub/autopilot/run', 'POST', payload);
+            const payloadData = result.data || {};
+            writeAutopilotOutput(payloadData, !result.success);
+            if (result.success) {
+                notify('Autopilot manual run completed.', 'ok', 1300);
+                const nextState = autopilotSnapshotFromPayload(payloadData)
+                    || autopilotSnapshotFromPayload(payloadData.state)
+                    || payloadData.state
+                    || payloadData;
+                renderAutopilotStatus(nextState);
+                await loadProcessBoard();
+                await loadWorkload();
+                return;
+            }
+            if (payloadData.error) {
+                notify(`Autopilot run failed: ${payloadData.error}`, 'danger', 2400);
+            } else {
+                notify('Autopilot run failed.', 'danger', 1800);
+            }
+        }
+
+        async function previewAutopilot() {
+            const result = await invokeAutopilotApi('/api/hub/autopilot/preview', 'GET');
+            const payloadData = result.data || {};
+            writeAutopilotOutput(payloadData, !result.success);
+            if (!result.success) {
+                notify(payloadData.error || 'Autopilot preview failed', 'danger', 2200);
+                return;
+            }
+            const preview = Array.isArray(payloadData.preview) ? payloadData.preview : [];
+            notify(`Preview ready: ${preview.length} actions`, 'ok', 1200);
+        }
+
+        async function refreshAutopilotStatus() {
+            const result = await invokeAutopilotApi('/api/hub/autopilot/status', 'GET');
+            const payloadData = result.data || {};
+            const state = autopilotSnapshotFromPayload(payloadData) || payloadData;
+            if (result.success || payloadData) {
+                renderAutopilotStatus(state || payloadData);
+                latestAutopilotPayload = state || payloadData;
+                if (!result.success) {
+                    notify(payloadData.error || 'Autopilot status unavailable', 'warn', 1700);
+                }
+                return;
+            }
+            notify('Không đọc được trạng thái autopilot', 'warn', 1800);
+        }
+
+        async function applyAutopilotConfigOnly() {
+            const cfg = readAutopilotConfigFromUi();
+            if (!cfg.interval || !cfg.max_actions_per_cycle) {
+                notify('Autopilot config invalid: interval hoặc max actions không hợp lệ.', 'warn', 2200);
+                return;
+            }
+            const result = await invokeAutopilotApi('/api/hub/autopilot/config', 'POST', cfg);
+            const payloadData = result.data || {};
+            writeAutopilotOutput(payloadData, !result.success);
+            const nextState = autopilotSnapshotFromPayload(payloadData) || latestAutopilotPayload;
+            if (result.success) {
+                notify('Autopilot config applied', 'ok', 1300);
+                renderAutopilotStatus(nextState);
+                return;
+            }
+            if (payloadData.error) {
+                notify(`Config failed: ${payloadData.error}`, 'danger', 2300);
+            }
+        }
+
         function setupAutomationHandlers() {
-            // Execute task
             const executeBtn = document.getElementById('auto-execute-btn');
             if (executeBtn) {
                 executeBtn.addEventListener('click', async () => {
@@ -4207,119 +5418,205 @@
                     const action = document.getElementById('auto-action').value;
                     const paramsStr = document.getElementById('auto-params').value;
                     let params = {};
-                    try {
-                        if (paramsStr) params = JSON.parse(paramsStr);
-                    } catch(e) { params = {}; }
-
-                    const btn = document.getElementById('auto-execute-btn');
-                    btn.textContent = 'Running...';
-                    btn.disabled = true;
-
-                    try {
-                        const res = await fetch('/api/automation/execute', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({task_type: taskType, action: action, params})
-                        });
-                        const data = await res.json();
-                        document.getElementById('auto-result').textContent = JSON.stringify(data, null, 2);
-                    } catch(e) {
-                        document.getElementById('auto-result').textContent = 'Error: ' + e.message;
+                    if (paramsStr) {
+                        try {
+                            params = JSON.parse(paramsStr);
+                        } catch (error) {
+                            notify('JSON params không hợp lệ', 'danger', 2500);
+                            writeAutomationResult(`JSON parse error: ${error.message || 'invalid json'}`, true);
+                            return;
+                        }
                     }
-                    btn.textContent = 'Execute';
-                    btn.disabled = false;
+                    executeBtn.disabled = true;
+                    const original = executeBtn.textContent;
+                    executeBtn.textContent = 'Running...';
+                    await executeAutomationTask(taskType, action, params, `${taskType}/${action}`);
+                    executeBtn.textContent = original || 'Run';
+                    executeBtn.disabled = false;
                 });
             }
 
-            // Quick action buttons
-            document.querySelectorAll('.task-type-btn').forEach(btn => {
-                btn.addEventListener('click', async () => {
-                    const taskType = btn.dataset.task;
-                    const action = btn.dataset.action;
-                    const params = JSON.parse(btn.dataset.params || '{}');
+            const handleAutopilotAction = async (button, label, action) => {
+                if (!button) return;
+                const original = button.textContent;
+                button.disabled = true;
+                if (label) button.textContent = String(label);
+                try {
+                    await action();
+                } finally {
+                    button.disabled = false;
+                    button.textContent = original || '';
+                }
+            };
+            if (refs.autoAutopilotStart) {
+                refs.autoAutopilotStart.addEventListener('click', async () => {
+                    await handleAutopilotAction(refs.autoAutopilotStart, 'Starting...', () => runAutopilotControl('start'));
+                });
+            }
+            if (refs.autoAutopilotStop) {
+                refs.autoAutopilotStop.addEventListener('click', async () => {
+                    await handleAutopilotAction(refs.autoAutopilotStop, 'Stopping...', () => runAutopilotControl('stop'));
+                });
+            }
+            if (refs.autoAutopilotRun) {
+                refs.autoAutopilotRun.addEventListener('click', async () => {
+                    await handleAutopilotAction(refs.autoAutopilotRun, 'Running...', () => runAutopilotNow());
+                });
+            }
+            if (refs.autoAutopilotPreview) {
+                refs.autoAutopilotPreview.addEventListener('click', async () => {
+                    await handleAutopilotAction(refs.autoAutopilotPreview, 'Preview...', () => previewAutopilot());
+                });
+            }
+            if (refs.autoAutopilotRefresh) {
+                refs.autoAutopilotRefresh.addEventListener('click', async () => {
+                    await handleAutopilotAction(refs.autoAutopilotRefresh, 'Refreshing...', () => refreshAutopilotStatus());
+                });
+            }
+            if (refs.autoAutopilotApply) {
+                refs.autoAutopilotApply.addEventListener('click', async () => {
+                    await handleAutopilotAction(refs.autoAutopilotApply, 'Applying...', () => applyAutopilotConfigOnly());
+                });
+            }
 
-                    btn.textContent = '...';
-                    try {
-                        const res = await fetch('/api/automation/execute', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({task_type: taskType, action, params})
-                        });
-                        const data = await res.json();
-                        document.getElementById('auto-result').textContent = JSON.stringify(data, null, 2);
-                    } catch(e) {
-                        document.getElementById('auto-result').textContent = 'Error: ' + e.message;
+            const runNatural = async () => {
+                const command = refs.autoNaturalCommand ? refs.autoNaturalCommand.value : '';
+                const commandKey = normalizeIntentText(command);
+                const now = Date.now();
+                if (
+                    commandKey
+                    && commandKey === lastNaturalAutomationKey
+                    && (now - lastNaturalAutomationAt) < NATURAL_AUTOMATION_DEBOUNCE_MS
+                ) {
+                    const retryAfter = Math.ceil((NATURAL_AUTOMATION_DEBOUNCE_MS - (now - lastNaturalAutomationAt)) / 1000);
+                    notify(`Lệnh đang cooldown (${retryAfter}s) để tránh loop lặp`, 'warn', 2000);
+                    return;
+                }
+                const parsed = parseNaturalAutomationCommand(command);
+                if (parsed.error) {
+                    notify(parsed.error, 'warn', 2600);
+                    writeAutomationResult(parsed.error, true);
+                    return;
+                }
+                lastNaturalAutomationKey = commandKey;
+                lastNaturalAutomationAt = now;
+                if (refs.autoRunNaturalBtn) refs.autoRunNaturalBtn.disabled = true;
+                await executeAutomationTask(parsed.taskType, parsed.action, parsed.params, parsed.label);
+                if (refs.autoRunNaturalBtn) refs.autoRunNaturalBtn.disabled = false;
+            };
+
+            if (refs.autoRunNaturalBtn) refs.autoRunNaturalBtn.addEventListener('click', runNatural);
+            if (refs.autoNaturalCommand) {
+                refs.autoNaturalCommand.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        runNatural();
                     }
-                    btn.innerHTML = `<span class="icon">${btn.querySelector('.icon').textContent}</span>${btn.textContent.replace('...','')}`;
+                });
+            }
+            if (refs.autoClearResultBtn) {
+                refs.autoClearResultBtn.addEventListener('click', () => {
+                    writeAutomationResult(translations[currentLang].result_placeholder || 'Result will appear here...', false);
+                });
+            }
+            refs.autoPresetButtons.forEach((btn) => {
+                btn.addEventListener('click', () => {
+                    const command = String(btn.dataset.autoCommand || '').trim();
+                    if (!command || !refs.autoNaturalCommand) return;
+                    refs.autoNaturalCommand.value = command;
+                    refs.autoNaturalCommand.focus();
                 });
             });
 
-            // Schedule create
+            document.querySelectorAll('.task-type-btn').forEach((btn) => {
+                btn.addEventListener('click', async () => {
+                    const taskType = String(btn.dataset.task || '').trim();
+                    const action = String(btn.dataset.action || '').trim();
+                    let params = {};
+                    try {
+                        params = JSON.parse(btn.dataset.params || '{}');
+                    } catch (error) {
+                        params = {};
+                    }
+                    const labelNode = btn.querySelector('span:last-child');
+                    const oldLabel = labelNode ? labelNode.textContent : '';
+                    btn.classList.add('is-running');
+                    if (labelNode) labelNode.textContent = '...';
+                    await executeAutomationTask(taskType, action, params, `${taskType}/${action}`);
+                    btn.classList.remove('is-running');
+                    if (labelNode) labelNode.textContent = oldLabel;
+                });
+            });
+
             const scheduleCreateBtn = document.getElementById('schedule-create-btn');
             if (scheduleCreateBtn) {
                 scheduleCreateBtn.addEventListener('click', async () => {
                     const scheduleId = document.getElementById('schedule-id').value;
                     const taskType = document.getElementById('schedule-task-type').value;
                     const action = document.getElementById('schedule-action').value;
-                    const interval = parseInt(document.getElementById('schedule-interval').value) || 60;
-
+                    const interval = parseInt(document.getElementById('schedule-interval').value, 10) || 60;
                     try {
-                        await fetch('/api/automation/schedule', {
+                        const res = await fetch('/api/automation/schedule', {
                             method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
+                            headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
                                 schedule_id: scheduleId || undefined,
                                 task_type: taskType,
                                 action: action,
                                 params: {},
-                                interval_sec: interval
-                            })
+                                interval_sec: interval,
+                            }),
                         });
+                        const payload = await res.json();
+                        if (!payload.success) {
+                            notify(`Create schedule failed: ${payload.error || 'unknown'}`, 'danger', 2600);
+                            return;
+                        }
+                        notify(`Schedule created: ${payload.schedule.schedule_id}`, 'ok', 1800);
                         refreshSchedules();
-                    } catch(e) {
-                        alert('Error: ' + e.message);
+                    } catch (error) {
+                        notify(`Create schedule error: ${error.message || 'unknown'}`, 'danger', 2600);
                     }
                 });
             }
 
-            // Schedule refresh
             const scheduleRefreshBtn = document.getElementById('schedule-refresh-btn');
-            if (scheduleRefreshBtn) {
-                scheduleRefreshBtn.addEventListener('click', refreshSchedules);
-            }
+            if (scheduleRefreshBtn) scheduleRefreshBtn.addEventListener('click', refreshSchedules);
 
-            // Notification send
             const notifSendAutoBtn = document.getElementById('notif-send-auto-btn');
             if (notifSendAutoBtn) {
                 notifSendAutoBtn.addEventListener('click', async () => {
                     const title = document.getElementById('notif-title').value;
                     const message = document.getElementById('notif-message-auto').value;
                     const level = document.getElementById('notif-level-auto').value;
-
-                    if (!title) { alert('Title required'); return; }
-
+                    if (!title) {
+                        notify('Title required', 'warn', 2000);
+                        return;
+                    }
                     try {
-                        await fetch('/api/notifications/send', {
+                        const res = await fetch('/api/notifications/send', {
                             method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({title, message, level, category: 'automation'})
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ title, message, level, category: 'automation' }),
                         });
+                        const payload = await res.json();
+                        if (!payload.success) {
+                            notify(`Send failed: ${payload.error || 'unknown'}`, 'danger', 2600);
+                            return;
+                        }
+                        notify('Notification sent', 'ok', 1500);
                         refreshNotificationsAuto();
                         document.getElementById('notif-title').value = '';
                         document.getElementById('notif-message-auto').value = '';
-                    } catch(e) {
-                        alert('Error: ' + e.message);
+                    } catch (error) {
+                        notify(`Send error: ${error.message || 'unknown'}`, 'danger', 2600);
                     }
                 });
             }
 
-            // Notification refresh
             const notifRefreshBtn = document.getElementById('notif-refresh-btn');
-            if (notifRefreshBtn) {
-                notifRefreshBtn.addEventListener('click', refreshNotificationsAuto);
-            }
+            if (notifRefreshBtn) notifRefreshBtn.addEventListener('click', refreshNotificationsAuto);
 
-            // Webhook create
             const webhookCreateBtn = document.getElementById('webhook-create-btn');
             if (webhookCreateBtn) {
                 webhookCreateBtn.addEventListener('click', async () => {
@@ -4327,40 +5624,42 @@
                     const type = document.getElementById('webhook-type').value;
                     const url = document.getElementById('webhook-url').value;
                     const events = document.getElementById('webhook-events').value;
-
-                    if (!name || !url) { alert('Name and URL required'); return; }
-
+                    if (!name || !url) {
+                        notify('Name and URL required', 'warn', 2200);
+                        return;
+                    }
                     try {
-                        await fetch('/api/webhooks', {
+                        const res = await fetch('/api/webhooks', {
                             method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
+                            headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
-                                name, type, url,
-                                events: events ? events.split(',').map(e=>e.trim()) : []
-                            })
+                                name,
+                                type,
+                                url,
+                                events: events ? events.split(',').map((e) => e.trim()) : [],
+                            }),
                         });
+                        const payload = await res.json();
+                        if (!payload.success) {
+                            notify(`Webhook failed: ${payload.error || 'unknown'}`, 'danger', 2600);
+                            return;
+                        }
+                        notify('Webhook added', 'ok', 1600);
                         refreshWebhooks();
                         document.getElementById('webhook-name').value = '';
                         document.getElementById('webhook-url').value = '';
-                    } catch(e) {
-                        alert('Error: ' + e.message);
+                    } catch (error) {
+                        notify(`Webhook error: ${error.message || 'unknown'}`, 'danger', 2600);
                     }
                 });
             }
 
-            // Webhook refresh
             const webhookRefreshBtn = document.getElementById('webhook-refresh-btn');
-            if (webhookRefreshBtn) {
-                webhookRefreshBtn.addEventListener('click', refreshWebhooks);
-            }
+            if (webhookRefreshBtn) webhookRefreshBtn.addEventListener('click', refreshWebhooks);
 
-            // History refresh
             const historyRefreshBtn = document.getElementById('history-refresh-btn');
-            if (historyRefreshBtn) {
-                historyRefreshBtn.addEventListener('click', refreshHistory);
-            }
+            if (historyRefreshBtn) historyRefreshBtn.addEventListener('click', refreshHistory);
 
-            // Initial load
             refreshSchedules();
             refreshNotificationsAuto();
             refreshWebhooks();
@@ -4488,32 +5787,191 @@
                     return;
                 }
 
-                list.innerHTML = data.tasks.map(t => `
-                    <div class="history-item">
-                        <span>${escapeHtml(t.task_key.substring(0,40))}</span>
-                        <span style="color:var(--text-secondary)">${new Date(t.timestamp*1000).toLocaleTimeString()}</span>
-                    </div>
-                `).join('');
+                list.innerHTML = data.tasks.map(t => {
+                    const key = String(t.task_key || t.task_type || t.id || 'unknown_task');
+                    const ts = Number(t.timestamp || 0);
+                    const timeLabel = ts > 0
+                        ? new Date(ts * 1000).toLocaleTimeString()
+                        : '--:--:--';
+                    return `
+                        <div class="history-item">
+                            <span>${escapeHtml(key.substring(0, 40))}</span>
+                            <span style="color:var(--text-secondary)">${timeLabel}</span>
+                        </div>
+                    `;
+                }).join('');
             } catch(e) {
                 console.error('Error loading history:', e);
+            }
+        }
+
+        function isHumanInputIntervention(item) {
+            const kind = String((item && item.kind) || (item && item.action) || '').trim().toLowerCase();
+            return kind === 'human_input_request';
+        }
+
+        function showHumanInputModal(item) {
+            if (!refs.stuckModal || !refs.stuckModalFields || !refs.stuckModalTitle || !refs.stuckModalText) return;
+            if (!item || !isHumanInputIntervention(item)) return;
+            activeHumanInputIntervention = item;
+            const details = (item && typeof item.details === 'object') ? item.details : {};
+            const fields = Array.isArray(details.fields) ? details.fields : [];
+            const title = String(item.title || 'Need your input').trim() || 'Need your input';
+            const prompt = String(details.prompt || 'Automation is waiting for your input.').trim();
+
+            refs.stuckModalTitle.textContent = title;
+            refs.stuckModalText.textContent = prompt || 'Automation is waiting for your input.';
+            refs.stuckModalFields.innerHTML = fields.map((field, index) => {
+                const key = String((field && field.key) || `field_${index + 1}`).trim() || `field_${index + 1}`;
+                const label = escapeHtml(String((field && field.label) || key));
+                const type = String((field && field.type) || 'text').toLowerCase();
+                const placeholder = escapeHtml(String((field && field.placeholder) || ''));
+                const required = Boolean(field && field.required);
+                const def = field && field.default !== undefined && field.default !== null ? String(field.default) : '';
+                const inputId = `stuck-field-${key.replace(/[^a-zA-Z0-9_-]/g, '-')}-${index}`;
+                if (type === 'select') {
+                    const options = Array.isArray(field && field.options) ? field.options : [];
+                    const optionHtml = options.map((opt) => {
+                        const text = String(opt || '');
+                        const selected = text === def ? ' selected' : '';
+                        return `<option value="${escapeHtml(text)}"${selected}>${escapeHtml(text)}</option>`;
+                    }).join('');
+                    return `
+                        <div class="stuck-field-row">
+                            <label for="${escapeHtml(inputId)}">${label}${required ? ' *' : ''}</label>
+                            <select id="${escapeHtml(inputId)}" data-stuck-key="${escapeHtml(key)}" ${required ? 'required' : ''}>
+                                ${optionHtml}
+                            </select>
+                        </div>
+                    `;
+                }
+                if (type === 'textarea') {
+                    return `
+                        <div class="stuck-field-row">
+                            <label for="${escapeHtml(inputId)}">${label}${required ? ' *' : ''}</label>
+                            <textarea id="${escapeHtml(inputId)}" data-stuck-key="${escapeHtml(key)}" placeholder="${placeholder}" ${required ? 'required' : ''}>${escapeHtml(def)}</textarea>
+                        </div>
+                    `;
+                }
+                const inputType = ['number', 'password'].includes(type) ? type : 'text';
+                return `
+                    <div class="stuck-field-row">
+                        <label for="${escapeHtml(inputId)}">${label}${required ? ' *' : ''}</label>
+                        <input id="${escapeHtml(inputId)}" type="${escapeHtml(inputType)}" data-stuck-key="${escapeHtml(key)}" value="${escapeHtml(def)}" placeholder="${placeholder}" ${required ? 'required' : ''}>
+                    </div>
+                `;
+            }).join('');
+            refs.stuckModal.classList.add('show');
+            refs.stuckModal.setAttribute('aria-hidden', 'false');
+            const firstInput = refs.stuckModalFields.querySelector('input,select,textarea');
+            if (firstInput) firstInput.focus();
+        }
+
+        function hideHumanInputModal(markDismissed) {
+            if (markDismissed && activeHumanInputIntervention) {
+                dismissedHumanInputIds.add(String(activeHumanInputIntervention.id || ''));
+            }
+            if (refs.stuckModal) {
+                refs.stuckModal.classList.remove('show');
+                refs.stuckModal.setAttribute('aria-hidden', 'true');
+            }
+            if (refs.stuckModalFields) refs.stuckModalFields.innerHTML = '';
+            activeHumanInputIntervention = null;
+            humanInputModalBusy = false;
+        }
+
+        function maybePresentHumanInputModal(rows) {
+            if (!Array.isArray(rows) || !rows.length) {
+                if (activeHumanInputIntervention) hideHumanInputModal(false);
+                return;
+            }
+            if (activeHumanInputIntervention) {
+                const currentId = String(activeHumanInputIntervention.id || '');
+                const stillPending = rows.some((row) => String(row.id || '') === currentId);
+                if (!stillPending) hideHumanInputModal(false);
+                return;
+            }
+            const pending = rows.find((row) => isHumanInputIntervention(row) && !dismissedHumanInputIds.has(String(row.id || '')));
+            if (pending) showHumanInputModal(pending);
+        }
+
+        function collectHumanInputValues() {
+            if (!refs.stuckModalFields) return {};
+            const values = {};
+            Array.from(refs.stuckModalFields.querySelectorAll('[data-stuck-key]')).forEach((node) => {
+                const key = String(node.getAttribute('data-stuck-key') || '').trim();
+                if (!key) return;
+                const raw = String(node.value || '').trim();
+                values[key] = raw;
+            });
+            return values;
+        }
+
+        async function submitHumanInputModal() {
+            if (!activeHumanInputIntervention || humanInputModalBusy) return;
+            const id = String(activeHumanInputIntervention.id || '').trim();
+            if (!id) return;
+            const values = collectHumanInputValues();
+            humanInputModalBusy = true;
+            try {
+                const response = await fetch(`/api/interventions/${encodeURIComponent(id)}/respond`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ actor: 'dashboard', remember: true, values }),
+                });
+                const payload = await response.json();
+                if (!response.ok || payload.success === false) {
+                    const err = (payload && (payload.error || payload.error_code)) || 'respond_failed';
+                    notify(`Input submit failed: ${err}`, 'danger', 2400);
+                    humanInputModalBusy = false;
+                    return;
+                }
+                notify('Input received. Flow continues.', 'ok', 1300);
+                hideHumanInputModal(false);
+                await loadAutomationIntake();
+                await loadInterventions();
+                await loadStatus();
+            } catch (error) {
+                humanInputModalBusy = false;
+                notify(`Input submit error: ${error.message || 'unknown'}`, 'danger', 2400);
             }
         }
 
         function renderInterventions(queue, summary) {
             if (!refs.interventionsList || !refs.interventionsSummary) return;
             const rows = Array.isArray(queue) ? queue : [];
+            latestInterventionMap = {};
+            rows.forEach((item) => {
+                const id = String((item && item.id) || '').trim();
+                if (id) latestInterventionMap[id] = item;
+            });
             const risk = (summary && summary.risk_counts) ? summary.risk_counts : {};
             refs.interventionsSummary.textContent = `${rows.length} pending | h:${Number(risk.high || 0)} c:${Number(risk.critical || 0)}`;
             if (!rows.length) {
                 refs.interventionsList.innerHTML = '<li class="activity-item"><div class="text">No pending interventions.</div></li>';
+                maybePresentHumanInputModal([]);
                 return;
             }
             refs.interventionsList.innerHTML = rows.slice(0, 16).map((item) => {
                 const id = String(item.id || '');
                 const riskLevel = String(item.risk_level || 'medium');
                 const title = escapeHtml(String(item.title || item.action || 'Intervention'));
-                const details = escapeHtml(String(item.command || ((item.details || {}).reason || '') || '').slice(0, 160));
+                const detailsObj = (item && typeof item.details === 'object') ? item.details : {};
+                const baseDetails = item.command || detailsObj.reason || detailsObj.prompt || '';
+                const details = escapeHtml(String(baseDetails || '').slice(0, 160));
                 const deferred = item.deferred ? ` | deferred until ${escapeHtml(String(item.deferred_until || ''))}` : '';
+                const inputMode = isHumanInputIntervention(item);
+                const actionsHtml = inputMode
+                    ? `
+                        <button type="button" class="intervention-btn approve" data-int-action="respond">Tra loi ngay</button>
+                        <button type="button" class="intervention-btn defer" data-int-action="defer">Nhac 5m</button>
+                        <button type="button" class="intervention-btn decline" data-int-action="decline">Dong</button>
+                    `
+                    : `
+                        <button type="button" class="intervention-btn approve" data-int-action="approve">Force Approve</button>
+                        <button type="button" class="intervention-btn defer" data-int-action="defer">Defer 5m</button>
+                        <button type="button" class="intervention-btn decline" data-int-action="decline">Decline</button>
+                    `;
                 return `
                     <li class="activity-item" data-intervention-id="${escapeHtml(id)}">
                         <div class="row">
@@ -4523,9 +5981,7 @@
                         <div class="text">${title}</div>
                         <div class="tiny">${details || 'No extra details'}</div>
                         <div class="intervention-actions">
-                            <button type="button" class="intervention-btn approve" data-int-action="approve">Force Approve</button>
-                            <button type="button" class="intervention-btn defer" data-int-action="defer">Defer 5m</button>
-                            <button type="button" class="intervention-btn decline" data-int-action="decline">Decline</button>
+                            ${actionsHtml}
                         </div>
                     </li>
                 `;
@@ -4541,9 +5997,21 @@
                     await runInterventionAction(id, action);
                 });
             });
+            maybePresentHumanInputModal(rows);
         }
 
         async function runInterventionAction(id, action) {
+            if (action === 'respond') {
+                const item = latestInterventionMap[String(id || '').trim()];
+                if (!item) {
+                    notify('Intervention data unavailable. Refreshing...', 'warn', 1500);
+                    await loadInterventions();
+                    return;
+                }
+                dismissedHumanInputIds.delete(String(id || '').trim());
+                showHumanInputModal(item);
+                return;
+            }
             let url = '';
             let body = {};
             let method = 'POST';
@@ -5524,6 +6992,7 @@
                 { id: 'simple_on', title: 'Simple Mode: On', meta: 'preference', keywords: 'simple clear easy minimal', run: () => setSimpleMode(true, true) },
                 { id: 'simple_off', title: 'Simple Mode: Off', meta: 'preference', keywords: 'simple off full dashboard', run: () => setSimpleMode(false, true) },
                 { id: 'chat_summary', title: 'Chat Prompt: Realtime Summary', meta: 'prompt', keywords: 'chat summary status running', run: () => { openChat(); useChatPrompt('còn cái gì đang chạy vậy, tóm giúp mình'); } },
+                { id: 'chat_create_task', title: 'Chat Prompt: Create Task', meta: 'prompt', keywords: 'chat create task ticket backlog nova pixel', run: () => { openChat(); useChatPrompt('tạo task Fix chat UX p1 cho nova mô tả: cải thiện hiểu ý người dùng'); } },
                 { id: 'chat_uiux', title: 'Chat Prompt: UI/UX Critique', meta: 'prompt', keywords: 'chat ui ux critique improve', run: () => { openChat(); useChatPrompt('đánh giá UI UX hiện tại và đề xuất cải thiện'); } },
                 { id: 'chat_unstick', title: 'Chat Prompt: Guardian Unstick', meta: 'prompt', keywords: 'chat guardian stuck unstick', run: () => { openChat(); useChatPrompt('guardian gỡ kẹt nếu có flow bị stuck'); } },
                 { id: 'chat_nexus_rules', title: 'Chat Skill: /nexus_rules', meta: 'prompt', keywords: 'chat slash command rules nexus', run: () => { openChat(); useChatPrompt('/nexus_rules'); } },
@@ -5747,6 +7216,55 @@
             refs.chatTyping.textContent = show ? (String(label || 'processing...')) : 'processing...';
         }
 
+        function buildTaskIntelligenceText(snapshot) {
+            if (!snapshot || typeof snapshot !== 'object' || !snapshot.available) return '';
+            const counts = (snapshot.counts && typeof snapshot.counts === 'object') ? snapshot.counts : {};
+            const lines = [
+                `Task intelligence: total=${Number(snapshot.total_tasks || 0)}, pending=${Number(snapshot.pending_count || 0)}, in_progress=${Number(counts.in_progress || 0)}, blocked=${Number(counts.blocked || 0)}, done=${Number(counts.done || 0)}.`,
+            ];
+            const rows = Array.isArray(snapshot.matched_tasks) && snapshot.matched_tasks.length
+                ? snapshot.matched_tasks
+                : (Array.isArray(snapshot.focus_tasks) ? snapshot.focus_tasks : []);
+            rows.slice(0, 4).forEach((row, idx) => {
+                const id = String((row && row.id) || '-');
+                const title = String((row && row.title) || 'Untitled');
+                const status = String((row && (row.status_bucket || row.status)) || 'todo');
+                const assignee = String((row && row.assigned_to) || 'unassigned');
+                lines.push(`${idx + 1}. [${id}] ${title} | ${status} | ${assignee}`);
+            });
+            return lines.join('\n');
+        }
+
+        function buildChatDisplayText(payload, fallbackText) {
+            const fallback = String(fallbackText || '').trim();
+            const report = (payload && typeof payload.report === 'object') ? payload.report : null;
+            const taskIntel = (payload && payload.task_intelligence) || ((payload && payload.result && payload.result.task_intelligence) || null);
+            const lines = [];
+
+            if (report && String(report.summary || '').trim()) {
+                lines.push(String(report.summary || '').trim());
+                const highlights = Array.isArray(report.highlights) ? report.highlights.filter(Boolean).slice(0, 4) : [];
+                if (highlights.length) {
+                    lines.push('');
+                    lines.push('Highlights:');
+                    highlights.forEach((item) => lines.push(`- ${String(item)}`));
+                }
+                if (report.next_action) {
+                    lines.push('');
+                    lines.push(`Next: ${String(report.next_action)}`);
+                }
+            } else if (fallback) {
+                lines.push(fallback);
+            }
+
+            const taskText = buildTaskIntelligenceText(taskIntel);
+            if (taskText) {
+                lines.push('');
+                lines.push(taskText);
+            }
+            return lines.join('\n').trim() || fallback || 'Đã xử lý xong yêu cầu.';
+        }
+
         async function sendChatMessage() {
             const input = refs.chatInput;
             if (!input) return;
@@ -5797,9 +7315,10 @@
                     return;
                 }
                 const messageId = String(payload.message_id || '').trim();
+                const displayText = buildChatDisplayText(payload, String(payload.reply || ''));
                 if (messageId) {
                     pendingChatNodes[messageId] = pendingNode;
-                    if (payload.reply) pendingChatSeedReplies[messageId] = String(payload.reply);
+                    pendingChatSeedReplies[messageId] = displayText;
                     window.setTimeout(() => {
                         if (pendingChatNodes[messageId] !== pendingNode) return;
                         const fallback = String(pendingChatSeedReplies[messageId] || '').trim();
@@ -5808,8 +7327,8 @@
                         delete pendingChatNodes[messageId];
                         delete pendingChatSeedReplies[messageId];
                     }, 2400);
-                } else if (payload.reply) {
-                    appendChatMessage('bot', String(payload.reply), pendingNode);
+                } else if (payload.reply || displayText) {
+                    appendChatMessage('bot', displayText || String(payload.reply), pendingNode);
                     showChatTyping(false);
                 }
             } catch (error) {
@@ -5827,7 +7346,7 @@
             const text = String((payload && payload.text) || '').trim();
             if (phase === 'final') {
                 const fallback = String(pendingChatSeedReplies[messageId] || '').trim();
-                appendChatMessage('bot', text || fallback || 'Đã xử lý xong yêu cầu.', nodeId);
+                appendChatMessage('bot', buildChatDisplayText(payload, text || fallback || 'Đã xử lý xong yêu cầu.'), nodeId);
                 showChatTyping(false);
                 delete pendingChatNodes[messageId];
                 delete pendingChatSeedReplies[messageId];
@@ -5867,10 +7386,16 @@
                 interventions: "Can Thiệp",
                 automation: "🤖 Tự Động Hóa",
                 execute_task: "Thực Thi Tác Vụ",
+                auto_helper: "Gõ câu tự nhiên để chạy ngay. Không cần nhớ task/action/JSON.",
+                natural_command: "Lệnh Tự Nhiên",
+                run_now: "Chạy Ngay",
+                clear_result: "Xóa Kết Quả",
+                advanced_mode: "Chế độ nâng cao (task/action/JSON)",
                 task_type: "Loại Tác Vụ",
                 action: "Hành Động",
                 params: "Tham Số (JSON)",
                 execute: "▶ Thực Thi",
+                execute_advanced: "▶ Chạy Nâng Cao",
                 result_placeholder: "Kết quả sẽ hiển thị ở đây...",
                 quick_actions: "Thao Tác Nhanh",
                 terminal: "Terminal",
@@ -5909,10 +7434,16 @@
                 interventions: "Interventions",
                 automation: "🤖 Automation",
                 execute_task: "Execute Task",
+                auto_helper: "Use plain language command first. No task/action/JSON needed.",
+                natural_command: "Natural Command",
+                run_now: "Run Now",
+                clear_result: "Clear Result",
+                advanced_mode: "Advanced mode (task/action/JSON)",
                 task_type: "Task Type",
                 action: "Action",
                 params: "Parameters (JSON)",
                 execute: "▶ Execute",
+                execute_advanced: "▶ Run Advanced",
                 result_placeholder: "Result will appear here...",
                 quick_actions: "Quick Actions",
                 terminal: "Terminal",
@@ -6181,6 +7712,28 @@
 
         // Task filter handlers
         function setupTaskFilters() {
+            if (refs.taskQuickCreateBtn) {
+                refs.taskQuickCreateBtn.addEventListener('click', () => createTaskQuickFromPanel());
+            }
+            if (refs.taskQuickCreateNaturalBtn) {
+                refs.taskQuickCreateNaturalBtn.addEventListener('click', () => createTaskQuickFromNatural());
+            }
+            if (refs.taskQuickNatural) {
+                refs.taskQuickNatural.addEventListener('keydown', (event) => {
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        createTaskQuickFromNatural();
+                    }
+                });
+            }
+            if (refs.taskQuickTitle) {
+                refs.taskQuickTitle.addEventListener('keydown', (event) => {
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        createTaskQuickFromPanel();
+                    }
+                });
+            }
             if (refs.taskFilterAssignee) {
                 refs.taskFilterAssignee.addEventListener('change', () => {
                     renderTasks(currentTaskBoard, {});
@@ -6206,6 +7759,144 @@
             }
         }
 
+        function setIntakeStatus(text) {
+            if (refs.intakeStatus) refs.intakeStatus.textContent = String(text || '');
+        }
+
+        function parseCsvInput(text) {
+            const raw = String(text || '').trim();
+            if (!raw) return [];
+            return raw.split(',').map((part) => String(part || '').trim()).filter((part) => part);
+        }
+
+        async function loadAutomationIntake() {
+            try {
+                const response = await fetch('/api/automation/intake');
+                const payload = await response.json();
+                if (!response.ok || payload.success === false) {
+                    setIntakeStatus('Tải input thất bại');
+                    return;
+                }
+                const intake = payload.intake || {};
+                const mail = intake.mail || {};
+                const channels = intake.channels || {};
+                const accounts = intake.accounts || {};
+                const partners = intake.partners || {};
+                const valuation = intake.valuation || {};
+
+                if (refs.intakeMailMode) refs.intakeMailMode.value = String(channels.mail_mode || 'edge_gmail');
+                if (refs.intakeMailBrowser) refs.intakeMailBrowser.value = String(channels.mail_browser || 'Microsoft Edge');
+                if (refs.intakeTeamsMode) refs.intakeTeamsMode.value = String(channels.teams_mode || 'teams_app');
+                if (refs.intakeTeamsApp) refs.intakeTeamsApp.value = String(channels.teams_app_name || 'Microsoft Teams');
+                if (refs.intakeMailHost) refs.intakeMailHost.value = String(mail.imap_host || '');
+                if (refs.intakeMailUser) refs.intakeMailUser.value = String(mail.imap_username || '');
+                if (refs.intakeMailPass) refs.intakeMailPass.value = '';
+                if (refs.intakeTargetGmail) refs.intakeTargetGmail.value = String(partners.target_gmail || '');
+                if (refs.intakeKhiemHint) refs.intakeKhiemHint.value = String(partners.khiem_team_hint || '');
+                if (refs.intakeKhiemSelected) refs.intakeKhiemSelected.value = String(accounts.khiem_selected || '');
+                if (refs.intakeKhiemCandidates) {
+                    const values = Array.isArray(accounts.khiem_candidates) ? accounts.khiem_candidates : [];
+                    refs.intakeKhiemCandidates.value = values.map((item) => String(item || '').trim()).filter((item) => item).join(', ');
+                }
+                if (refs.intakeRavinHint) refs.intakeRavinHint.value = String(partners.ravin_contact_hint || '');
+                if (refs.intakeRaiseUsd) refs.intakeRaiseUsd.value = String(valuation.raise_usd ?? '');
+                if (refs.intakeEquityPct) refs.intakeEquityPct.value = String(valuation.equity_pct ?? '');
+
+                const updatedAt = intake.updated_at ? `updated ${intake.updated_at}` : 'ready';
+                const passState = mail.imap_password_configured ? 'IMAP: configured' : 'IMAP: no password';
+                const routeState = `mail:${String(channels.mail_mode || 'edge_gmail')} | teams:${String(channels.teams_mode || 'teams_app')}`;
+                setIntakeStatus(`${passState} · ${routeState} · ${updatedAt}`);
+            } catch (error) {
+                setIntakeStatus('Lỗi kết nối intake');
+                console.error('Failed to load automation intake', error);
+            }
+        }
+
+        async function saveAutomationIntake() {
+            const payload = {
+                channels: {
+                    mail_mode: refs.intakeMailMode ? String(refs.intakeMailMode.value || '').trim() : 'edge_gmail',
+                    mail_browser: refs.intakeMailBrowser ? String(refs.intakeMailBrowser.value || '').trim() : '',
+                    teams_mode: refs.intakeTeamsMode ? String(refs.intakeTeamsMode.value || '').trim() : 'teams_app',
+                    teams_app_name: refs.intakeTeamsApp ? String(refs.intakeTeamsApp.value || '').trim() : '',
+                },
+                mail: {
+                    imap_host: refs.intakeMailHost ? String(refs.intakeMailHost.value || '').trim() : '',
+                    imap_username: refs.intakeMailUser ? String(refs.intakeMailUser.value || '').trim() : '',
+                },
+                accounts: {
+                    khiem_selected: refs.intakeKhiemSelected ? String(refs.intakeKhiemSelected.value || '').trim() : '',
+                    khiem_candidates: refs.intakeKhiemCandidates ? parseCsvInput(refs.intakeKhiemCandidates.value) : [],
+                },
+                partners: {
+                    target_gmail: refs.intakeTargetGmail ? String(refs.intakeTargetGmail.value || '').trim() : '',
+                    khiem_team_hint: refs.intakeKhiemHint ? String(refs.intakeKhiemHint.value || '').trim() : '',
+                    ravin_contact_hint: refs.intakeRavinHint ? String(refs.intakeRavinHint.value || '').trim() : '',
+                },
+                valuation: {
+                    raise_usd: refs.intakeRaiseUsd ? Number(refs.intakeRaiseUsd.value || 0) : 0,
+                    equity_pct: refs.intakeEquityPct ? Number(refs.intakeEquityPct.value || 0) : 0,
+                },
+            };
+            const pass = refs.intakeMailPass ? String(refs.intakeMailPass.value || '').trim() : '';
+            if (pass) payload.mail.imap_password = pass;
+            if (!Number.isFinite(payload.valuation.raise_usd)) payload.valuation.raise_usd = 0;
+            if (!Number.isFinite(payload.valuation.equity_pct)) payload.valuation.equity_pct = 0;
+
+            try {
+                const response = await fetch('/api/automation/intake', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const body = await response.json();
+                if (!response.ok || body.success === false) {
+                    const err = body.error || body.error_code || 'save_failed';
+                    notify(`Save input failed: ${err}`, 'danger', 2200);
+                    return;
+                }
+                notify('Input saved', 'ok', 1200);
+                if (refs.intakeMailPass) refs.intakeMailPass.value = '';
+                await loadAutomationIntake();
+            } catch (error) {
+                notify(`Save input error: ${error.message || 'unknown'}`, 'danger', 2200);
+            }
+        }
+
+        function setupIntakeHandlers() {
+            if (refs.intakeSaveBtn) refs.intakeSaveBtn.addEventListener('click', () => saveAutomationIntake());
+            if (refs.intakeReloadBtn) refs.intakeReloadBtn.addEventListener('click', () => loadAutomationIntake());
+        }
+
+        function setupHumanInputModalHandlers() {
+            if (refs.stuckModalSubmit) {
+                refs.stuckModalSubmit.addEventListener('click', () => submitHumanInputModal());
+            }
+            if (refs.stuckModalDefer) {
+                refs.stuckModalDefer.addEventListener('click', async () => {
+                    const id = activeHumanInputIntervention ? String(activeHumanInputIntervention.id || '').trim() : '';
+                    if (!id) {
+                        hideHumanInputModal(true);
+                        return;
+                    }
+                    hideHumanInputModal(true);
+                    await runInterventionAction(id, 'defer');
+                });
+            }
+            if (refs.stuckModal) {
+                refs.stuckModal.addEventListener('click', (event) => {
+                    if (event.target === refs.stuckModal) {
+                        hideHumanInputModal(true);
+                    }
+                });
+            }
+            document.addEventListener('keydown', (event) => {
+                if (event.key !== 'Escape') return;
+                if (!refs.stuckModal || !refs.stuckModal.classList.contains('show')) return;
+                hideHumanInputModal(true);
+            });
+        }
+
         loadExperience();
         loadDensity();
         loadZen();
@@ -6217,17 +7908,26 @@
         setView(parseViewFromUrl(), false);
         initCharts();
         setupTaskFilters();
+        setupIntakeHandlers();
+        setupHumanInputModalHandlers();
         setupMessageHandlers();
         setupNotificationHandlers();
         loadStatus();
         loadKanbanBoard();
+        loadAutomationIntake();
         loadWorkload();
+        loadProcessBoard();
         loadNextActions();
+        loadStrategicBrief();
         loadBridgeTerminals();
         loadMessages();
         loadNotifications();
         loadInterventions();
         setInterval(loadStatus, 5000);
+        setInterval(loadStrategicBrief, 9000);
+        setInterval(loadWorkload, 12000);
+        setInterval(loadProcessBoard, 12000);
+        setInterval(loadNextActions, 12000);
     </script>
 </body>
 </html>
