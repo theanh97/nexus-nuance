@@ -60,7 +60,7 @@ class GLMOrchestrator:
 
     def _load_config(self, path: str) -> Dict:
         """Load configuration from YAML"""
-        with open(path, 'r') as f:
+        with open(path, 'r', encoding='utf-8') as f:
             return yaml.safe_load(f)
 
     def _call_glm(self, messages: List[Dict], tools: List[Dict] = None) -> Dict:
