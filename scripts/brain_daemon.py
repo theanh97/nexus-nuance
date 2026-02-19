@@ -107,6 +107,16 @@ def run_daemon():
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
 
+    # Initialize self-reminder engine
+    self_reminder = None
+    try:
+        from brain.self_reminder import get_self_reminder
+        self_reminder = get_self_reminder()
+        log(f"Self-Reminder Engine: {'ENABLED' if self_reminder.enabled else 'DISABLED'} "
+            f"({len(self_reminder._sources)} sources)")
+    except Exception as exc:
+        log(f"Self-Reminder init skipped: {exc}")
+
     # Main loop - heartbeat
     heartbeat_sec = int(os.getenv("NEXUS_HEARTBEAT_INTERVAL", "60"))
     try:
@@ -114,6 +124,20 @@ def run_daemon():
         while True:
             time.sleep(heartbeat_sec)
             counter += 1
+
+            # Self-Reminder check every heartbeat cycle
+            if self_reminder and self_reminder.enabled:
+                try:
+                    reminders = self_reminder.check_and_remind()
+                    if reminders:
+                        changed = [r for r in reminders if r.get("changed")]
+                        log(f"Self-Reminder: {len(reminders)} source(s) refreshed"
+                            + (f", {len(changed)} CHANGED" if changed else ""))
+                except Exception as exc:
+                    try:
+                        log(f"Self-Reminder error (non-fatal): {exc}")
+                    except Exception:
+                        pass
 
             # Heartbeat every 5 cycles (wrapped so one failure can't crash daemon)
             if counter % 5 == 0:
@@ -130,6 +154,11 @@ def run_daemon():
                         msg += f", Budget: ${proj.get('total_spent', 0):.4f}/{proj.get('daily_budget', 0)} ({proj.get('status', '?')})"
                     except Exception:
                         pass
+
+                    # Add self-reminder stats
+                    if self_reminder:
+                        sr_stats = self_reminder.get_stats()
+                        msg += f", Reminders: {sr_stats.get('total_reminders', 0)}"
 
                     log(msg)
                 except Exception as exc:

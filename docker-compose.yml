@@ -1,0 +1,87 @@
+version: "3.9"
+
+services:
+  # ── Brain API (FastAPI port 8766) ───────────────────────────
+  brain-api:
+    build:
+      context: .
+      target: base
+    container_name: nexus-brain-api
+    ports:
+      - "${BRAIN_API_PORT:-8766}:8766"
+    env_file:
+      - .env
+    volumes:
+      - nexus-data:/app/data
+      - nexus-logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8766/api/nexus/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
+
+  # ── Monitor Dashboard (Flask port 5111) ─────────────────────
+  monitor:
+    build:
+      context: .
+      target: monitor
+    container_name: nexus-monitor
+    ports:
+      - "${MONITOR_PORT:-5111}:5111"
+    env_file:
+      - .env
+    volumes:
+      - nexus-data:/app/data
+      - nexus-logs:/app/logs
+    depends_on:
+      brain-api:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5111/"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
+
+  # ── Brain Daemon (background learning) ──────────────────────
+  brain-daemon:
+    build:
+      context: .
+      target: daemon
+    container_name: nexus-brain-daemon
+    env_file:
+      - .env
+    volumes:
+      - nexus-data:/app/data
+      - nexus-logs:/app/logs
+    depends_on:
+      brain-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Full System (all-in-one, alternative to split services) ─
+  # Uncomment to run everything in one container:
+  # full-system:
+  #   build:
+  #     context: .
+  #     target: full
+  #   container_name: nexus-full
+  #   ports:
+  #     - "${BRAIN_API_PORT:-8766}:8766"
+  #     - "${LOOP_API_PORT:-8767}:8767"
+  #     - "${MONITOR_PORT:-5111}:5111"
+  #   env_file:
+  #     - .env
+  #   volumes:
+  #     - nexus-data:/app/data
+  #     - nexus-logs:/app/logs
+  #   restart: unless-stopped
+
+volumes:
+  nexus-data:
+    driver: local
+  nexus-logs:
+    driver: local

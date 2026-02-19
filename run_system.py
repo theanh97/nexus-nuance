@@ -7,6 +7,7 @@ Usage:
 """
 
 import os
+import signal
 import sys
 import asyncio
 import threading
@@ -1707,16 +1708,49 @@ async def main():
 
     system = AutoDevSystem()
 
-    await system.run(
-        goal=args.goal,
-        max_iterations=1 if args.demo else None,
-        dashboard_host=args.host,
-        dashboard_port=args.port,
-    )
+    # Graceful shutdown via SIGTERM/SIGINT
+    shutdown_timeout = max(3, int(os.getenv("GRACEFUL_SHUTDOWN_TIMEOUT_SEC", "10")))
+    shutdown_event = asyncio.Event()
+
+    def _signal_handler(sig_num, _frame):
+        sig_name = signal.Signals(sig_num).name
+        print(f"\n[Graceful Shutdown] Received {sig_name}, shutting down (timeout {shutdown_timeout}s)...")
+        shutdown_event.set()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, _signal_handler)
+
+    async def _run_with_shutdown():
+        run_task = asyncio.create_task(system.run(
+            goal=args.goal,
+            max_iterations=1 if args.demo else None,
+            dashboard_host=args.host,
+            dashboard_port=args.port,
+        ))
+        shutdown_wait = asyncio.create_task(shutdown_event.wait())
+        done, pending = await asyncio.wait(
+            {run_task, shutdown_wait},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if shutdown_wait in done:
+            # Graceful shutdown triggered
+            await system.shutdown()
+            runtime_guard.release()
+            run_task.cancel()
+            try:
+                await asyncio.wait_for(run_task, timeout=shutdown_timeout)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            print("[Graceful Shutdown] Complete.")
+        else:
+            # Normal completion
+            runtime_guard.release()
+
+    await _run_with_shutdown()
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n👋 Goodbye!")
+        print("\n[Graceful Shutdown] Interrupted.")

@@ -382,6 +382,50 @@ async def health_check():
     }
 
 
+@router.get("/livez")
+async def liveness_probe():
+    """Kubernetes liveness probe - is the process alive and responding?"""
+    return {"status": "alive", "timestamp": datetime.now().isoformat()}
+
+
+@router.get("/readyz")
+async def readiness_probe():
+    """Kubernetes readiness probe - is the service ready to accept traffic?"""
+    ready = True
+    details = {}
+
+    # Check brain is initialized
+    try:
+        brain = get_brain()
+        details["brain"] = "ready" if brain else "not_ready"
+        if not brain:
+            ready = False
+    except Exception:
+        details["brain"] = "not_ready"
+        ready = False
+
+    # Check executor is available
+    try:
+        executor = get_executor()
+        details["executor"] = "ready" if executor else "not_ready"
+        if not executor:
+            ready = False
+    except Exception:
+        details["executor"] = "not_ready"
+        ready = False
+
+    status_code = 200 if ready else 503
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "status": "ready" if ready else "not_ready",
+            "timestamp": datetime.now().isoformat(),
+            "details": details,
+        },
+    )
+
+
 @router.get("/self-diagnostic")
 async def self_diagnostic():
     """Run a comprehensive self-diagnostic across all subsystems."""
@@ -446,6 +490,34 @@ async def self_diagnostic():
     diag["score"] = max(0, diag["score"])
     diag["verdict"] = "excellent" if diag["score"] >= 90 else "good" if diag["score"] >= 70 else "needs_attention" if diag["score"] >= 50 else "critical"
     return diag
+
+
+@router.get("/self-reminder/status")
+async def self_reminder_status():
+    """Get self-reminder engine status and schedule."""
+    try:
+        from brain.self_reminder import get_self_reminder
+        engine = get_self_reminder()
+        return {"success": True, **engine.get_status()}
+    except ImportError:
+        return {"success": False, "error": "self_reminder module not available"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/self-reminder/trigger")
+async def self_reminder_trigger():
+    """Force all principle sources to be re-read immediately."""
+    try:
+        from brain.self_reminder import get_self_reminder
+        engine = get_self_reminder()
+        results = engine.force_remind_all()
+        emit_event("self_reminder.force_triggered", {"count": len(results)})
+        return {"success": True, "reminders": results}
+    except ImportError:
+        return {"success": False, "error": "self_reminder module not available"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 @router.post("/maintenance")
