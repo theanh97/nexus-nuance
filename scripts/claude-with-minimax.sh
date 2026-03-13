@@ -33,25 +33,34 @@ normalize_provider() {
   printf "%s" "$1" | tr '[:upper:]' '[:lower:]' | tr '-' '_'
 }
 
-find_litellm_cmd() {
-  if command -v litellm >/dev/null 2>&1; then
-    command -v litellm
+supports_modern_typing() {
+  local py="$1"
+  "$py" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)' >/dev/null 2>&1
+}
+
+pick_litellm_python() {
+  local override="${CLAUDE_CODE_LITELLM_PYTHON:-}"
+  if [ -n "$override" ]; then
+    printf "%s\n" "$override"
     return
   fi
 
-  local user_base
-  user_base="$(python3 -m site --user-base)"
-  if [ -x "$user_base/bin/litellm" ]; then
-    printf "%s\n" "$user_base/bin/litellm"
-    return
-  fi
+  local candidates=(
+    "/opt/homebrew/bin/python3.11"
+    "python3.11"
+    "/opt/homebrew/bin/python3"
+    "python3"
+  )
 
-  if [ -x "$HOME/Library/Python/3.9/bin/litellm" ]; then
-    printf "%s\n" "$HOME/Library/Python/3.9/bin/litellm"
-    return
-  fi
+  local c
+  for c in "${candidates[@]}"; do
+    if command -v "$c" >/dev/null 2>&1 && supports_modern_typing "$c"; then
+      command -v "$c"
+      return
+    fi
+  done
 
-  echo ""
+  command -v python3
 }
 
 is_truthy() {
@@ -63,9 +72,40 @@ is_truthy() {
 
 gateway_healthcheck() {
   local base_url="$1"
-  curl -fsS --max-time 2 "$base_url/health/readiness" >/dev/null 2>&1 || \
-  curl -fsS --max-time 2 "$base_url/health/liveliness" >/dev/null 2>&1 || \
-  curl -fsS --max-time 2 "$base_url/health" >/dev/null 2>&1
+  local code
+  for endpoint in "$base_url/health/readiness" "$base_url/health/liveliness" "$base_url/health"; do
+    code="$(curl -s --max-time 2 -o /dev/null -w "%{http_code}" "$endpoint" 2>/dev/null || echo "000")"
+    case "$code" in
+      200|401|403) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+file_sha256() {
+  local file="$1"
+
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" 2>/dev/null | awk '{print $1}'
+    return 0
+  fi
+
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" 2>/dev/null | awk '{print $1}'
+    return 0
+  fi
+
+  python3 - "$file" 2>/dev/null <<'PY' || true
+import hashlib
+import sys
+
+path = sys.argv[1]
+h = hashlib.sha256()
+with open(path, "rb") as f:
+    for chunk in iter(lambda: f.read(1024 * 1024), b""):
+        h.update(chunk)
+print(h.hexdigest())
+PY
 }
 
 supports_anthropic_messages() {
@@ -97,31 +137,35 @@ supports_anthropic_messages() {
 }
 
 ensure_litellm() {
-  local needs_install=0
+  LITELLM_PY="$(pick_litellm_python)"
 
-  LITELLM_CMD="$(find_litellm_cmd)"
-  if [ -z "$LITELLM_CMD" ] && python3 -c "import litellm" >/dev/null 2>&1; then
-    LITELLM_CMD="$(find_litellm_cmd)"
+  local user_base
+  user_base="$("$LITELLM_PY" -m site --user-base 2>/dev/null || true)"
+  if [ -z "$user_base" ]; then
+    echo "Error: Unable to determine Python user base for LiteLLM."
+    exit 1
   fi
 
-  if [ -z "$LITELLM_CMD" ]; then
-    needs_install=1
+  LITELLM_CMD="$user_base/bin/litellm"
+
+  if [ ! -x "$LITELLM_CMD" ]; then
+    echo "LiteLLM not found for $LITELLM_PY. Installing litellm[proxy]..."
+    "$LITELLM_PY" -m pip install --user 'litellm[proxy]'
   fi
 
-  if [ "$needs_install" -eq 1 ]; then
-    echo "LiteLLM not found. Installing litellm[proxy]..."
-    python3 -m pip install --user 'litellm[proxy]'
-
-    LITELLM_CMD="$(find_litellm_cmd)"
-    if [ -z "$LITELLM_CMD" ]; then
+  if [ ! -x "$LITELLM_CMD" ]; then
+    # Fallback: respect a global `litellm` if present
+    if command -v litellm >/dev/null 2>&1; then
+      LITELLM_CMD="$(command -v litellm)"
+    else
       echo "Error: Failed to install LiteLLM."
       exit 1
     fi
   fi
 
-  if ! python3 -c "import multipart" >/dev/null 2>&1; then
+  if ! "$LITELLM_PY" -c "import multipart" >/dev/null 2>&1; then
     echo "Installing python-multipart dependency..."
-    python3 -m pip install --user python-multipart
+    "$LITELLM_PY" -m pip install --user python-multipart
   fi
 }
 
@@ -130,13 +174,29 @@ start_litellm_gateway() {
   local host="${CLAUDE_CODE_GATEWAY_HOST:-127.0.0.1}"
   local port="${CLAUDE_CODE_GATEWAY_PORT:-4000}"
   local pid_file="$STATE_DIR/litellm-openai-compatible.pid"
+  local hash_file="$STATE_DIR/litellm-openai-compatible.config.sha256"
   local log_file="$LOG_DIR/litellm-openai-compatible.log"
   local gateway_url="http://$host:$port"
   local wait_steps="${CLAUDE_CODE_GATEWAY_WAIT_STEPS:-30}"
   local i
 
+  local desired_hash=""
+  local current_hash=""
+  if [ -f "$config_path" ]; then
+    desired_hash="$(file_sha256 "$config_path" 2>/dev/null || true)"
+  fi
+  if [ -f "$hash_file" ]; then
+    current_hash="$(cat "$hash_file" 2>/dev/null || true)"
+  fi
+
   if gateway_healthcheck "$gateway_url"; then
-    return
+    if [ -n "$desired_hash" ] && [ "$desired_hash" = "$current_hash" ]; then
+      return
+    fi
+    if [ -z "$desired_hash" ]; then
+      return
+    fi
+    echo "LiteLLM gateway is running but config changed. Restarting..."
   fi
 
   if [ -f "$pid_file" ]; then
@@ -164,6 +224,9 @@ start_litellm_gateway() {
 
   for ((i = 0; i < wait_steps; i += 1)); do
     if gateway_healthcheck "$gateway_url"; then
+      if [ -n "$desired_hash" ]; then
+        echo "$desired_hash" > "$hash_file"
+      fi
       return
     fi
     sleep 1
@@ -217,18 +280,37 @@ run_openai_compatible() {
   local compat_api_key
   local compat_base_url
   local model_list_yaml=""
+  local extra_models=""
+  local s_alias="${CLAUDE_CODE_MODEL_ALIAS_SONNET:-}"
+  local o_alias="${CLAUDE_CODE_MODEL_ALIAS_OPUS:-}"
+  local h_alias="${CLAUDE_CODE_MODEL_ALIAS_HAIKU:-}"
 
   # Define the core mappings for Claude UI
-  local s_model="${CODAXER_MODEL_SONNET:-gpt-5.1-codex}"
-  local o_model="${CODAXER_MODEL_OPUS:-gpt-5.3-codex}"
-  local h_model="${CODAXER_MODEL_HAIKU:-gpt-5.1-codex-mini}"
+  local s_model
+  local o_model
+  local h_model
 
-  if [ "${PROVIDER:-}" = "codaxer" ] || [ -n "${CODAXER_API_KEY:-}" ]; then
+  if [ "${PROVIDER:-}" = "deepseek" ]; then
+    s_model="${DEEPSEEK_MODEL_SONNET:-deepseek-chat}"
+    o_model="${DEEPSEEK_MODEL_OPUS:-deepseek-reasoner}"
+    h_model="${DEEPSEEK_MODEL_HAIKU:-deepseek-chat}"
+    compat_api_key="${DEEPSEEK_API_KEY:-}"
+    compat_base_url="${DEEPSEEK_BASE_URL:-https://api.deepseek.com/v1}"
+    extra_models="${DEEPSEEK_MODELS:-}"
+  elif [ "${PROVIDER:-}" = "codaxer" ]; then
+    s_model="${CODAXER_MODEL_SONNET:-${CLAUDE_CODE_MODEL_SONNET:-gpt-5.1-codex}}"
+    o_model="${CODAXER_MODEL_OPUS:-${CLAUDE_CODE_MODEL_OPUS:-gpt-5.3-codex}}"
+    h_model="${CODAXER_MODEL_HAIKU:-${CLAUDE_CODE_MODEL_HAIKU:-gpt-5.1-codex-mini}}"
     compat_api_key="${CODAXER_API_KEY:-${CLAUDE_CODE_API_KEY:-}}"
     compat_base_url="${CODAXER_BASE_URL:-${CLAUDE_CODE_BASE_URL:-}}"
+    extra_models="${CODAXER_MODELS:-}"
   else
+    s_model="${CLAUDE_CODE_MODEL_SONNET:-${CODAXER_MODEL_SONNET:-gpt-5.1-codex}}"
+    o_model="${CLAUDE_CODE_MODEL_OPUS:-${CODAXER_MODEL_OPUS:-gpt-5.3-codex}}"
+    h_model="${CLAUDE_CODE_MODEL_HAIKU:-${CODAXER_MODEL_HAIKU:-gpt-5.1-codex-mini}}"
     compat_api_key="${CLAUDE_CODE_API_KEY:-${CODAXER_API_KEY:-}}"
-    compat_base_url="${CODAXER_BASE_URL:-${CLAUDE_CODE_BASE_URL:-}}"
+    compat_base_url="${CLAUDE_CODE_BASE_URL:-${CODAXER_BASE_URL:-}}"
+    extra_models="${CLAUDE_CODE_MODELS:-${CODAXER_MODELS:-}}"
   fi
 
   if [ -z "$compat_api_key" ] || [ -z "$compat_base_url" ]; then
@@ -237,29 +319,86 @@ run_openai_compatible() {
     exit 1
   fi
 
+  # For DeepSeek: use native provider prefix (no api_base needed, enables proper Responses API translation)
+  # For others: use openai/ prefix with custom api_base
+  local litellm_provider_prefix="openai"
+  local litellm_api_base_line="      api_base: \"${compat_base_url}\""
+  if [ "${PROVIDER:-}" = "deepseek" ]; then
+    litellm_provider_prefix="deepseek"
+    litellm_api_base_line=""
+  fi
+
+  # For DeepSeek: cap max_output_tokens at 8192 (DeepSeek V3/R1 limit)
+  local model_info_block=""
+  if [ "${PROVIDER:-}" = "deepseek" ]; then
+    model_info_block="    model_info:
+      max_output_tokens: 8192"
+  fi
+
+  # Pre-compute per-model yaml lines (avoids $'\n' inside heredoc expansion bug)
+  local s_model_params o_model_params h_model_params
+  s_model_params="      model: \"${litellm_provider_prefix}/${s_model}\""
+  o_model_params="      model: \"${litellm_provider_prefix}/${o_model}\""
+  h_model_params="      model: \"${litellm_provider_prefix}/${h_model}\""
+  if [ -n "$litellm_api_base_line" ]; then
+    s_model_params="${s_model_params}
+${litellm_api_base_line}"
+    o_model_params="${o_model_params}
+${litellm_api_base_line}"
+    h_model_params="${h_model_params}
+${litellm_api_base_line}"
+  fi
+
   # Start building config with explicit mappings for Claude Code UI
   model_list_yaml=$(cat <<EOF
   - model_name: "sonnet"
     litellm_params:
-      model: "openai/${s_model}"
-      api_base: "${compat_base_url}"
+${s_model_params}
       api_key: "os.environ/CODEX_COMPAT_API_KEY"
+${model_info_block}
   - model_name: "opus"
     litellm_params:
-      model: "openai/${o_model}"
-      api_base: "${compat_base_url}"
+${o_model_params}
       api_key: "os.environ/CODEX_COMPAT_API_KEY"
+${model_info_block}
   - model_name: "haiku"
     litellm_params:
-      model: "openai/${h_model}"
+${h_model_params}
+      api_key: "os.environ/CODEX_COMPAT_API_KEY"
+${model_info_block}
+EOF
+)
+
+  append_model_yaml() {
+    local name="$1"
+    local target_model="$2"
+    if [[ "$model_list_yaml" == *"model_name: \"$name\""* ]]; then
+      return
+    fi
+    model_list_yaml+=$(cat <<EOF
+
+  - model_name: "$name"
+    litellm_params:
+      model: "openai/$target_model"
       api_base: "${compat_base_url}"
       api_key: "os.environ/CODEX_COMPAT_API_KEY"
 EOF
 )
+  }
 
-  # Add extra Codex models as searchable models
-  if [ -n "${CODAXER_MODELS:-}" ]; then
-    local clean_models="${CODAXER_MODELS//\"/}"
+  # Also expose the "real" model names, so Claude Code can use/show them directly
+  append_model_yaml "$s_model" "$s_model"
+  append_model_yaml "$o_model" "$o_model"
+  append_model_yaml "$h_model" "$h_model"
+
+  # Optional friendly aliases (e.g. "monica") -> real model names
+  if [ -n "$s_alias" ]; then append_model_yaml "$s_alias" "$s_model"; fi
+  if [ -n "$o_alias" ]; then append_model_yaml "$o_alias" "$o_model"; fi
+  if [ -n "$h_alias" ]; then append_model_yaml "$h_alias" "$h_model"; fi
+
+  # Add extra models as searchable models
+  if [ -n "${extra_models:-}" ]; then
+    local clean_models="${extra_models//\"/}"
     for m in $clean_models; do
       # Avoid duplicate definitions if m is already one of the defaults
       if [ "$m" != "$s_model" ] && [ "$m" != "$o_model" ] && [ "$m" != "$h_model" ]; then
@@ -284,6 +423,9 @@ EOF
 general_settings:
   master_key: "$gateway_token"
 
+litellm_settings:
+  drop_params: true
+
 model_list:
 $model_list_yaml
 EOF
@@ -295,20 +437,36 @@ EOF
   export ANTHROPIC_AUTH_TOKEN="$gateway_token"
   if [ -n "${ANTHROPIC_API_KEY:-}" ]; then unset ANTHROPIC_API_KEY; fi
   
-  export ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-sonnet}"
-  export ANTHROPIC_DEFAULT_SONNET_MODEL="sonnet"
-  export ANTHROPIC_DEFAULT_OPUS_MODEL="opus"
-  export ANTHROPIC_DEFAULT_HAIKU_MODEL="haiku"
+  if is_truthy "${CLAUDE_CODE_UI_SHOW_REAL_MODELS:-false}"; then
+    export ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-$s_model}"
+    export ANTHROPIC_DEFAULT_SONNET_MODEL="$s_model"
+    export ANTHROPIC_DEFAULT_OPUS_MODEL="$o_model"
+    export ANTHROPIC_DEFAULT_HAIKU_MODEL="$h_model"
+  elif [ -n "$s_alias" ] || [ -n "$o_alias" ] || [ -n "$h_alias" ]; then
+    export ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-${s_alias:-sonnet}}"
+    export ANTHROPIC_DEFAULT_SONNET_MODEL="${s_alias:-sonnet}"
+    export ANTHROPIC_DEFAULT_OPUS_MODEL="${o_alias:-opus}"
+    export ANTHROPIC_DEFAULT_HAIKU_MODEL="${h_alias:-haiku}"
+  else
+    export ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-sonnet}"
+    export ANTHROPIC_DEFAULT_SONNET_MODEL="sonnet"
+    export ANTHROPIC_DEFAULT_OPUS_MODEL="opus"
+    export ANTHROPIC_DEFAULT_HAIKU_MODEL="haiku"
+  fi
   export CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS="${CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS:-1}"
 
   echo "------------------------------------------------"
-  echo "🛠  CODEX MODE ACTIVE (via LiteLLM Gateway)"
+  echo "🛠  OPENAI-COMPATIBLE MODE (via LiteLLM Gateway)"
   echo "  Gateway: $ANTHROPIC_BASE_URL"
+  echo "  Upstream: ${compat_base_url}"
   echo ""
-  echo "  CLAUDE UI MENU MAPPING:"
-  echo "  ❯ 1 & 5. Sonnet  maps to -> $s_model"
-  echo "  ❯ 2 & 3. Opus    maps to -> $o_model"
-  echo "  ❯ 4.     Haiku   maps to -> $h_model"
+  echo "  Claude Code UI (/model) labels are fixed:"
+  echo "  ❯ Sonnet / Opus / Haiku"
+  echo ""
+  echo "  Gateway mapping:"
+  echo "  ❯ Sonnet -> ${ANTHROPIC_DEFAULT_SONNET_MODEL} (OpenAI: $s_model)"
+  echo "  ❯ Opus   -> ${ANTHROPIC_DEFAULT_OPUS_MODEL} (OpenAI: $o_model)"
+  echo "  ❯ Haiku  -> ${ANTHROPIC_DEFAULT_HAIKU_MODEL} (OpenAI: $h_model)"
   echo ""
   echo "  Current active model: $ANTHROPIC_MODEL"
   echo "------------------------------------------------"
@@ -347,7 +505,7 @@ case "$PROVIDER" in
   minimax|anthropic|anthropic_compatible|direct)
     run_direct_anthropic "$@"
     ;;
-  openai|openai_compatible|openai-compatible|codaxer)
+  openai|openai_compatible|openai-compatible|codaxer|deepseek)
     run_openai_compatible "$@"
     ;;
   *)

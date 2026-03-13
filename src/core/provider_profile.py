@@ -97,7 +97,7 @@ class ProviderProfileStore:
                     "label": "Codex CLI subscription",
                     "enabled": _bool_env("CODEX_SUBSCRIPTION_AVAILABLE", False),
                     "cli_cmd": str(os.getenv("CODEX_CLI_CMD", "codex")).strip() or "codex",
-                    "cli_args": str(os.getenv("CODEX_CLI_ARGS", "-p")).strip() or "-p",
+                    "cli_args": str(os.getenv("CODEX_CLI_ARGS", "exec")).strip() or "exec",
                     "model_high": str(os.getenv("CODEX_SUBSCRIPTION_MODEL", "codex-5.3-x2")).strip()
                     or "codex-5.3-x2",
                     "model_low": str(os.getenv("CODEX_SUBSCRIPTION_LOW_MODEL", "codex-5.3-mini")).strip()

@@ -628,7 +628,7 @@ class AsyncAgent(ABC):
         """Build CLI command for subscription models."""
         if api_source == "subscription_codex":
             cmd = os.getenv("CODEX_CLI_CMD", "codex").strip()
-            args_template = os.getenv("CODEX_CLI_ARGS", "-p").strip()
+            args_template = os.getenv("CODEX_CLI_ARGS", "exec").strip()
         elif api_source == "subscription_claude":
             cmd = os.getenv("CLAUDE_CLI_CMD", "claude").strip()
             args_template = os.getenv("CLAUDE_CLI_ARGS", "-p").strip()
